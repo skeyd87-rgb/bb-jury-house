@@ -38,25 +38,56 @@ let g = null; // game state
 let busy = false; // an overlay/ceremony is running
 let approachTimer = null;
 
-titleScreen({
-  hasSave: !!loadGame(),
-  savedKey: getApiKey(),
-  archivedStats: loadArchivedSeason(),
-  onShowStats: () => showStatsPage(loadArchivedSeason()),
-  onSaveKey: (k) => setApiKey(k),
-  onNew: (name) => {
-    clearSave();
-    g = newGame(name);
-    startWorld();
-    weekIntro();
-  },
-  onContinue: () => {
-    g = loadGame();
-    startWorld();
-    refresh();
-    setMoodForPhase();
-  },
-});
+function showTitle() {
+  titleScreen({
+    hasSave: !!loadGame(),
+    savedKey: getApiKey(),
+    archivedStats: loadArchivedSeason(),
+    onShowStats: () => showStatsPage(loadArchivedSeason()),
+    onSaveKey: (k) => setApiKey(k),
+    onNew: (name) => {
+      clearSave();
+      g = newGame(name);
+      startWorld();
+      weekIntro();
+    },
+    onContinue: () => {
+      g = loadGame();
+      startWorld();
+      refresh();
+      setMoodForPhase();
+    },
+    onOnline: () => openMultiplayer(),
+  });
+}
+showTitle();
+
+// ---------- Multiplayer (Phase 1: lobby) ----------
+let room = null;
+
+async function openMultiplayer() {
+  const { showMultiplayerEntry, showLobby } = await import('./ui/lobby.js');
+  showMultiplayerEntry({
+    onBack: () => showTitle(),
+    onEnter: (r, state) => {
+      room = r;
+      showLobby(room, state, {
+        onLeave: () => { room = null; showTitle(); },
+        onStart: (s) => {
+          // Phase 2 wires real online gameplay here. For now, a placeholder so
+          // the lobby → start handshake is verifiable end-to-end.
+          const wrap = document.createElement('div');
+          wrap.className = 'title-screen';
+          wrap.innerHTML = `<div class="title-card"><div class="eye">👁️</div>
+            <h1>SEASON <span>STARTING</span></h1>
+            <div class="tag">Room ${s.code} — ${Object.values(s.seats).filter(x=>x.occupant).length} human(s) seated.</div>
+            <div class="keynote">Online gameplay lands in Phase 2. The lobby, room codes, and seat claiming all work.<br>Your seat: <b>${s.seats[room.mySeatId()]?.occupantName || '—'}</b>${room.isHost() ? ' · you are the host' : ''}.</div></div>`;
+          document.body.append(wrap);
+        },
+      });
+    },
+  });
+}
 
 // Debug/test hook (harmless in normal play)
 window.__bb = {

@@ -374,8 +374,9 @@ export function confetti() {
 
 // ---------- Title screen ----------
 
-export function titleScreen({ hasSave, onNew, onContinue, savedKey, onSaveKey, archivedStats, onShowStats }) {
+export function titleScreen({ hasSave, onNew, onContinue, savedKey, onSaveKey, archivedStats, onShowStats, onOnline }) {
   const wrap = el('div', 'title-screen');
+  wrap.id = 'title-screen';
   const card = el('div', 'title-card');
   card.append(el('div', 'eye', '👁️'));
   card.append(el('h1', '', 'BIG <span>BROTHER</span>'));
@@ -417,6 +418,13 @@ export function titleScreen({ hasSave, onNew, onContinue, savedKey, onSaveKey, a
     row.append(st);
   }
   card.append(row);
+  if (onOnline) {
+    const onlineRow = el('div', 'cine-actions');
+    const ob = el('button', 'bb primary', '🌐 Play Online with Friends (Beta)');
+    ob.onclick = () => { wrap.remove(); onOnline(); };
+    onlineRow.append(ob);
+    card.append(onlineRow);
+  }
   wrap.append(card);
   document.body.append(wrap);
 }

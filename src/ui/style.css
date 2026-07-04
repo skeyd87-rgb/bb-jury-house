@@ -250,6 +250,29 @@ button.bb:disabled { opacity: 0.45; cursor: default; transform: none; }
 ::-webkit-scrollbar-thumb { background: #333a58; border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
+/* ---------- Multiplayer lobby ---------- */
+.lobby-card { max-width: 620px; }
+.lobby-code { font-size: 15px; letter-spacing: 2px; margin-bottom: 4px; }
+.lobby-code b { color: var(--gold); font-size: 22px; letter-spacing: 4px; }
+.seat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 16px 0; }
+.seat-card {
+  background: #171b30; border: 1px solid var(--panel-border); border-radius: 12px;
+  padding: 10px; text-align: left; display: flex; flex-direction: column; gap: 5px;
+}
+.seat-card.taken { background: #1c2138; }
+.seat-card.mine { border-color: var(--gold); box-shadow: 0 0 14px rgba(245,197,66,0.2); }
+.seat-card .seat-head { display: flex; align-items: center; gap: 6px; }
+.seat-card .seat-name { font-weight: 700; font-size: 14px; }
+.seat-card .seat-sub { font-size: 11px; color: var(--muted); }
+.seat-card .dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+button.bb.sm { padding: 5px 10px; font-size: 12px; margin-top: auto; }
+.lobby-ctrl { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
+.lobby-ctrl label { font-size: 13px; color: var(--muted); }
+.lobby-ctrl select {
+  background: #171b30; color: var(--text); border: 1px solid var(--panel-border);
+  border-radius: 8px; padding: 6px 8px; font-size: 13px; margin-left: 6px;
+}
+
 /* ---------- Mobile / small screens ---------- */
 @media (max-width: 760px), (max-height: 500px) {
   .chat-panel {
