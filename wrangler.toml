@@ -1,0 +1,15 @@
+name = "bb-jury-house"
+main = "party/server.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# The room is a Durable Object. Client connects with party name "room"
+# (kebab-case of the "Room" binding).
+[[durable_objects.bindings]]
+name = "Room"
+class_name = "Room"
+
+# Free-tier Durable Objects are SQLite-backed.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]

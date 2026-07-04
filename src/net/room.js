@@ -5,11 +5,13 @@ import PartySocket from 'partysocket';
 
 // Where the PartyKit server lives. Local `partykit dev` serves on :1999;
 // production points at the deployed worker (set VITE_PARTYKIT_HOST at build).
+// The deployed Cloudflare Worker host, or localhost for `wrangler dev`.
+// Updated with the real workers.dev URL after the first deploy.
 const PARTY_HOST =
   import.meta.env?.VITE_PARTYKIT_HOST ||
   (location.hostname === 'localhost' || location.hostname === '127.0.0.1'
     ? 'localhost:1999'
-    : 'bb-jury-house.partykit.dev'); // updated to the real host after first deploy
+    : 'PARTY_HOST_PLACEHOLDER'); // set to bb-jury-house.<subdomain>.workers.dev after deploy
 
 const PID_KEY = 'bbjury.playerId';
 
@@ -49,7 +51,7 @@ export class Room {
 
   connect(code, name) {
     this.code = code;
-    this.socket = new PartySocket({ host: PARTY_HOST, party: 'main', room: code });
+    this.socket = new PartySocket({ host: PARTY_HOST, party: 'room', room: code });
 
     this.socket.addEventListener('open', () => {
       this.send('hello', { playerId: this.playerId, name });

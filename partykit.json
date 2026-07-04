@@ -1,6 +1,0 @@
-{
-  "$schema": "https://www.partykit.io/schema.json",
-  "name": "bb-jury-house",
-  "main": "party/server.js",
-  "compatibilityDate": "2024-11-01"
-}

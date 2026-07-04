@@ -1,7 +1,10 @@
-// PartyKit room server — the authoritative multiplayer game.
-// Phase 1: lobby only (seats, claim/release, host, start). Gameplay arrives in
-// Phase 2. One PartyKit "room" (= URL id, the shareable code) is one season.
+// Cloudflare Durable Object room server (partyserver) — the authoritative
+// multiplayer game. Phase 1: lobby (seats, claim/release, host, start).
+// One Durable Object instance = one room = one season.
+//
+// Client connects with party name "room" (kebab of the `Room` DO binding).
 
+import { Server, routePartykitRequest } from 'partyserver';
 import { CAST } from '../src/game/cast.js';
 
 // The 9 claimable houseguest seats: the 8 established cast + one "newcomer"
@@ -11,16 +14,15 @@ const SEAT_DEFS = [
   { id: 'newcomer', name: 'Newcomer', job: 'Houseguest', color: 0xfafafa, fixed: false },
 ];
 
-export default class Server {
-  constructor(room) {
-    this.room = room;
+export class Room extends Server {
+  constructor(ctx, env) {
+    super(ctx, env);
     this.state = null;
-    // connId -> playerId (so we can free the right seat on disconnect)
-    this.connToPlayer = new Map();
+    this.connToPlayer = new Map(); // connId -> playerId
   }
 
   async onStart() {
-    this.state = (await this.room.storage.get('state')) || this.freshLobby();
+    this.state = (await this.ctx.storage.get('state')) || this.freshLobby();
   }
 
   freshLobby() {
@@ -29,7 +31,7 @@ export default class Server {
       seats[s.id] = { ...s, occupant: null, occupantName: null, connected: false };
     }
     return {
-      code: this.room.id,
+      code: this.name,
       phase: 'lobby', // 'lobby' | 'playing' (Phase 2)
       hostPlayerId: null,
       seats,
@@ -39,24 +41,19 @@ export default class Server {
   }
 
   async persist() {
-    await this.room.storage.put('state', this.state);
+    await this.ctx.storage.put('state', this.state);
   }
 
-  broadcast() {
-    this.room.broadcast(JSON.stringify({ type: 'state', state: this.publicState() }));
+  broadcastState() {
+    this.broadcast(JSON.stringify({ type: 'state', state: this.state }));
   }
 
-  // Nothing secret in lobby state yet; whole object is public.
-  publicState() {
-    return this.state;
+  onConnect(connection) {
+    // Send current state immediately; seating happens on the client's `hello`.
+    connection.send(JSON.stringify({ type: 'state', state: this.state }));
   }
 
-  onConnect(conn) {
-    // Wait for the client's `hello` (with its persistent playerId) before seating.
-    conn.send(JSON.stringify({ type: 'state', state: this.publicState() }));
-  }
-
-  async onMessage(raw, sender) {
+  async onMessage(connection, raw) {
     let msg;
     try {
       msg = JSON.parse(raw);
@@ -69,13 +66,11 @@ export default class Server {
       case 'hello': {
         const pid = String(msg.playerId || '').slice(0, 64);
         if (!pid) return;
-        this.connToPlayer.set(sender.id, pid);
+        this.connToPlayer.set(connection.id, pid);
         if (!s.players[pid]) s.players[pid] = { name: msg.name || 'Player', seatId: null, online: true };
         s.players[pid].online = true;
         if (msg.name) s.players[pid].name = String(msg.name).slice(0, 20);
-        // First player to ever join is the host.
-        if (!s.hostPlayerId) s.hostPlayerId = pid;
-        // Reconnect: re-mark their seat connected.
+        if (!s.hostPlayerId) s.hostPlayerId = pid; // first ever joiner = host
         if (s.players[pid].seatId && s.seats[s.players[pid].seatId]) {
           s.seats[s.players[pid].seatId].connected = true;
         }
@@ -83,7 +78,7 @@ export default class Server {
       }
 
       case 'setName': {
-        const pid = this.connToPlayer.get(sender.id);
+        const pid = this.connToPlayer.get(connection.id);
         if (!pid || !s.players[pid]) return;
         s.players[pid].name = String(msg.name || 'Player').slice(0, 20);
         const seatId = s.players[pid].seatId;
@@ -94,13 +89,12 @@ export default class Server {
       }
 
       case 'claimSeat': {
-        const pid = this.connToPlayer.get(sender.id);
+        const pid = this.connToPlayer.get(connection.id);
         if (!pid || !s.players[pid]) return;
         if (s.phase !== 'lobby') return;
         const seat = s.seats[msg.seatId];
         if (!seat || seat.occupant) return; // taken or invalid
-        // release any previous seat this player held
-        this.releaseSeatOf(pid);
+        this.releaseSeatOf(pid); // drop any previous seat
         seat.occupant = pid;
         seat.occupantName = seat.fixed ? seat.name : s.players[pid].name;
         seat.connected = true;
@@ -109,13 +103,13 @@ export default class Server {
       }
 
       case 'releaseSeat': {
-        const pid = this.connToPlayer.get(sender.id);
+        const pid = this.connToPlayer.get(connection.id);
         if (pid) this.releaseSeatOf(pid);
         break;
       }
 
       case 'setSettings': {
-        const pid = this.connToPlayer.get(sender.id);
+        const pid = this.connToPlayer.get(connection.id);
         if (pid !== s.hostPlayerId) return;
         const secs = Number(msg.phaseSeconds);
         if (secs >= 60 && secs <= 7200) s.settings.phaseSeconds = Math.round(secs);
@@ -123,14 +117,13 @@ export default class Server {
       }
 
       case 'startSeason': {
-        const pid = this.connToPlayer.get(sender.id);
+        const pid = this.connToPlayer.get(connection.id);
         if (pid !== s.hostPlayerId) return;
         if (s.phase !== 'lobby') return;
-        // Need at least the host seated (and >=1 human). Phase 2 wires real play.
         const humansSeated = Object.values(s.seats).filter((x) => x.occupant).length;
         if (humansSeated < 1) return;
         s.phase = 'playing';
-        s.startedAt = msg.clientTime || 0; // stamped client-side (no Date on worker journal)
+        s.startedAt = msg.clientTime || 0;
         break;
       }
 
@@ -139,7 +132,7 @@ export default class Server {
     }
 
     await this.persist();
-    this.broadcast();
+    this.broadcastState();
   }
 
   releaseSeatOf(pid) {
@@ -156,19 +149,25 @@ export default class Server {
     player.seatId = null;
   }
 
-  async onClose(conn) {
-    const pid = this.connToPlayer.get(conn.id);
-    this.connToPlayer.delete(conn.id);
+  async onClose(connection) {
+    const pid = this.connToPlayer.get(connection.id);
+    this.connToPlayer.delete(connection.id);
     if (!pid) return;
     const s = this.state;
     if (s.players[pid]) s.players[pid].online = false;
-    // In lobby, a disconnect frees the seat. (In-game AI-takeover is Phase 4.)
     if (s.phase === 'lobby') {
-      this.releaseSeatOf(pid);
+      this.releaseSeatOf(pid); // in lobby, a drop frees the seat
     } else if (s.players[pid]?.seatId && s.seats[s.players[pid].seatId]) {
-      s.seats[s.players[pid].seatId].connected = false;
+      s.seats[s.players[pid].seatId].connected = false; // in-game AI takeover is Phase 4
     }
     await this.persist();
-    this.broadcast();
+    this.broadcastState();
   }
 }
+
+// Worker entry: route /parties/room/:code to the Room Durable Object.
+export default {
+  async fetch(request, env) {
+    return (await routePartykitRequest(request, env)) || new Response('BB Jury House room server', { status: 200 });
+  },
+};
