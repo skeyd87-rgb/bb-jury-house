@@ -368,7 +368,7 @@ function syncOnlineWorld(game) {
   if (st.childNodes.length) h.append(st);
 
   // Leave Room (drop-in/out: AI covers your seat; rejoin with the same code)
-  const btns = el('div', 'hud-buttons');
+  const btns = el('div', 'hud-buttons online-persistent-buttons');
   btns.style.left = 'auto';
   btns.style.right = 'calc(12px + var(--safe-right))';
   if (isSpectator()) {
@@ -650,18 +650,19 @@ function renderOnlineTurn(game, t) {
 
     case 'social': {
       // Free roam — no modal. Walk the house and tap houseguests to talk.
+      // Own bar, anchored under the top status panel — never share the bottom
+      // strip with the persistent Diary/Alliance/Leave buttons (that overlap
+      // was the mobile "buttons covering buttons" bug).
       onlineOverlay = null;
-      const bar = el('div', 'hud-buttons');
+      const bar = el('div', 'online-social-bar');
       bar.id = 'online-social-bar';
-      const hint = el('div', 'hud-hint');
-      hint.innerHTML = `<b>${t.label}</b> — tap a houseguest to talk.`;
-      bar.append(hint);
+      bar.append(el('span', '', `<b>${t.label}</b> — tap a houseguest to talk.`));
       if (host) {
-        const adv = el('button', 'bb gold', t.next === 'nominations' ? '▶ Nominations' : t.next === 'veto_comp' ? '▶ Veto Comp' : '▶ Live Eviction');
+        const adv = el('button', 'bb gold sm', t.next === 'nominations' ? '▶ Nominations' : t.next === 'veto_comp' ? '▶ Veto Comp' : '▶ Live Eviction');
         adv.onclick = () => room.send('advanceTurn');
         bar.append(adv);
       } else {
-        bar.append(el('div', 'hud-hint', '⏳ Host advances when ready'));
+        bar.append(el('span', 'online-social-wait', '⏳ Host advances when ready'));
       }
       document.getElementById('hud').append(bar);
       break;

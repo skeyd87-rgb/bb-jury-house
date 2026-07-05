@@ -9,7 +9,21 @@ compatibility_flags = ["nodejs_compat"]
 name = "Room"
 class_name = "Room"
 
+# Global counter gating the server-hosted AI key (/api/chat) from abuse.
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
 # Free-tier Durable Objects are SQLite-backed.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RateLimiter"]
+
+# Set once via: wrangler secret put ANTHROPIC_API_KEY
+# Powers single-player AI for every device with no key ever typed in (4.5.5).
+# If unset, /api/chat returns 503 and clients fall back to their own key /
+# the built-in offline engine — nothing breaks without it.

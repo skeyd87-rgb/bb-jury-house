@@ -37,6 +37,7 @@ const SEAT_DEFS = [
 export class Room extends Server {
   constructor(ctx, env) {
     super(ctx, env);
+    this.roomEnv = env;
     this.state = null;
     this.game = null;
     this.turn = null; // current interactive turn (comp/nominate/vote/etc.)
@@ -48,6 +49,12 @@ export class Room extends Server {
     this.game = (await this.ctx.storage.get('game')) || null;
     this.turn = (await this.ctx.storage.get('turn')) || null;
     this.apiKey = (await this.ctx.storage.get('apiKey')) || null; // host's key, never broadcast
+  }
+
+  // The host's own key if they gave one, else the operator's shared server
+  // key (Phase 4.5.5) if configured, else null (engine fallback covers AI).
+  get effectiveApiKey() {
+    return this.apiKey || this.roomEnv?.ANTHROPIC_API_KEY || null;
   }
 
   async saveGame() {
@@ -458,7 +465,7 @@ export class Room extends Server {
         finalistNames: finalists.map((f) => nameOf(g, f)), waitingOn: [this.humanFor(juror)],
       });
     } else {
-      const q = await serverJurorQuestion(g, juror, finalists, this.apiKey);
+      const q = await serverJurorQuestion(g, juror, finalists, this.effectiveApiKey);
       await this.beginJurorAnswer(juror, finalists, q.questionForF1, q.questionForF2, q.toneNote);
     }
   }
@@ -479,7 +486,7 @@ export class Room extends Server {
     const waitingOn = [];
     for (const [fid, q] of [[f1, qF1], [f2, qF2]]) {
       if (this.isActiveHuman(fid)) waitingOn.push(this.humanFor(fid));
-      else answers[fid] = await serverOpponentAnswer(g, fid, juror, q, this.apiKey);
+      else answers[fid] = await serverOpponentAnswer(g, fid, juror, q, this.effectiveApiKey);
     }
     this.turn = {
       kind: 'jury_answer', juror, jurorName: nameOf(g, juror), finalists,
@@ -525,7 +532,7 @@ export class Room extends Server {
       });
     } else {
       const qa = { f1Answer: t.answers[finalists[0]], f2Answer: t.answers[finalists[1]] };
-      const v = await serverJurorVote(g, juror, finalists, qa, this.apiKey);
+      const v = await serverJurorVote(g, juror, finalists, qa, this.effectiveApiKey);
       await this.recordJurorVote(juror, finalists, v.vote, v.reasoning);
     }
   }
@@ -654,19 +661,19 @@ export class Room extends Server {
         return this.doFinalCut(t.actor, cut);
       }
       case 'jury_question': {
-        const q = await serverJurorQuestion(g, t.juror, t.finalists, this.apiKey);
+        const q = await serverJurorQuestion(g, t.juror, t.finalists, this.effectiveApiKey);
         return this.beginJurorAnswer(t.juror, t.finalists, q.questionForF1, q.questionForF2, q.toneNote);
       }
       case 'jury_answer': {
         for (const fid of t.finalists) {
-          if (t.answers[fid] == null) t.answers[fid] = await serverOpponentAnswer(g, fid, t.juror, t.questions[fid], this.apiKey);
+          if (t.answers[fid] == null) t.answers[fid] = await serverOpponentAnswer(g, fid, t.juror, t.questions[fid], this.effectiveApiKey);
         }
         t.waitingOn = [];
         return this.resolveJurorAnswer();
       }
       case 'jury_vote': {
         const qa = { f1Answer: t.answers[t.finalists[0]], f2Answer: t.answers[t.finalists[1]] };
-        const v = await serverJurorVote(g, t.juror, t.finalists, qa, this.apiKey);
+        const v = await serverJurorVote(g, t.juror, t.finalists, qa, this.effectiveApiKey);
         return this.recordJurorVote(t.juror, t.finalists, v.vote, v.reasoning);
       }
       default:
@@ -699,7 +706,7 @@ export class Room extends Server {
       return this.forceResolveTurn();
     }
     if (t.kind === 'jury_answer' && t.finalists.includes(engineId) && t.answers[engineId] == null) {
-      t.answers[engineId] = await serverOpponentAnswer(g, engineId, t.juror, t.questions[engineId], this.apiKey);
+      t.answers[engineId] = await serverOpponentAnswer(g, engineId, t.juror, t.questions[engineId], this.effectiveApiKey);
       t.waitingOn = t.waitingOn.filter((p) => p !== this.humanFor(engineId));
       if (t.waitingOn.length === 0) return this.resolveJurorAnswer();
       return this.commit();
@@ -786,7 +793,7 @@ export class Room extends Server {
     // AI target: Claude (if key) or the built-in engine, effects applied server-side.
     let result;
     try {
-      result = await serverNpcChat(g, targetId, text, chatterId, thread, this.apiKey);
+      result = await serverNpcChat(g, targetId, text, chatterId, thread, this.effectiveApiKey);
     } catch {
       result = fallbackChat(g, targetId, text, chatterId);
     }
@@ -865,7 +872,7 @@ export class Room extends Server {
       if (this.isHuman(targetId)) {
         this.sendToEngine(targetId, { type: 'groupWhisper', groupId, from: senderId, fromName: nameOf(g, senderId), text: secret });
       } else {
-        const r = await serverNpcChat(g, targetId, secret, senderId, [], this.apiKey);
+        const r = await serverNpcChat(g, targetId, secret, senderId, [], this.effectiveApiKey);
         whisperReply = String(r.reply || '…').slice(0, 400);
         const fx = this.sanitizeChatEffects(r.effects);
         applyChatEffects(g, targetId, secret, fx, senderId);
@@ -892,7 +899,7 @@ export class Room extends Server {
     const aiMembers = grp.members.filter((m) => !this.isHuman(m));
     let result;
     try {
-      result = await serverGroupChat(g, aiMembers, senderId, text, grp.log, this.apiKey);
+      result = await serverGroupChat(g, aiMembers, senderId, text, grp.log, this.effectiveApiKey);
     } catch {
       result = null;
     }
@@ -997,7 +1004,7 @@ export class Room extends Server {
     log.push({ who: 'you', text: String(text).slice(0, 400) });
     let reply;
     try {
-      reply = await serverDiaryChat(g, engineId, log, this.apiKey);
+      reply = await serverDiaryChat(g, engineId, log, this.effectiveApiKey);
     } catch {
       reply = fallbackDiary(g).reply;
     }
@@ -1103,7 +1110,7 @@ export class Room extends Server {
         s.phase = 'playing';
         s.startedAt = msg.clientTime || 0;
         if (msg.apiKey) { this.apiKey = String(msg.apiKey); await this.ctx.storage.put('apiKey', this.apiKey); }
-        s.aiPowered = !!this.apiKey; // clients can show "Claude-powered" (no key value)
+        s.aiPowered = !!this.effectiveApiKey; // clients can show "Claude-powered" (no key value)
         await this.persist();
         this.broadcastState();
         await this.beginSeason(); // kicks off week 1; commits + broadcasts game
@@ -1271,9 +1278,91 @@ export class Room extends Server {
   }
 }
 
-// Worker entry: route /parties/room/:code to the Room Durable Object.
+// ---- Server-hosted AI key (Phase 4.5.5) ------------------------------------
+// A single global secret (set via `wrangler secret put ANTHROPIC_API_KEY`)
+// powers single-player Claude calls for every device — nobody has to type a
+// key in ever again. If the secret isn't configured, callers get a 503 and
+// the client falls back to its own key (or the built-in offline engine),
+// exactly like before this existed. Since the page is public, a light global
+// rate gate (RateLimiter DO) protects the operator's key from abuse.
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'content-type',
+};
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...CORS_HEADERS } });
+}
+
+async function handleApiChat(request, env) {
+  if (request.method === 'OPTIONS') return new Response(null, { headers: CORS_HEADERS });
+  if (request.method !== 'POST') return jsonResponse({ error: 'method_not_allowed' }, 405);
+  if (!env.ANTHROPIC_API_KEY) return jsonResponse({ error: 'no_server_key' }, 503);
+
+  if (env.RATE_LIMITER) {
+    const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName('global'));
+    const gate = await (await stub.fetch('https://rate-limiter/check')).json();
+    if (!gate.allowed) return jsonResponse({ error: 'rate_limited' }, 429);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ error: 'bad_request' }, 400);
+  }
+  const { system, messages, maxTokens, temperature } = body || {};
+  if (!system || !Array.isArray(messages)) return jsonResponse({ error: 'bad_request' }, 400);
+
+  let res;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5',
+        max_tokens: Math.min(Number(maxTokens) || 700, 1200),
+        temperature: temperature ?? 1.0,
+        system: String(system).slice(0, 20000),
+        messages: messages.slice(0, 24),
+      }),
+    });
+  } catch {
+    return jsonResponse({ error: 'upstream_unreachable' }, 502);
+  }
+  if (!res.ok) return jsonResponse({ error: 'upstream', status: res.status }, 502);
+  const data = await res.json();
+  const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
+  return jsonResponse({ text });
+}
+
+// Minimal global request counter — resets every 60s. Not per-user (there's no
+// auth), just enough to stop the shared key from being hammered.
+export class RateLimiter {
+  constructor(state) {
+    this.state = state;
+    this.count = 0;
+    this.windowStart = 0;
+  }
+  async fetch() {
+    const now = Date.now();
+    if (now - this.windowStart > 60000) {
+      this.windowStart = now;
+      this.count = 0;
+    }
+    this.count++;
+    return new Response(JSON.stringify({ allowed: this.count <= 30 }), { headers: { 'content-type': 'application/json' } });
+  }
+}
+
+// Worker entry: route /parties/room/:code to the Room Durable Object;
+// /api/chat to the server-hosted-key proxy; everything else falls through.
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname === '/api/chat') return handleApiChat(request, env);
     return (await routePartykitRequest(request, env)) || new Response('BB Jury House room server', { status: 200 });
   },
 };

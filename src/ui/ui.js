@@ -512,10 +512,10 @@ export function titleScreen({ hasSave, onNew, onContinue, savedKey, onSaveKey, a
 
   const keyInput = el('input');
   keyInput.type = 'password';
-  keyInput.placeholder = 'Anthropic API key (sk-ant-...) — powers houseguest AI';
+  keyInput.placeholder = 'Anthropic API key (optional, sk-ant-...)';
   keyInput.value = savedKey || '';
   card.append(keyInput);
-  card.append(el('div', 'keynote', 'With a key, houseguests are played by Claude — real conversations, real memory, real jury speeches.<br>Without one, a simpler built-in dialogue engine is used. Your key stays in this browser only.'));
+  card.append(el('div', 'keynote', 'Houseguests are played by Claude — real conversations, real memory, real jury speeches.<br>Leave this blank to use the app\'s shared AI automatically; paste your own key only if you want to use your own Anthropic billing. Either way, if AI is ever unreachable, a built-in dialogue engine steps in. Your key (if you enter one) stays in this browser only.'));
 
   const row = el('div', 'cine-actions');
   const start = el('button', 'bb gold', '● New Season');
@@ -542,7 +542,7 @@ export function titleScreen({ hasSave, onNew, onContinue, savedKey, onSaveKey, a
   card.append(row);
   if (onOnline) {
     const onlineRow = el('div', 'cine-actions');
-    const ob = el('button', 'bb primary', '🌐 Play Online with Friends (Beta)');
+    const ob = el('button', 'bb primary', '🌐 Play Online with Friends');
     ob.onclick = () => { wrap.remove(); onOnline(); };
     onlineRow.append(ob);
     card.append(onlineRow);

@@ -65,20 +65,18 @@ function sanitizeEffects(raw, npcIds) {
 export async function npcChat(g, npcId, playerMsg) {
   const npcIds = g.houseguests.map((h) => h.id);
   let result;
-  if (hasApiKey()) {
-    try {
-      result = await askClaudeJson({
-        system: buildChatSystemPrompt(g, npcId),
-        messages: buildThreadMessages(g, npcId, playerMsg),
-        maxTokens: 900,
-      });
-    } catch (err) {
-      console.warn('Claude chat failed, using fallback:', err);
-      result = fallbackChat(g, npcId, playerMsg);
-      result._fellBack = true;
-    }
-  } else {
+  try {
+    // Tries the local key first (if any), then the app's shared server-routed
+    // key — so play works without ever typing a key, per Phase 4.5.5.
+    result = await askClaudeJson({
+      system: buildChatSystemPrompt(g, npcId),
+      messages: buildThreadMessages(g, npcId, playerMsg),
+      maxTokens: 900,
+    });
+  } catch (err) {
+    if (hasApiKey()) console.warn('Claude chat failed, using fallback:', err);
     result = fallbackChat(g, npcId, playerMsg);
+    result._fellBack = hasApiKey(); // only warn when the player expected their own key to work
   }
 
   const reply = String(result.reply || '...').slice(0, 600);
@@ -104,17 +102,15 @@ export async function npcChat(g, npcId, playerMsg) {
 // NPC approached the player — they speak first.
 export async function npcOpener(g, npcId, reason) {
   let reply = null;
-  if (hasApiKey()) {
-    try {
-      const r = await askClaudeJson({
-        system: buildOpenerPrompt(g, npcId, reason),
-        messages: [{ role: 'user', content: '(The player turns to you as you walk over.)' }],
-        maxTokens: 400,
-      });
-      if (r.reply) reply = String(r.reply).slice(0, 500);
-    } catch (err) {
-      console.warn('Opener fallback:', err);
-    }
+  try {
+    const r = await askClaudeJson({
+      system: buildOpenerPrompt(g, npcId, reason),
+      messages: [{ role: 'user', content: '(The player turns to you as you walk over.)' }],
+      maxTokens: 400,
+    });
+    if (r.reply) reply = String(r.reply).slice(0, 500);
+  } catch (err) {
+    if (hasApiKey()) console.warn('Opener fallback:', err);
   }
   if (!reply) reply = fallbackOpener(g, npcId, reason);
   if (!g.threads[npcId]) g.threads[npcId] = [];
@@ -126,28 +122,26 @@ export async function npcOpener(g, npcId, reason) {
 // Group conversation: one call, several voices, effects for everyone present.
 export async function groupChat(g, memberIds, playerMsg, history) {
   let result = null;
-  if (hasApiKey()) {
-    try {
-      const msgs = history.slice(-14).map((m) => ({
-        role: m.who === 'you' ? 'user' : 'assistant',
-        content: m.who === 'you' ? m.text : JSON.stringify({ replies: [{ id: m.id, reply: m.text }] }),
-      }));
-      msgs.push({ role: 'user', content: playerMsg });
-      if (msgs[0].role === 'assistant') msgs.unshift({ role: 'user', content: '(The group gathers.)' });
-      result = await askClaudeJson({
-        system: buildGroupSystemPrompt(g, memberIds),
-        messages: msgs,
-        // Scale with group size so big house meetings never truncate mid-JSON.
-        maxTokens: Math.min(3000, 700 + memberIds.length * 300),
-      });
-    } catch (err) {
-      console.warn('Group chat fallback:', err);
-    }
+  try {
+    const msgs = history.slice(-14).map((m) => ({
+      role: m.who === 'you' ? 'user' : 'assistant',
+      content: m.who === 'you' ? m.text : JSON.stringify({ replies: [{ id: m.id, reply: m.text }] }),
+    }));
+    msgs.push({ role: 'user', content: playerMsg });
+    if (msgs[0].role === 'assistant') msgs.unshift({ role: 'user', content: '(The group gathers.)' });
+    result = await askClaudeJson({
+      system: buildGroupSystemPrompt(g, memberIds),
+      messages: msgs,
+      // Scale with group size so big house meetings never truncate mid-JSON.
+      maxTokens: Math.min(3000, 700 + memberIds.length * 300),
+    });
+  } catch (err) {
+    if (hasApiKey()) console.warn('Group chat fallback:', err);
   }
   let fellBack = false;
   if (!result || !Array.isArray(result.replies)) {
     result = fallbackGroupChat(g, memberIds, playerMsg);
-    fellBack = hasApiKey(); // only flag when the player expected Claude
+    fellBack = hasApiKey(); // only flag when the player expected their own key to work
   }
 
   const replies = result.replies
@@ -192,18 +186,16 @@ export async function groupChat(g, memberIds, playerMsg, history) {
 
 // Post-game strategy diagnostic.
 export async function postGameAnalysis(g, stats) {
-  if (hasApiKey()) {
-    try {
-      const r = await askClaudeJson({
-        system: buildAnalysisPrompt(g, stats),
-        messages: [{ role: 'user', content: 'Deliver the diagnostic now.' }],
-        maxTokens: 800,
-        temperature: 0.9,
-      });
-      if (r.analysis) return String(r.analysis).slice(0, 3000);
-    } catch (err) {
-      console.warn('Analysis fallback:', err);
-    }
+  try {
+    const r = await askClaudeJson({
+      system: buildAnalysisPrompt(g, stats),
+      messages: [{ role: 'user', content: 'Deliver the diagnostic now.' }],
+      maxTokens: 800,
+      temperature: 0.9,
+    });
+    if (r.analysis) return String(r.analysis).slice(0, 3000);
+  } catch (err) {
+    if (hasApiKey()) console.warn('Analysis fallback:', err);
   }
   return fallbackAnalysis(stats);
 }
@@ -211,18 +203,14 @@ export async function postGameAnalysis(g, stats) {
 export async function diaryChat(g, playerMsg) {
   g.diary.push({ who: 'you', text: playerMsg });
   let result;
-  if (hasApiKey()) {
-    try {
-      const msgs = g.diary.slice(-10).map((m) => ({
-        role: m.who === 'you' ? 'user' : 'assistant',
-        content: m.who === 'you' ? m.text : JSON.stringify({ reply: m.text }),
-      }));
-      result = await askClaudeJson({ system: buildDiarySystemPrompt(g), messages: msgs, maxTokens: 300 });
-    } catch (err) {
-      console.warn('Diary fallback:', err);
-      result = fallbackDiary(g);
-    }
-  } else {
+  try {
+    const msgs = g.diary.slice(-10).map((m) => ({
+      role: m.who === 'you' ? 'user' : 'assistant',
+      content: m.who === 'you' ? m.text : JSON.stringify({ reply: m.text }),
+    }));
+    result = await askClaudeJson({ system: buildDiarySystemPrompt(g), messages: msgs, maxTokens: 300 });
+  } catch (err) {
+    if (hasApiKey()) console.warn('Diary fallback:', err);
     result = fallbackDiary(g);
   }
   const reply = String(result.reply || '...').slice(0, 400);
@@ -232,68 +220,60 @@ export async function diaryChat(g, playerMsg) {
 }
 
 export async function npcSpeech(g, npcId, kind, extra = {}) {
-  if (hasApiKey()) {
-    try {
-      const r = await askClaudeJson({
-        system: buildSpeechPrompt(g, npcId, kind, extra),
-        messages: [{ role: 'user', content: 'Deliver it now.' }],
-        maxTokens: 250,
-      });
-      if (r.reply) return String(r.reply).slice(0, 400);
-    } catch (err) {
-      console.warn('Speech fallback:', err);
-    }
+  try {
+    const r = await askClaudeJson({
+      system: buildSpeechPrompt(g, npcId, kind, extra),
+      messages: [{ role: 'user', content: 'Deliver it now.' }],
+      maxTokens: 250,
+    });
+    if (r.reply) return String(r.reply).slice(0, 400);
+  } catch (err) {
+    if (hasApiKey()) console.warn('Speech fallback:', err);
   }
   return fallbackSpeech(g, npcId, kind, extra).reply;
 }
 
 export async function jurorQuestion(g, jurorId, finalists) {
-  if (hasApiKey()) {
-    try {
-      const r = await askClaudeJson({
-        system: buildJurorQuestionPrompt(g, jurorId, finalists),
-        messages: [{ role: 'user', content: 'Ask your questions now.' }],
-        maxTokens: 600,
-      });
-      if (r.questionForF1 && r.questionForF2) return r;
-    } catch (err) {
-      console.warn('Juror question fallback:', err);
-    }
+  try {
+    const r = await askClaudeJson({
+      system: buildJurorQuestionPrompt(g, jurorId, finalists),
+      messages: [{ role: 'user', content: 'Ask your questions now.' }],
+      maxTokens: 600,
+    });
+    if (r.questionForF1 && r.questionForF2) return r;
+  } catch (err) {
+    if (hasApiKey()) console.warn('Juror question fallback:', err);
   }
   return fallbackJurorQuestion(g, jurorId, finalists);
 }
 
 export async function opponentJuryAnswer(g, opponentId, jurorId, question) {
-  if (hasApiKey()) {
-    try {
-      const r = await askClaudeJson({
-        system: buildOpponentAnswerPrompt(g, opponentId, jurorId, question),
-        messages: [{ role: 'user', content: 'Answer the juror now.' }],
-        maxTokens: 300,
-      });
-      if (r.reply) return String(r.reply).slice(0, 500);
-    } catch (err) {
-      console.warn('Opponent answer fallback:', err);
-    }
+  try {
+    const r = await askClaudeJson({
+      system: buildOpponentAnswerPrompt(g, opponentId, jurorId, question),
+      messages: [{ role: 'user', content: 'Answer the juror now.' }],
+      maxTokens: 300,
+    });
+    if (r.reply) return String(r.reply).slice(0, 500);
+  } catch (err) {
+    if (hasApiKey()) console.warn('Opponent answer fallback:', err);
   }
   return "I played my heart out, I owned my choices, and I'm asking for your respect, not your forgiveness.";
 }
 
 export async function jurorVote(g, jurorId, finalists, qa) {
-  if (hasApiKey()) {
-    try {
-      const r = await askClaudeJson({
-        system: buildJurorVotePrompt(g, jurorId, finalists, qa),
-        messages: [{ role: 'user', content: 'Cast your vote now.' }],
-        maxTokens: 600,
-        temperature: 1.0,
-      });
-      if (r.vote && finalists.includes(r.vote)) {
-        return { vote: r.vote, reasoning: String(r.reasoning || '').slice(0, 300) };
-      }
-    } catch (err) {
-      console.warn('Juror vote fallback:', err);
+  try {
+    const r = await askClaudeJson({
+      system: buildJurorVotePrompt(g, jurorId, finalists, qa),
+      messages: [{ role: 'user', content: 'Cast your vote now.' }],
+      maxTokens: 600,
+      temperature: 1.0,
+    });
+    if (r.vote && finalists.includes(r.vote)) {
+      return { vote: r.vote, reasoning: String(r.reasoning || '').slice(0, 300) };
     }
+  } catch (err) {
+    if (hasApiKey()) console.warn('Juror vote fallback:', err);
   }
   const fb = fallbackJurorVote(g, jurorId, finalists, qa);
   return { vote: fb.vote, reasoning: fb.reasoning };

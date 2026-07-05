@@ -6,6 +6,18 @@ const KEY_STORAGE = 'bbjury.apikey';
 const MODEL = 'claude-sonnet-5';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 
+// Same deployed Worker multiplayer uses (see src/net/room.js) — Phase 4.5.5
+// routes single-player through it too, so no device ever has to enter a key
+// once the operator sets the ANTHROPIC_API_KEY secret on the Worker.
+// Lazy: this module is also imported (for extractJson) by party/ai.js, which
+// runs inside the Worker where `location` doesn't exist — must not touch it
+// at module load time.
+function getServerHost() {
+  return location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+    ? 'http://127.0.0.1:1999'
+    : 'https://bb-jury-house.skeyd87.workers.dev';
+}
+
 export function getApiKey() {
   return localStorage.getItem(KEY_STORAGE) || '';
 }
@@ -19,33 +31,43 @@ export function hasApiKey() {
 
 export async function askClaude({ system, messages, maxTokens = 700, temperature = 1.0 }) {
   const key = getApiKey();
-  if (!key) throw new NoKeyError();
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: maxTokens,
-      temperature,
-      system,
-      messages,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Claude API ${res.status}: ${body.slice(0, 300)}`);
+  if (key) {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: maxTokens,
+        temperature,
+        system,
+        messages,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Claude API ${res.status}: ${body.slice(0, 300)}`);
+    }
+    const data = await res.json();
+    return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
   }
+
+  // No local key — try the app's own server-hosted key. If the operator
+  // hasn't configured one yet, this 503s and we fall back like always.
+  const res = await fetch(`${getServerHost()}/api/chat`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ system, messages, maxTokens, temperature }),
+  }).catch(() => null);
+  if (!res) throw new NoKeyError();
+  if (res.status === 503) throw new NoKeyError();
+  if (!res.ok) throw new Error(`Server AI ${res.status}`);
   const data = await res.json();
-  const text = (data.content || [])
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
-  return text;
+  return data.text || '';
 }
 
 export class NoKeyError extends Error {

@@ -138,6 +138,23 @@ export function showLobby(room, initialState, { onStart, onLeave }) {
         claim.onclick = () => room.claimSeat(seat.id);
         s.append(claim);
       } else if (mine) {
+        // The newcomer seat has no fixed cast name — let the player name their
+        // houseguest, same as picking a name in single-player.
+        if (!seat.fixed) {
+          const renameRow = el('div', 'seat-rename');
+          const nameInput = el('input');
+          nameInput.value = seat.occupantName || '';
+          nameInput.maxLength = 20;
+          nameInput.placeholder = 'Your houseguest\'s name';
+          const renameBtn = el('button', 'bb sm', 'Rename');
+          renameBtn.onclick = () => {
+            const v = nameInput.value.trim();
+            if (v) room.setName(v);
+          };
+          nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') renameBtn.click(); });
+          renameRow.append(nameInput, renameBtn);
+          s.append(renameRow);
+        }
         const leave = el('button', 'bb sm', 'Leave seat');
         leave.onclick = () => room.releaseSeat();
         s.append(leave);
