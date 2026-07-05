@@ -14,9 +14,15 @@ them. Client changes ship on `git push` (GitHub Pages); server changes also need
 
 ## Phase 4.5 — Single-Player AI Hardening
 
-Goal: make houseguest dialogue and the jury feel genuinely human and grounded. All items are
-prompt/logic work in `src/ai/prompts.js`, `src/ai/fallback.js`, `src/ai/dialogue.js` — free or
-near-free (no new infra), verifiable in single-player.
+Goal: make houseguest dialogue and the jury feel genuinely human and grounded, plus a small UX
+gap. Items are prompt/logic work in `src/ai/*` (free, verifiable in single-player) plus one HUD fix.
+
+### 4.5.0 — Exit-to-menu (quick UX)
+- **Problem:** no in-game way to quit; player must close the tab/app.
+- **Fix:** a HUD menu button (☰) → "Exit to Title". Single-player: auto-save already persists every
+  phase, so exiting drops to the menu and "Continue Season" resumes; also offer quit-to-new-season.
+  Online: becomes "Leave Room" (disconnect → AI takes over the seat via Phase 4; reclaim on rejoin).
+- Size: small. Client-only (ships on push; online-leave uses existing server behavior). Cost: free.
 
 ### 4.5.1 — Fix group/house-meeting AI (BUG, highest priority)
 - **Problem:** group chats and house meetings silently fall back to canned template lines even
