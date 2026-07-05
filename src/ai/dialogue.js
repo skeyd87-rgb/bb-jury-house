@@ -1,7 +1,9 @@
-// Dialogue orchestrator: routes chat to Claude (if key set) or fallback,
-// validates the effect payload, applies it, and maintains threads/summaries.
+// Dialogue orchestrator: routes chat to Claude (via the app's server-hosted
+// key) or the offline fallback engine, validates the effect payload, applies
+// it, and maintains threads/summaries.
 
-import { hasApiKey, askClaudeJson } from './claude.js';
+import { askClaudeJson } from './claude.js';
+import { setAiStatus } from './status.js';
 import {
   buildChatSystemPrompt,
   buildThreadMessages,
@@ -66,17 +68,15 @@ export async function npcChat(g, npcId, playerMsg) {
   const npcIds = g.houseguests.map((h) => h.id);
   let result;
   try {
-    // Tries the local key first (if any), then the app's shared server-routed
-    // key — so play works without ever typing a key, per Phase 4.5.5.
     result = await askClaudeJson({
       system: buildChatSystemPrompt(g, npcId),
       messages: buildThreadMessages(g, npcId, playerMsg),
       maxTokens: 900,
     });
+    setAiStatus(true);
   } catch (err) {
-    if (hasApiKey()) console.warn('Claude chat failed, using fallback:', err);
+    setAiStatus(false);
     result = fallbackChat(g, npcId, playerMsg);
-    result._fellBack = hasApiKey(); // only warn when the player expected their own key to work
   }
 
   const reply = String(result.reply || '...').slice(0, 600);
@@ -96,7 +96,7 @@ export async function npcChat(g, npcId, playerMsg) {
   }
   g.chatTurnsThisPhase++;
 
-  return { reply, effects, fellBack: !!result._fellBack };
+  return { reply, effects };
 }
 
 // NPC approached the player — they speak first.
@@ -108,9 +108,9 @@ export async function npcOpener(g, npcId, reason) {
       messages: [{ role: 'user', content: '(The player turns to you as you walk over.)' }],
       maxTokens: 400,
     });
-    if (r.reply) reply = String(r.reply).slice(0, 500);
+    if (r.reply) { reply = String(r.reply).slice(0, 500); setAiStatus(true); }
   } catch (err) {
-    if (hasApiKey()) console.warn('Opener fallback:', err);
+    setAiStatus(false);
   }
   if (!reply) reply = fallbackOpener(g, npcId, reason);
   if (!g.threads[npcId]) g.threads[npcId] = [];
@@ -136,12 +136,13 @@ export async function groupChat(g, memberIds, playerMsg, history) {
       maxTokens: Math.min(3000, 700 + memberIds.length * 300),
     });
   } catch (err) {
-    if (hasApiKey()) console.warn('Group chat fallback:', err);
+    // fall through
   }
-  let fellBack = false;
   if (!result || !Array.isArray(result.replies)) {
+    setAiStatus(false);
     result = fallbackGroupChat(g, memberIds, playerMsg);
-    fellBack = hasApiKey(); // only flag when the player expected their own key to work
+  } else {
+    setAiStatus(true);
   }
 
   const replies = result.replies
@@ -181,7 +182,7 @@ export async function groupChat(g, memberIds, playerMsg, history) {
         }
       : null;
 
-  return { replies, proposal, promiseMade: result.promiseMade || null, fellBack };
+  return { replies, proposal, promiseMade: result.promiseMade || null };
 }
 
 // Post-game strategy diagnostic.
@@ -193,9 +194,9 @@ export async function postGameAnalysis(g, stats) {
       maxTokens: 800,
       temperature: 0.9,
     });
-    if (r.analysis) return String(r.analysis).slice(0, 3000);
+    if (r.analysis) { setAiStatus(true); return String(r.analysis).slice(0, 3000); }
   } catch (err) {
-    if (hasApiKey()) console.warn('Analysis fallback:', err);
+    setAiStatus(false);
   }
   return fallbackAnalysis(stats);
 }
@@ -209,8 +210,9 @@ export async function diaryChat(g, playerMsg) {
       content: m.who === 'you' ? m.text : JSON.stringify({ reply: m.text }),
     }));
     result = await askClaudeJson({ system: buildDiarySystemPrompt(g), messages: msgs, maxTokens: 300 });
+    setAiStatus(true);
   } catch (err) {
-    if (hasApiKey()) console.warn('Diary fallback:', err);
+    setAiStatus(false);
     result = fallbackDiary(g);
   }
   const reply = String(result.reply || '...').slice(0, 400);
@@ -226,9 +228,9 @@ export async function npcSpeech(g, npcId, kind, extra = {}) {
       messages: [{ role: 'user', content: 'Deliver it now.' }],
       maxTokens: 250,
     });
-    if (r.reply) return String(r.reply).slice(0, 400);
+    if (r.reply) { setAiStatus(true); return String(r.reply).slice(0, 400); }
   } catch (err) {
-    if (hasApiKey()) console.warn('Speech fallback:', err);
+    setAiStatus(false);
   }
   return fallbackSpeech(g, npcId, kind, extra).reply;
 }
@@ -240,9 +242,9 @@ export async function jurorQuestion(g, jurorId, finalists) {
       messages: [{ role: 'user', content: 'Ask your questions now.' }],
       maxTokens: 600,
     });
-    if (r.questionForF1 && r.questionForF2) return r;
+    if (r.questionForF1 && r.questionForF2) { setAiStatus(true); return r; }
   } catch (err) {
-    if (hasApiKey()) console.warn('Juror question fallback:', err);
+    setAiStatus(false);
   }
   return fallbackJurorQuestion(g, jurorId, finalists);
 }
@@ -254,9 +256,9 @@ export async function opponentJuryAnswer(g, opponentId, jurorId, question) {
       messages: [{ role: 'user', content: 'Answer the juror now.' }],
       maxTokens: 300,
     });
-    if (r.reply) return String(r.reply).slice(0, 500);
+    if (r.reply) { setAiStatus(true); return String(r.reply).slice(0, 500); }
   } catch (err) {
-    if (hasApiKey()) console.warn('Opponent answer fallback:', err);
+    setAiStatus(false);
   }
   return "I played my heart out, I owned my choices, and I'm asking for your respect, not your forgiveness.";
 }
@@ -270,10 +272,11 @@ export async function jurorVote(g, jurorId, finalists, qa) {
       temperature: 1.0,
     });
     if (r.vote && finalists.includes(r.vote)) {
+      setAiStatus(true);
       return { vote: r.vote, reasoning: String(r.reasoning || '').slice(0, 300) };
     }
   } catch (err) {
-    if (hasApiKey()) console.warn('Juror vote fallback:', err);
+    setAiStatus(false);
   }
   const fb = fallbackJurorVote(g, jurorId, finalists, qa);
   return { vote: fb.vote, reasoning: fb.reasoning };

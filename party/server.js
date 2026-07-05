@@ -486,7 +486,7 @@ export class Room extends Server {
     const waitingOn = [];
     for (const [fid, q] of [[f1, qF1], [f2, qF2]]) {
       if (this.isActiveHuman(fid)) waitingOn.push(this.humanFor(fid));
-      else answers[fid] = await serverOpponentAnswer(g, fid, juror, q, this.effectiveApiKey);
+      else answers[fid] = (await serverOpponentAnswer(g, fid, juror, q, this.effectiveApiKey)).reply;
     }
     this.turn = {
       kind: 'jury_answer', juror, jurorName: nameOf(g, juror), finalists,
@@ -666,7 +666,7 @@ export class Room extends Server {
       }
       case 'jury_answer': {
         for (const fid of t.finalists) {
-          if (t.answers[fid] == null) t.answers[fid] = await serverOpponentAnswer(g, fid, t.juror, t.questions[fid], this.effectiveApiKey);
+          if (t.answers[fid] == null) t.answers[fid] = (await serverOpponentAnswer(g, fid, t.juror, t.questions[fid], this.effectiveApiKey)).reply;
         }
         t.waitingOn = [];
         return this.resolveJurorAnswer();
@@ -706,7 +706,7 @@ export class Room extends Server {
       return this.forceResolveTurn();
     }
     if (t.kind === 'jury_answer' && t.finalists.includes(engineId) && t.answers[engineId] == null) {
-      t.answers[engineId] = await serverOpponentAnswer(g, engineId, t.juror, t.questions[engineId], this.effectiveApiKey);
+      t.answers[engineId] = (await serverOpponentAnswer(g, engineId, t.juror, t.questions[engineId], this.effectiveApiKey)).reply;
       t.waitingOn = t.waitingOn.filter((p) => p !== this.humanFor(engineId));
       if (t.waitingOn.length === 0) return this.resolveJurorAnswer();
       return this.commit();
@@ -795,7 +795,7 @@ export class Room extends Server {
     try {
       result = await serverNpcChat(g, targetId, text, chatterId, thread, this.effectiveApiKey);
     } catch {
-      result = fallbackChat(g, targetId, text, chatterId);
+      result = { ...fallbackChat(g, targetId, text, chatterId), usedAi: false };
     }
     const reply = String(result.reply || '…').slice(0, 600);
     const fx = this.sanitizeChatEffects(result.effects);
@@ -809,7 +809,7 @@ export class Room extends Server {
     await this.saveGame();
     this.broadcastGame(); // in case effects touched alliances/promises (personalized panels)
     connection.send(JSON.stringify({
-      type: 'chatReply', npcId: targetId, text: reply,
+      type: 'chatReply', npcId: targetId, text: reply, usedAi: !!result.usedAi,
       note: fx.promiseMade ? `📋 Promise recorded: "${fx.promiseMade.text}"`
         : (fx.allianceProposal?.accepted || fx.allianceSignal === 'accept') ? `🤝 ${nameOf(g, targetId)} is in.`
         : fx.suspicionOfLie ? `👀 ${nameOf(g, targetId)} didn't seem to buy that…` : null,
@@ -876,7 +876,7 @@ export class Room extends Server {
         whisperReply = String(r.reply || '…').slice(0, 400);
         const fx = this.sanitizeChatEffects(r.effects);
         applyChatEffects(g, targetId, secret, fx, senderId);
-        for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: targetId, name: nameOf(g, targetId), text: `🤫 ${whisperReply}` });
+        for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: targetId, name: nameOf(g, targetId), text: `🤫 ${whisperReply}`, usedAi: !!r.usedAi });
       }
       // Everyone else clocks the whispering.
       for (const id of grp.members) {
@@ -909,7 +909,7 @@ export class Room extends Server {
     for (const r of replies) {
       const reply = String(r.reply).slice(0, 400);
       grp.log.push({ who: 'them', id: r.id, text: reply });
-      for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: r.id, name: nameOf(g, r.id), text: reply });
+      for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: r.id, name: nameOf(g, r.id), text: reply, usedAi: !!result.usedAi });
     }
     for (const id of aiMembers) {
       const raw = (result.effects && result.effects[id]) || {};
@@ -1002,16 +1002,17 @@ export class Room extends Server {
     if (!g.mpDiary) g.mpDiary = {};
     const log = g.mpDiary[engineId] || (g.mpDiary[engineId] = []);
     log.push({ who: 'you', text: String(text).slice(0, 400) });
-    let reply;
+    let reply, usedAi;
     try {
-      reply = await serverDiaryChat(g, engineId, log, this.effectiveApiKey);
+      ({ reply, usedAi } = await serverDiaryChat(g, engineId, log, this.effectiveApiKey));
     } catch {
       reply = fallbackDiary(g).reply;
+      usedAi = false;
     }
     log.push({ who: 'them', text: reply });
     if (log.length > 30) g.mpDiary[engineId] = log.slice(-30);
     await this.saveGame();
-    this.sendToPid(pid, { type: 'diaryReply', text: reply });
+    this.sendToPid(pid, { type: 'diaryReply', text: reply, usedAi });
   }
 
   async persist() {

@@ -1,14 +1,10 @@
-// Claude API client (direct-from-browser) with an offline fallback engine.
-// The engine never trusts the model with game state — replies come back as
-// JSON { reply, effects } and social.js clamps/validates every effect.
+// Claude API client, routed through the app's own Worker (which holds the
+// single shared ANTHROPIC_API_KEY secret — see party/server.js's /api/chat).
+// No key is ever entered or stored in the browser. The engine never trusts
+// the model with game state — replies come back as JSON { reply, effects }
+// and social.js clamps/validates every effect.
 
-const KEY_STORAGE = 'bbjury.apikey';
-const MODEL = 'claude-sonnet-5';
-const API_URL = 'https://api.anthropic.com/v1/messages';
-
-// Same deployed Worker multiplayer uses (see src/net/room.js) — Phase 4.5.5
-// routes single-player through it too, so no device ever has to enter a key
-// once the operator sets the ANTHROPIC_API_KEY secret on the Worker.
+// Same deployed Worker multiplayer uses (see src/net/room.js).
 // Lazy: this module is also imported (for extractJson) by party/ai.js, which
 // runs inside the Worker where `location` doesn't exist — must not touch it
 // at module load time.
@@ -18,46 +14,9 @@ function getServerHost() {
     : 'https://bb-jury-house.skeyd87.workers.dev';
 }
 
-export function getApiKey() {
-  return localStorage.getItem(KEY_STORAGE) || '';
-}
-export function setApiKey(k) {
-  if (k) localStorage.setItem(KEY_STORAGE, k.trim());
-  else localStorage.removeItem(KEY_STORAGE);
-}
-export function hasApiKey() {
-  return !!getApiKey();
-}
-
 export async function askClaude({ system, messages, maxTokens = 700, temperature = 1.0 }) {
-  const key = getApiKey();
-  if (key) {
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: maxTokens,
-        temperature,
-        system,
-        messages,
-      }),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`Claude API ${res.status}: ${body.slice(0, 300)}`);
-    }
-    const data = await res.json();
-    return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-  }
-
-  // No local key — try the app's own server-hosted key. If the operator
-  // hasn't configured one yet, this 503s and we fall back like always.
+  // If the operator hasn't set the server secret yet, this 503s and we fall
+  // back to the built-in offline engine, same as always.
   const res = await fetch(`${getServerHost()}/api/chat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

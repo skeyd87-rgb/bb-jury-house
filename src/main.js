@@ -19,7 +19,7 @@ import {
   npcChat, diaryChat, npcSpeech, jurorQuestion, opponentJuryAnswer, jurorVote, npcOpener,
   groupChat, postGameAnalysis,
 } from './ai/dialogue.js';
-import { getApiKey, setApiKey } from './ai/claude.js';
+import { onAiStatusChange, setAiStatus } from './ai/status.js';
 import {
   el, renderHud, showToast, clearToast, openChatPanel, closeChatPanel,
   cinematic, cinematicWait, pickHouseguests, cinematicTextInput, confetti, titleScreen,
@@ -28,6 +28,18 @@ import {
 import { setMood, sting, setMusicEnabled, stopMusic } from './audio/music.js';
 import { speak, stopSpeaking, isVoiceOn, setVoiceOn, voiceSupported } from './audio/voice.js';
 import { buildSeasonStats, archiveSeason, loadArchivedSeason, showStatsPage } from './ui/stats.js';
+
+// ---------- AI status indicator (tiny, unobtrusive) ----------
+// A small dot fixed outside the HUD so frequent HUD rebuilds never wipe it.
+const aiDot = document.createElement('div');
+aiDot.id = 'ai-status-dot';
+aiDot.title = 'Waiting for the first AI reply…';
+document.body.append(aiDot);
+onAiStatusChange((status) => {
+  aiDot.classList.toggle('ai-on', status === 'ai');
+  aiDot.classList.toggle('ai-off', status === 'offline');
+  aiDot.title = status === 'ai' ? 'Claude AI active' : status === 'offline' ? 'Offline mode (built-in dialogue engine)' : 'Waiting for the first AI reply…';
+});
 
 // ---------- Boot ----------
 
@@ -43,10 +55,8 @@ let approachTimer = null;
 function showTitle() {
   titleScreen({
     hasSave: !!loadGame(),
-    savedKey: getApiKey(),
     archivedStats: loadArchivedSeason(),
     onShowStats: () => showStatsPage(loadArchivedSeason()),
-    onSaveKey: (k) => setApiKey(k),
     onNew: (name) => {
       clearSave();
       g = newGame(name);
@@ -117,6 +127,9 @@ function startOnlineSeason(game) {
   wireReconnectHandling();
   // Live position updates from other connected humans.
   room.onPos = (id, x, z, rotY) => world.setNetTarget(id, x, z, rotY);
+  // The server reports whether each reply was actually AI-generated or the
+  // offline fallback — feeds the same tiny indicator single-player uses.
+  room.onAiStatus = (usedAi) => setAiStatus(usedAi);
   handleOnlineTurn(game);
 }
 
@@ -873,8 +886,7 @@ function openNpcChat(id, opener = null, approachReason = null) {
     onSend: async (text) => {
       // Who's in earshot BEFORE the exchange (positions are frozen during chat).
       const listeners = world.nearbyListeners(id, 6);
-      const { reply, effects, fellBack } = await npcChat(g, id, text);
-      if (fellBack) panel.addSystemMsg('⚠️ (offline reply — the AI call failed, using the built-in engine)');
+      const { reply, effects } = await npcChat(g, id, text);
       if (effects.promiseMade) panel.addSystemMsg(`📋 Promise recorded: "${effects.promiseMade.text}"`);
       if (effects.allianceSignal === 'accept') panel.addSystemMsg(`🤝 ${hg.name} is in. Check your alliances.`);
       if (effects.suspicionOfLie) panel.addSystemMsg(`👀 ${hg.name} didn't seem to buy that...`);
@@ -1117,8 +1129,7 @@ async function groupChatFlow(presetIds = null) {
       }
 
       history.push({ who: 'you', text });
-      const { replies, proposal, promiseMade, fellBack } = await groupChat(g, picked, text, history);
-      if (fellBack) panel.addSystemMsg('⚠️ (offline replies — the AI call failed, using the built-in engine)');
+      const { replies, proposal, promiseMade } = await groupChat(g, picked, text, history);
       for (const r of replies) history.push({ who: 'them', id: r.id, text: r.reply });
       if (promiseMade) panel.addSystemMsg(`📋 Everyone here heard that promise: "${promiseMade.text}"`);
       if (proposal) {

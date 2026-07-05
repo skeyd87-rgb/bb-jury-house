@@ -55,6 +55,7 @@ export class Room {
     this.onAllianceResult = null; // (payload) => {}
     this.onAllianceLeft = null; // (payload) => {}
     this.onPos = null; // (engineId, x, z, rotY) => {}
+    this.onAiStatus = null; // (usedAi: bool) => {} — fires on any server response carrying an AI-vs-fallback flag
     this.lastState = null;
     this.lastGame = null;
     this._chatWaiters = {}; // npcId -> resolve fn
@@ -78,6 +79,7 @@ export class Room {
       } catch {
         return;
       }
+      if (typeof msg.usedAi === 'boolean') this.onAiStatus && this.onAiStatus(msg.usedAi);
       if (msg.type === 'state') {
         this.lastState = msg.state;
         this.onState && this.onState(msg.state);
@@ -153,10 +155,9 @@ export class Room {
   setName(name) { this.send('setName', { name }); }
   setSettings(phaseSeconds) { this.send('setSettings', { phaseSeconds }); }
   startSeason() {
-    // The host's Anthropic key (if any) powers server-side houseguest AI. It's
-    // stored server-side only, never broadcast to other players.
-    const apiKey = localStorage.getItem('bbjury.apikey') || '';
-    this.send('startSeason', { clientTime: Date.now(), apiKey });
+    // AI is powered server-side by the app's own shared key — see
+    // party/server.js's effectiveApiKey getter.
+    this.send('startSeason', { clientTime: Date.now() });
   }
 
   isHost() {

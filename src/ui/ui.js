@@ -496,7 +496,7 @@ export function confetti() {
 
 // ---------- Title screen ----------
 
-export function titleScreen({ hasSave, onNew, onContinue, savedKey, onSaveKey, archivedStats, onShowStats, onOnline }) {
+export function titleScreen({ hasSave, onNew, onContinue, archivedStats, onShowStats, onOnline }) {
   const wrap = el('div', 'title-screen');
   wrap.id = 'title-screen';
   const card = el('div', 'title-card');
@@ -510,17 +510,11 @@ export function titleScreen({ hasSave, onNew, onContinue, savedKey, onSaveKey, a
   nameInput.value = 'Sam';
   card.append(nameInput);
 
-  const keyInput = el('input');
-  keyInput.type = 'password';
-  keyInput.placeholder = 'Anthropic API key (optional, sk-ant-...)';
-  keyInput.value = savedKey || '';
-  card.append(keyInput);
-  card.append(el('div', 'keynote', 'Houseguests are played by Claude — real conversations, real memory, real jury speeches.<br>Leave this blank to use the app\'s shared AI automatically; paste your own key only if you want to use your own Anthropic billing. Either way, if AI is ever unreachable, a built-in dialogue engine steps in. Your key (if you enter one) stays in this browser only.'));
+  card.append(el('div', 'keynote', 'Houseguests are played by Claude — real conversations, real memory, real jury speeches. If AI is ever unreachable, a built-in dialogue engine steps in.'));
 
   const row = el('div', 'cine-actions');
   const start = el('button', 'bb gold', '● New Season');
   start.onclick = () => {
-    onSaveKey(keyInput.value.trim());
     wrap.remove();
     onNew(nameInput.value.trim() || 'Sam');
   };
@@ -528,7 +522,6 @@ export function titleScreen({ hasSave, onNew, onContinue, savedKey, onSaveKey, a
   if (hasSave) {
     const cont = el('button', 'bb primary', '▶ Continue Season');
     cont.onclick = () => {
-      onSaveKey(keyInput.value.trim());
       wrap.remove();
       onContinue();
     };
