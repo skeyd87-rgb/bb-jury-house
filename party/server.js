@@ -48,12 +48,18 @@ export class Room extends Server {
     await this.ctx.storage.put('turn', this.turn);
   }
 
-  // Is a houseguest human-controlled (and that human currently connected)?
+  // Is a houseguest human-controlled?
   isHuman(engineId) {
     return !!(this.state.humanSeats && this.state.humanSeats[engineId]);
   }
   humanFor(engineId) {
     return this.state.humanSeats?.[engineId] || null;
+  }
+  // Human AND currently online — only these are prompted to act. A disconnected
+  // human is played by AI until they reconnect (drop-in/out).
+  isActiveHuman(engineId) {
+    const pid = this.humanFor(engineId);
+    return !!(pid && this.state.players[pid]?.online);
   }
 
   freshLobby() {
@@ -124,8 +130,9 @@ export class Room extends Server {
   // act (comp scores, noms, veto, votes); AI houseguests are resolved via the
   // shared engine. `this.turn` tells clients what (if anything) they must do.
 
+  // Player ids for the ONLINE humans among these houseguests (who must act).
   humanPlayersAmong(ids) {
-    return ids.filter((id) => this.isHuman(id)).map((id) => this.humanFor(id));
+    return ids.filter((id) => this.isActiveHuman(id)).map((id) => this.humanFor(id));
   }
 
   async setTurn(turn) {
@@ -167,7 +174,7 @@ export class Room extends Server {
     const g = this.game;
     const compType = randomCompType();
     const scores = {};
-    for (const id of players) if (!this.isHuman(id)) scores[id] = Math.round(npcCompScore(g, id));
+    for (const id of players) if (!this.isActiveHuman(id)) scores[id] = Math.round(npcCompScore(g, id));
     const waitingOn = this.humanPlayersAmong(players);
     this.turn = { kind: 'comp', comp, compType, players, scores, waitingOn };
     if (waitingOn.length === 0) return this.resolveComp();
@@ -208,7 +215,7 @@ export class Room extends Server {
     const g = this.game;
     g.phase = 'nominations';
     const hoh = g.hoh;
-    if (this.isHuman(hoh)) {
+    if (this.isActiveHuman(hoh)) {
       await this.setTurn({ kind: 'nominate', actor: hoh, actorName: nameOf(g, hoh), waitingOn: [this.humanFor(hoh)] });
     } else {
       const noms = decideNominations(g, hoh);
@@ -232,7 +239,7 @@ export class Room extends Server {
     const g = this.game;
     g.phase = 'veto_ceremony';
     const holder = g.vetoHolder;
-    if (this.isHuman(holder)) {
+    if (this.isActiveHuman(holder)) {
       await this.setTurn({ kind: 'veto_decision', actor: holder, actorName: nameOf(g, holder), nominees: g.nominees.slice(), names: g.nominees.map((n) => nameOf(g, n)), isHoh: holder === g.hoh });
     } else {
       const d = decideVetoUse(g, holder);
@@ -263,7 +270,7 @@ export class Room extends Server {
 
   async enterReplacement(savedId, holder) {
     const g = this.game;
-    if (this.isHuman(g.hoh)) {
+    if (this.isActiveHuman(g.hoh)) {
       await this.setTurn({ kind: 'replacement', actor: g.hoh, actorName: nameOf(g, g.hoh), savedId, savedName: nameOf(g, savedId) });
     } else {
       const repl = decideReplacement(g, g.hoh, [...g.nominees, savedId, holder]);
@@ -288,7 +295,7 @@ export class Room extends Server {
     const [n1, n2] = g.nominees;
     const voters = activeIds(g).filter((id) => id !== g.hoh && !g.nominees.includes(id));
     const votes = {};
-    for (const v of voters) if (!this.isHuman(v)) votes[v] = evictionDesire(g, v, n1, n2) >= 0 ? n1 : n2;
+    for (const v of voters) if (!this.isActiveHuman(v)) votes[v] = evictionDesire(g, v, n1, n2) >= 0 ? n1 : n2;
     const waitingOn = this.humanPlayersAmong(voters);
     this.turn = { kind: 'vote', nominees: [n1, n2], names: [nameOf(g, n1), nameOf(g, n2)], voters, votes, waitingOn };
     if (waitingOn.length === 0) return this.resolveEviction();
@@ -359,7 +366,7 @@ export class Room extends Server {
   async enterFinalCut(finalHoh) {
     const g = this.game;
     const others = activeIds(g).filter((id) => id !== finalHoh);
-    if (this.isHuman(finalHoh)) {
+    if (this.isActiveHuman(finalHoh)) {
       await this.setTurn({ kind: 'final_cut', actor: finalHoh, actorName: nameOf(g, finalHoh), others, names: others.map((o) => nameOf(g, o)) });
     } else {
       const cut = evictionDesire(g, finalHoh, others[0], others[1]) >= 0 ? others[0] : others[1];
@@ -409,11 +416,13 @@ export class Room extends Server {
 
   // Host (or the sole actor) advances a result/intro screen to the next phase.
   async advanceTurn(pid) {
-    const g = this.game;
+    if (pid !== this.state.hostPlayerId) return; // host drives result/intro pacing
+    return this.advanceResultTurn();
+  }
+
+  async advanceResultTurn() {
     const t = this.turn;
     if (!t) return;
-    const isHost = pid === this.state.hostPlayerId;
-    if (!isHost) return; // host drives result/intro pacing for now
     switch (t.kind) {
       case 'intro': return this.enterHohComp();
       case 'comp_result':
@@ -427,6 +436,94 @@ export class Room extends Server {
       case 'final3_intro': return this.enterFinalHoh();
       case 'final_cut_result': return this.enterFinale();
       default: return;
+    }
+  }
+
+  // ---- Drop-in/out + timers (Phase 4) --------------------------------------
+  // AI covers absent humans so the season never stalls.
+
+  // Fill ALL outstanding human actions in the current turn with AI decisions
+  // and resolve it. Used by the host "skip" button and the phase timer.
+  async forceResolveTurn() {
+    const g = this.game;
+    const t = this.turn;
+    if (!t) return;
+    switch (t.kind) {
+      case 'comp':
+        for (const id of t.players) if (t.scores[id] == null) t.scores[id] = Math.round(npcCompScore(g, id));
+        t.waitingOn = [];
+        return this.resolveComp();
+      case 'nominate': {
+        const noms = decideNominations(g, g.hoh);
+        applyNominations(g, g.hoh, noms);
+        return this.setTurn({ kind: 'noms_result', hoh: g.hoh, nominees: noms.slice(), names: noms.map((n) => nameOf(g, n)) });
+      }
+      case 'veto_decision': {
+        const d = decideVetoUse(g, g.vetoHolder);
+        if (d.use) { applyVetoSave(g, g.vetoHolder, d.savedId); return this.enterReplacement(d.savedId, g.vetoHolder); }
+        applyVeto(g, g.vetoHolder, false);
+        return this.setTurn({ kind: 'veto_result', used: false, holder: g.vetoHolder });
+      }
+      case 'replacement': {
+        const repl = decideReplacement(g, g.hoh, [...g.nominees, t.savedId, g.vetoHolder]);
+        applyReplacement(g, repl);
+        return this.setTurn({ kind: 'veto_result', used: true, savedId: t.savedId, savedName: t.savedName, replacement: repl, replacementName: nameOf(g, repl), holder: g.vetoHolder });
+      }
+      case 'vote':
+        for (const v of t.voters) if (t.votes[v] == null) t.votes[v] = evictionDesire(g, v, t.nominees[0], t.nominees[1]) >= 0 ? t.nominees[0] : t.nominees[1];
+        t.waitingOn = [];
+        return this.resolveEviction();
+      case 'final_cut': {
+        const cut = evictionDesire(g, t.actor, t.others[0], t.others[1]) >= 0 ? t.others[0] : t.others[1];
+        return this.doFinalCut(t.actor, cut);
+      }
+      default:
+        return this.advanceResultTurn(); // result/intro screens just advance
+    }
+  }
+
+  // A specific disconnected houseguest's pending action is filled by AI.
+  async coverDisconnected(engineId) {
+    const g = this.game;
+    const t = this.turn;
+    if (!t) return;
+    if (t.kind === 'comp' && t.players.includes(engineId) && t.scores[engineId] == null) {
+      t.scores[engineId] = Math.round(npcCompScore(g, engineId));
+      t.waitingOn = t.waitingOn.filter((p) => p !== this.humanFor(engineId));
+      if (t.waitingOn.length === 0) return this.resolveComp();
+      return this.commit();
+    }
+    if (t.kind === 'vote' && t.voters.includes(engineId) && t.votes[engineId] == null) {
+      t.votes[engineId] = evictionDesire(g, engineId, t.nominees[0], t.nominees[1]) >= 0 ? t.nominees[0] : t.nominees[1];
+      t.waitingOn = t.waitingOn.filter((p) => p !== this.humanFor(engineId));
+      if (t.waitingOn.length === 0) return this.resolveEviction();
+      return this.commit();
+    }
+    // Single-actor turns: if the actor left, AI decides.
+    if (['nominate', 'veto_decision', 'replacement', 'final_cut'].includes(t.kind) && t.actor === engineId) {
+      return this.forceResolveTurn();
+    }
+  }
+
+  // Duration (seconds) before the phase timer auto-covers absent players.
+  turnTimerSeconds() {
+    const t = this.turn;
+    if (!t) return 0;
+    if (['comp', 'nominate', 'veto_decision', 'replacement', 'vote', 'final_cut'].includes(t.kind)) {
+      return this.state.settings.phaseSeconds || 1200;
+    }
+    return 180; // result/intro screens auto-advance if the host is away
+  }
+
+  scheduleTurnTimer() {
+    const secs = this.turnTimerSeconds();
+    if (secs > 0) this.ctx.storage.setAlarm(Date.now() + secs * 1000);
+  }
+
+  async alarm() {
+    // Timer fired: cover any absent humans / advance a stalled screen.
+    if (this.state?.phase === 'playing' && this.turn) {
+      await this.forceResolveTurn();
     }
   }
 
@@ -573,6 +670,12 @@ export class Room extends Server {
         if (pid) await this.submitFinalCut(pid, msg.cutId);
         return;
       }
+      case 'forceResolve': {
+        // Host override: AI-cover any players we're waiting on and move ahead.
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid === this.state.hostPlayerId && this.turn) await this.forceResolveTurn();
+        return;
+      }
 
       default:
         return;
@@ -601,14 +704,33 @@ export class Room extends Server {
     this.connToPlayer.delete(connection.id);
     if (!pid) return;
     const s = this.state;
+    // Player may have another live tab; only mark offline if no other conn.
+    const stillConnected = [...this.connToPlayer.values()].includes(pid);
+    if (stillConnected) return;
     if (s.players[pid]) s.players[pid].online = false;
+
     if (s.phase === 'lobby') {
       this.releaseSeatOf(pid); // in lobby, a drop frees the seat
-    } else if (s.players[pid]?.seatId && s.seats[s.players[pid].seatId]) {
-      s.seats[s.players[pid].seatId].connected = false; // in-game AI takeover is Phase 4
+      await this.persist();
+      this.broadcastState();
+      return;
+    }
+
+    // In-game: seat stays theirs (they can reclaim), but AI covers them now.
+    if (s.players[pid]?.seatId && s.seats[s.players[pid].seatId]) {
+      s.seats[s.players[pid].seatId].connected = false;
+    }
+    // Reassign host so result screens can still advance.
+    if (pid === s.hostPlayerId) {
+      const nextHost = Object.entries(s.players).find(([id, p]) => id !== pid && p.online && p.seatId);
+      if (nextHost) s.hostPlayerId = nextHost[0];
     }
     await this.persist();
     this.broadcastState();
+    // AI-cover their pending action so the game doesn't stall.
+    const engineId = this.engineForPlayer(pid);
+    if (engineId && this.turn) await this.coverDisconnected(engineId);
+    else this.broadcastGame();
   }
 }
 

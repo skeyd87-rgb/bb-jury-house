@@ -119,6 +119,9 @@ let compRunning = false;
 
 function closeOnlineOverlay() {
   if (onlineOverlay) { onlineOverlay.close(); onlineOverlay = null; }
+  // Also clear any stale picker/cinematic modals (e.g. if the turn advanced
+  // underneath us via a timer or host skip). Comps use .comp-box, not .cinematic.
+  if (!compRunning) document.querySelectorAll('.cinematic').forEach((e) => e.remove());
 }
 
 function iAmHost() {
@@ -196,7 +199,11 @@ function renderOnlineTurn(game, t) {
 
   const waitCard = (kicker, title, body) => {
     onlineOverlay = cinematic({ kicker, title, bodyHtml: body || '<p class="muted">Waiting on the house…</p>' });
-    onlineOverlay.setActions(host && isResultKind(t.kind) ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : []);
+    const acts = [];
+    if (host && isResultKind(t.kind)) acts.push({ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') });
+    // Host can AI-cover players we're stuck waiting on.
+    if (host && (t.waitingOn && t.waitingOn.length)) acts.push({ label: '⏩ Skip waiting (AI decides)', style: 'primary', onClick: () => room.send('forceResolve') });
+    onlineOverlay.setActions(acts);
   };
 
   switch (t.kind) {
