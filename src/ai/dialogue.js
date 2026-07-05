@@ -70,7 +70,7 @@ export async function npcChat(g, npcId, playerMsg) {
       result = await askClaudeJson({
         system: buildChatSystemPrompt(g, npcId),
         messages: buildThreadMessages(g, npcId, playerMsg),
-        maxTokens: 600,
+        maxTokens: 900,
       });
     } catch (err) {
       console.warn('Claude chat failed, using fallback:', err);
@@ -137,13 +137,18 @@ export async function groupChat(g, memberIds, playerMsg, history) {
       result = await askClaudeJson({
         system: buildGroupSystemPrompt(g, memberIds),
         messages: msgs,
-        maxTokens: 900,
+        // Scale with group size so big house meetings never truncate mid-JSON.
+        maxTokens: Math.min(3000, 700 + memberIds.length * 300),
       });
     } catch (err) {
       console.warn('Group chat fallback:', err);
     }
   }
-  if (!result || !Array.isArray(result.replies)) result = fallbackGroupChat(g, memberIds, playerMsg);
+  let fellBack = false;
+  if (!result || !Array.isArray(result.replies)) {
+    result = fallbackGroupChat(g, memberIds, playerMsg);
+    fellBack = hasApiKey(); // only flag when the player expected Claude
+  }
 
   const replies = result.replies
     .filter((r) => memberIds.includes(r.id) && r.reply)
@@ -182,7 +187,7 @@ export async function groupChat(g, memberIds, playerMsg, history) {
         }
       : null;
 
-  return { replies, proposal, promiseMade: result.promiseMade || null };
+  return { replies, proposal, promiseMade: result.promiseMade || null, fellBack };
 }
 
 // Post-game strategy diagnostic.
@@ -248,7 +253,7 @@ export async function jurorQuestion(g, jurorId, finalists) {
       const r = await askClaudeJson({
         system: buildJurorQuestionPrompt(g, jurorId, finalists),
         messages: [{ role: 'user', content: 'Ask your questions now.' }],
-        maxTokens: 350,
+        maxTokens: 600,
       });
       if (r.questionForPlayer && r.questionForOpponent) return r;
     } catch (err) {
@@ -280,7 +285,7 @@ export async function jurorVote(g, jurorId, finalists, qa) {
       const r = await askClaudeJson({
         system: buildJurorVotePrompt(g, jurorId, finalists, qa),
         messages: [{ role: 'user', content: 'Cast your vote now.' }],
-        maxTokens: 300,
+        maxTokens: 600,
         temperature: 1.0,
       });
       if (r.vote && finalists.includes(r.vote)) {

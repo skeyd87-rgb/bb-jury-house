@@ -32,7 +32,7 @@ export async function serverNpcChat(g, npcId, playerMsg, chatterId, thread, apiK
       g.threads[npcId] = thread;
       const messages = buildThreadMessages(g, npcId, playerMsg);
       g.threads[npcId] = saved;
-      const text = await callClaude(apiKey, system, messages, 600);
+      const text = await callClaude(apiKey, system, messages, 900);
       const json = extractJson(text);
       if (json && json.reply) return { reply: String(json.reply).slice(0, 600), effects: json.effects || {} };
     } catch (err) {

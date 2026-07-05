@@ -317,13 +317,25 @@ function jurorPersonality(jurorId) {
 
 export function fallbackJurorQuestion(g, jurorId, finalists) {
   const bitter = jurorPersonality(jurorId).bitterness > 55;
+  const mem = g.memory[jurorId];
+  // Ground the question in this juror's real history with each finalist.
+  const qFor = (fid, generic) => {
+    const broken = g.promises.find((p) => p.status === 'broken' && p.from === fid && p.to === jurorId);
+    if (broken) return `In week ${broken.week} you promised me ${broken.text ? `"${broken.text}"` : 'your loyalty'} — and then you went back on it. Why should my vote reward that?`;
+    const grudge = mem?.grudges.find((x) => x.againstId === fid);
+    if (grudge) return `I still remember week ${grudge.week}, when you ${grudge.reason}. Explain to me why that was a game move and not just who you are.`;
+    const kept = g.promises.find((p) => p.status === 'kept' && p.from === fid && p.to === jurorId);
+    if (kept) return `You actually kept your word to me${kept.text ? ` about "${kept.text}"` : ''}. Was that strategy, or would you have honored it even if it cost you the game?`;
+    return generic;
+  };
+  const opp = finalists.find((f) => f !== PLAYER_ID) || finalists[1];
   return {
-    questionForPlayer: bitter
+    questionForPlayer: qFor(finalists[0] === PLAYER_ID ? PLAYER_ID : finalists[0], bitter
       ? `You looked me in the eye and made promises. Why should my vote reward the way you played me?`
-      : `What was the single best move of your game, and why does it beat everything ${nameOf(g, finalists.find((f) => f !== PLAYER_ID) || finalists[1])} did?`,
-    questionForOpponent: bitter
+      : `What was the single best move of your game, and why does it beat everything ${nameOf(g, opp)} did?`),
+    questionForOpponent: qFor(opp, bitter
       ? `Everyone says you played a "quiet game." Convince me that wasn't just hiding.`
-      : `What move are you most proud of, and who did it hurt?`,
+      : `What move are you most proud of, and who did it hurt?`),
     toneNote: bitter ? 'bitter' : 'respectful',
   };
 }
@@ -340,9 +352,29 @@ export function fallbackJurorVote(g, jurorId, finalists, qa) {
   const s1 = score(r1, qa.f1Answer) + Math.random() * 12;
   const s2 = score(r2, qa.f2Answer) + Math.random() * 12;
   const vote = s1 >= s2 ? f1 : f2;
+  const loser = vote === f1 ? f2 : f1;
+
+  // Build a SPECIFIC reason from this juror's real history instead of a stub.
+  const mem = g.memory[jurorId];
+  const reasons = [];
+  const brokenByLoser = g.promises.find((p) => p.status === 'broken' && p.from === loser && p.to === jurorId);
+  if (brokenByLoser) reasons.push(`${nameOf(g, loser)} broke their word to me — "${brokenByLoser.text}" — and I don't reward that`);
+  const keptByWinner = g.promises.find((p) => p.status === 'kept' && p.from === vote && p.to === jurorId);
+  if (keptByWinner) reasons.push(`${nameOf(g, vote)} kept their promise to me${keptByWinner.text ? ` (${keptByWinner.text})` : ''}, and that means something`);
+  const grudgeVsLoser = mem?.grudges.find((x) => x.againstId === loser);
+  if (grudgeVsLoser) reasons.push(`I haven't forgotten that ${nameOf(g, loser)} ${grudgeVsLoser.reason} in week ${grudgeVsLoser.week}`);
+  const compWins = (g.compHistory || []).filter((c) => c.winner === vote).length;
+  if (compWins >= 2) reasons.push(`${nameOf(g, vote)} won ${compWins} competitions — they earned their seat`);
+  if (r1 !== r2 && Math.max(r1.bond, r2.bond) === (vote === f1 ? r1 : r2).bond && (vote === f1 ? r1 : r2).bond > 60) {
+    reasons.push(`${nameOf(g, vote)} was genuine with me all season`);
+  }
+  const detail = reasons.length
+    ? reasons.slice(0, 2).join('. ') + '.'
+    : `${nameOf(g, vote)} ran the stronger game from where I sat, and nothing ${nameOf(g, loser)} said tonight changed that.`;
+
   return {
     vote,
-    reasoning: `My vote is for ${nameOf(g, vote)}. They played the game that mattered to me.`,
+    reasoning: `My vote is for ${nameOf(g, vote)}. ${detail}`,
     answerQuality: { [f1]: Math.round(Math.min(10, s1 / 12)), [f2]: Math.round(Math.min(10, s2 / 12)) },
   };
 }

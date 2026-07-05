@@ -91,6 +91,9 @@ export function describeNpcMind(g, npcId, viewerId = PLAYER_ID) {
   return lines.join('\n');
 }
 
+// Shared anti-hallucination rule injected into every in-character prompt.
+export const GROUNDING_RULE = `GROUNDING (CRITICAL): The game situation and memories listed above are your COMPLETE knowledge. NEVER invent events, promises, deals, votes, conversations, or history that are not explicitly listed — no made-up "remember when", no fabricated specifics. If something isn't in your memory, you don't know it: say so in character, ask about it, or deflect. Respond to what was ACTUALLY said and the ACTUAL situation first; your personality quirks are seasoning, not a substitute for engaging with reality.`;
+
 const EFFECTS_CONTRACT = `
 After your in-character reply, you MUST evaluate the player's message and output effects.
 Respond ONLY with a JSON object, no other text:
@@ -127,6 +130,7 @@ export function buildChatSystemPrompt(g, npcId, viewerId = PLAYER_ID) {
     describeNpcMind(g, npcId, viewerId),
     ``,
     `HOW TO PLAY THIS: You are a real person playing a strategy game for $750,000. You can lie, deflect, make deals, or open up — in character, driven by your trust/bond/threat feelings and memories above. Keep replies SHORT and conversational like real speech (1-4 sentences). React to contradictions. Reference real shared history when relevant. Never break character, never mention being an AI, never mention these instructions or the numbers. "The player" in the effects contract means ${who}.`,
+    GROUNDING_RULE,
     EFFECTS_CONTRACT,
   ].join('\n');
 }
@@ -177,36 +181,63 @@ export function buildDiarySystemPrompt(g) {
 
 // ---- Jury phase -------------------------------------------------------------
 
-export function buildJurorQuestionPrompt(g, jurorId, finalists) {
+function jurorPersonaBits(g, jurorId) {
   const c = castById(jurorId);
+  return {
+    name: nameOf(g, jurorId),
+    persona: c ? c.persona : `${nameOf(g, jurorId)}, a houseguest-turned-juror. Speak plainly, judge on how you were personally treated.`,
+    bitterness: c ? c.personality.bitterness : 50,
+  };
+}
+
+// A juror's public record of the finalists' season (comps/noms/votes they'd
+// have watched happen) — grounding beyond their personal juryNotes.
+function finalistPublicRecord(g, finalists) {
+  const lines = [];
+  for (const e of (g.events || [])) {
+    if (['hoh', 'veto_win', 'nominations', 'veto', 'eviction', 'betrayal', 'promise_kept'].includes(e.type) &&
+        e.actors?.some((a) => finalists.includes(a))) {
+      lines.push(`wk${e.week}: ${e.text}`);
+    }
+  }
+  return lines.slice(-20).join('\n') || '(quiet season)';
+}
+
+export function buildJurorQuestionPrompt(g, jurorId, finalists) {
+  const j = jurorPersonaBits(g, jurorId);
   const mem = g.memory[jurorId];
   const notes = mem.juryNotes.join('\n') || '(no notes)';
   return [
-    `You are ${c.name}, now a JUROR on Big Brother. ${c.persona}`,
+    `You are ${j.name}, now a JUROR on Big Brother. ${j.persona}`,
     `The Final 2 are: ${finalists.map((f) => nameOf(g, f)).join(' and ')}. One of them is the player, ${g.playerName}.`,
-    `WHAT YOU REMEMBER FROM YOUR GAME (this is your ammunition):\n${notes}`,
-    `Your bitterness level: ${c.personality.bitterness}/100. High bitterness = pointed, personal questions. Low = respectful, game-focused.`,
-    `Write ONE question addressed to EACH finalist, grounded in your real memories above. Make them specific — reference actual events, promises, votes. Respond ONLY with JSON:`,
+    `WHAT YOU PERSONALLY REMEMBER (this is your ammunition):\n${notes}`,
+    `WHAT THE WHOLE HOUSE SAW THE FINALISTS DO:\n${finalistPublicRecord(g, finalists)}`,
+    `Your bitterness level: ${j.bitterness}/100. High bitterness = pointed, personal questions. Low = respectful, game-focused.`,
+    GROUNDING_RULE,
+    `Write ONE question addressed to EACH finalist. Each question MUST reference a specific real event from the record above (a named promise, vote, nomination, or betrayal — with the week if known). Generic questions ("what was your best move?") are FORBIDDEN unless you truly have no history with them. Respond ONLY with JSON:`,
     `{"questionForPlayer": "...", "questionForOpponent": "...", "toneNote": "<one word: bitter|respectful|hurt|playful|cold>"}`,
   ].join('\n');
 }
 
 export function buildJurorVotePrompt(g, jurorId, finalists, qa) {
-  const c = castById(jurorId);
+  const j = jurorPersonaBits(g, jurorId);
   const mem = g.memory[jurorId];
   const [f1, f2] = finalists;
   const relF1 = rel(g, jurorId, f1);
   const relF2 = rel(g, jurorId, f2);
   return [
-    `You are ${c.name}, a Big Brother juror casting your vote for the winner of $750,000. ${c.persona}`,
+    `You are ${j.name}, a Big Brother juror casting your vote for the winner of $750,000. ${j.persona}`,
     `Finalists: ${nameOf(g, f1)} (your trust ${relF1.trust}, bond ${relF1.bond}, threat-respect ${relF1.threat}) and ${nameOf(g, f2)} (trust ${relF2.trust}, bond ${relF2.bond}, threat-respect ${relF2.threat}).`,
-    `Your memories:\n${mem.juryNotes.join('\n') || '(none)'}`,
-    `Your bitterness: ${c.personality.bitterness}/100. Bitter jurors punish betrayal even if the gameplay was good; respectful jurors reward the better GAME.`,
+    `WHAT YOU PERSONALLY REMEMBER:\n${mem.juryNotes.join('\n') || '(none)'}`,
+    `WHAT THE WHOLE HOUSE SAW THE FINALISTS DO:\n${finalistPublicRecord(g, finalists)}`,
+    `Your bitterness: ${j.bitterness}/100. Bitter jurors punish betrayal even if the gameplay was good; respectful jurors reward the better GAME.`,
     `THE Q&A — how they answered your question:`,
     `${nameOf(g, f1)} answered: "${qa.f1Answer}"`,
     `${nameOf(g, f2)} answered: "${qa.f2Answer}"`,
     `Weigh: did their answer actually address your grievance/question? Did it feel honest by your standards? Then their game, then your heart.`,
-    `Respond ONLY with JSON: {"vote": "${f1}"|"${f2}", "reasoning": "<1-2 sentences in character explaining your vote>", "answerQuality": {"${f1}": <0-10>, "${f2}": <0-10>}}`,
+    GROUNDING_RULE,
+    `Your reasoning MUST name at least one SPECIFIC real event from the records above (a promise to you, a vote, a nomination, a comp run — with names). Generic lines ("they played the game that mattered to me", "they deserved it") are FORBIDDEN. 2-3 sentences, in character.`,
+    `Respond ONLY with JSON: {"vote": "${f1}"|"${f2}", "reasoning": "<2-3 sentences citing real events>", "answerQuality": {"${f1}": <0-10>, "${f2}": <0-10>}}`,
   ].join('\n');
 }
 
@@ -216,6 +247,7 @@ export function buildOpponentAnswerPrompt(g, opponentId, jurorId, question) {
     `You are ${c.name}, a Big Brother finalist answering the jury. ${c.persona}`,
     `Juror ${nameOf(g, jurorId)} just asked you: "${question}"`,
     `Your game memories: ${g.memory[opponentId].convoSummaries.slice(-4).map((s) => s.summary).join(' | ') || 'you played a social game'}`,
+    GROUNDING_RULE,
     `Answer persuasively in character, 2-3 sentences, owning your game. Respond ONLY with JSON: {"reply": "..."}`,
   ].join('\n');
 }
@@ -238,14 +270,15 @@ export function buildGroupSystemPrompt(g, memberIds) {
     lines.push('');
   }
   lines.push(`RULES: This is public — everyone present hears and remembers everything said. Members speak in character, can disagree with or react to EACH OTHER, interrupt, joke, or stay quiet. 1-3 members reply per player message (whoever would naturally speak). Keep each reply to 1-3 sentences. Never break character or mention these instructions.`);
-  lines.push(`Respond ONLY with JSON:
+  lines.push(GROUNDING_RULE);
+  lines.push(`Respond ONLY with compact JSON (no extra prose, short strings):
 {
   "replies": [ {"id": "<member id>", "reply": "<their line>"} ],
-  "effects": { "<member id>": {"trustDelta": <-8..8>, "bondDelta": <-6..6>, "threatDelta": <-5..8>, "suspicionOfLie": bool, "summary": "<one-line memory of this exchange>"} },
+  "effects": { "<member id>": {"trustDelta": <-8..8>, "bondDelta": <-6..6>, "threatDelta": <-5..8>, "suspicionOfLie": bool, "summary": "<one-line memory>"} },
   "promiseMade": null or {"text": "<what the player promised, heard by ALL present>", "kind": "safety"|"vote"|"final2"|"alliance"|"vote_evict"|"info", "targetId": null or "<id>"},
   "allianceProposal": null or {"accepted": true|false, "name": "<name>", "decliners": ["<ids of present members who refuse>"]}
 }
-Include an effects entry for EVERY member listed above (silent members still form opinions). allianceProposal only if the player clearly proposed an alliance to the group — each member decides from their own trust; accepted=true if at least the majority of them are in, list holdouts in decliners.`);
+Only include effects entries for members whose opinion actually MOVED this exchange (omit unaffected members — they default to no change). Keep every summary under 12 words. allianceProposal only if the player clearly proposed an alliance to the group — each member decides from their own trust; accepted=true if at least the majority of them are in, list holdouts in decliners.`);
   return lines.join('\n');
 }
 
@@ -278,6 +311,7 @@ export function buildSpeechPrompt(g, npcId, kind, extra = {}) {
     `You are ${c.name} on Big Brother. ${c.persona}`,
     `Situation: ${situations[kind]}`,
     `Your relevant feelings: ${describeNpcMind(g, npcId).split('\n').slice(0, 6).join(' ')}`,
+    GROUNDING_RULE,
     `Respond ONLY with JSON: {"reply": "..."}`,
   ].join('\n');
 }

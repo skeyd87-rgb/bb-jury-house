@@ -25,6 +25,7 @@ import {
   cinematic, cinematicWait, pickHouseguests, cinematicTextInput, confetti, titleScreen,
 } from './ui/ui.js';
 import { setMood, sting, setMusicEnabled, stopMusic } from './audio/music.js';
+import { speak, stopSpeaking, isVoiceOn, setVoiceOn, voiceSupported } from './audio/voice.js';
 import { buildSeasonStats, archiveSeason, loadArchivedSeason, showStatsPage } from './ui/stats.js';
 
 // ---------- Boot ----------
@@ -123,6 +124,7 @@ function openOnlineChat(targetId) {
     title: hg.name,
     subtitle: `${hg.job}${isHuman ? ' · 🧑 human' : ' · 🤖 AI'}${onlineGame.hoh === targetId ? ' · HoH 👑' : ''}${onlineGame.nominees?.includes(targetId) ? ' · Nominated 🎯' : ''}`,
     color: hg.color,
+    voice: { key: targetId, gender: hg.gender },
     thread: [],
     onSend: async (text) => {
       const { text: reply, note } = await room.sendChat(targetId, text);
@@ -175,6 +177,27 @@ function syncOnlineWorld(game) {
     st.innerHTML = `<span class="nom">On the block:</span> ${game.nominees.map((n) => nm(game, n)).join(' & ')}`;
     h.append(st);
   }
+  // Leave Room (drop-in/out: AI covers your seat; rejoin with the same code)
+  const btns = el('div', 'hud-buttons');
+  btns.style.left = 'auto';
+  btns.style.right = 'calc(12px + var(--safe-right))';
+  const leave = el('button', 'bb', '🚪 Leave');
+  leave.onclick = () => {
+    // Leaving must work even mid-ceremony (that's the point of drop-in/out) —
+    // clear any showing overlay first so this doesn't stack on top of it.
+    document.querySelectorAll('.cinematic').forEach((e) => e.remove());
+    const c = cinematic({
+      kicker: 'Step Away?',
+      title: 'Leave the room',
+      bodyHtml: `<p class="muted">The AI plays your houseguest while you're gone. Rejoin with code <b>${room?.code || ''}</b> to take back over.</p>`,
+    });
+    c.setActions([
+      { label: '🚪 Leave (AI covers me)', style: 'gold', onClick: () => { try { room.disconnect(); } catch {} location.reload(); } },
+      { label: 'Stay', style: 'primary', onClick: () => c.close() },
+    ]);
+  };
+  btns.append(leave);
+  h.append(btns);
 }
 
 function phaseLabelOnline(game) {
@@ -502,6 +525,7 @@ function refresh() {
     onGroupChat: () => groupChatFlow(),
     onHouseMeeting: () => groupChatFlow(activeNpcIds(g)),
     onLeaveAlliance: (id) => leaveAllianceFlow(id),
+    onExit: () => exitToTitleFlow(),
     onToggleMusic: () => {
       g.settings.musicOn = !g.settings.musicOn;
       setMusicEnabled(g.settings.musicOn);
@@ -550,11 +574,13 @@ function openNpcChat(id, opener = null, approachReason = null) {
     title: hg.name,
     subtitle: `${hg.job}${g.hoh === id ? ' · HoH 👑' : ''}${g.nominees.includes(id) ? ' · Nominated 🎯' : ''}${g.vetoHolder === id ? ' · Veto 🛡️' : ''}`,
     color: hg.color,
+    voice: { key: id, gender: hg.gender },
     thread: g.threads[id] || [],
     onSend: async (text) => {
       // Who's in earshot BEFORE the exchange (positions are frozen during chat).
       const listeners = world.nearbyListeners(id, 6);
-      const { reply, effects } = await npcChat(g, id, text);
+      const { reply, effects, fellBack } = await npcChat(g, id, text);
+      if (fellBack) panel.addSystemMsg('⚠️ (offline reply — the AI call failed, using the built-in engine)');
       if (effects.promiseMade) panel.addSystemMsg(`📋 Promise recorded: "${effects.promiseMade.text}"`);
       if (effects.allianceSignal === 'accept') panel.addSystemMsg(`🤝 ${hg.name} is in. Check your alliances.`);
       if (effects.suspicionOfLie) panel.addSystemMsg(`👀 ${hg.name} didn't seem to buy that...`);
@@ -764,6 +790,7 @@ async function groupChatFlow(presetIds = null) {
       ? 'Everyone. Everything on the record. No takebacks.'
       : 'All hear everything · /whisper <name> ... for a private aside',
     color: isHouseMeeting ? 0xf5c542 : 0x7c5cff,
+    voice: { lookupGender: (name) => g.houseguests.find((h) => h.name === name)?.gender || null },
     thread: [],
     onSend: async (text) => {
       // Whisper: /whisper <name> <message> — only that member truly hears it,
@@ -796,7 +823,8 @@ async function groupChatFlow(presetIds = null) {
       }
 
       history.push({ who: 'you', text });
-      const { replies, proposal, promiseMade } = await groupChat(g, picked, text, history);
+      const { replies, proposal, promiseMade, fellBack } = await groupChat(g, picked, text, history);
+      if (fellBack) panel.addSystemMsg('⚠️ (offline replies — the AI call failed, using the built-in engine)');
       for (const r of replies) history.push({ who: 'them', id: r.id, text: r.reply });
       if (promiseMade) panel.addSystemMsg(`📋 Everyone here heard that promise: "${promiseMade.text}"`);
       if (proposal) {
@@ -822,6 +850,25 @@ async function groupChatFlow(presetIds = null) {
       ? `You call everyone to the living room. ${picked.map((id) => nameOf(g, id)).join(', ')} gather around. The floor is yours.`
       : `You pull ${names} aside. They're all listening.`
   );
+}
+
+// ---------- Exit to title ----------
+
+function exitToTitleFlow() {
+  // Guard against stacking on top of a ceremony/intro cinematic that's showing
+  // even when `busy` isn't set (e.g. the week-intro screen awaiting a click).
+  if (busy || document.querySelector('.cinematic')) return;
+  closeChatPanel();
+  const c = cinematic({
+    kicker: 'Take a Break?',
+    title: 'Exit to the title screen',
+    bodyHtml: `<p class="muted">Your season auto-saves every phase — "Continue Season" picks up right here.</p>`,
+  });
+  c.setActions([
+    { label: '💾 Exit (season saved)', style: 'gold', onClick: () => { saveGame(g); location.reload(); } },
+    { label: '🗑️ Abandon season', style: 'danger', onClick: () => { clearSave(); location.reload(); } },
+    { label: 'Keep playing', style: 'primary', onClick: () => c.close() },
+  ]);
 }
 
 // ---------- Proactive approaches ----------
@@ -1363,7 +1410,9 @@ async function runFinale() {
 
   const qaByJuror = {};
   for (const j of jurors) {
+    const jHg = g.houseguests.find((h) => h.id === j);
     const q = await jurorQuestion(g, j, [PLAYER_ID, opp]);
+    speak(q.questionForPlayer, j, jHg?.gender);
     // Player answers their question
     const playerAnswer = await cinematicTextInput({
       kicker: `Juror: ${nameOf(g, j)} (${q.toneNote || 'measured'})`,
@@ -1372,8 +1421,10 @@ async function runFinale() {
       placeholder: 'Own your game. This answer decides a vote...',
       submitLabel: 'Deliver Answer',
     });
+    stopSpeaking();
     // Opponent answers theirs
     const oppAnswer = await opponentJuryAnswer(g, opp, j, q.questionForOpponent);
+    speak(q.questionForOpponent, j, jHg?.gender);
     await cinematicWait({
       kicker: `Juror: ${nameOf(g, j)}`,
       title: `${nameOf(g, j)} turns to ${nameOf(g, opp)}:`,
@@ -1381,9 +1432,12 @@ async function runFinale() {
       bodyHtml: `<p><b>${nameOf(g, opp)}:</b> "${oppAnswer}"</p>`,
       continueLabel: jurors.indexOf(j) === jurors.length - 1 ? 'The Jury Votes' : 'Next Juror',
     });
+    stopSpeaking();
+    speak(oppAnswer, opp);
     qaByJuror[j] = { f1Answer: playerAnswer, f2Answer: oppAnswer };
     saveGame(g);
   }
+  stopSpeaking();
 
   // Votes
   const votes = [];
@@ -1432,6 +1486,7 @@ function revealJuryVotes(votes, opp) {
         <div class="key-line">votes for <b class="key-vote">…</b></div></div>`;
       cards.append(card);
       cards.scrollTop = cards.scrollHeight;
+      speak(v.reasoning, v.juror, hg.gender);
 
       setTimeout(() => {
         card.querySelector('.key-vote').textContent = v.vote === PLAYER_ID ? 'YOU' : nameOf(g, v.vote);

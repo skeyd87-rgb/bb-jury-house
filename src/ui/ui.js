@@ -4,6 +4,7 @@
 import { nameOf, activeIds } from '../game/state.js';
 import { PLAYER_ID } from '../game/cast.js';
 import { phaseLabel } from '../game/season.js';
+import { isVoiceOn, setVoiceOn, voiceSupported, speak, stopSpeaking, dictationSupported, startDictation } from '../audio/voice.js';
 
 const hud = () => document.getElementById('hud');
 const overlayRoot = () => document.getElementById('overlay-root');
@@ -84,6 +85,18 @@ export function renderHud(g, handlers) {
   const music = el('button', 'bb', g.settings.musicOn ? '🔊 Music' : '🔇 Music');
   music.onclick = handlers.onToggleMusic;
   btns.append(music);
+  if (voiceSupported()) {
+    const vb = el('button', 'bb', isVoiceOn() ? '🗣️ Voice On' : '🤐 Voice Off');
+    vb.title = 'Houseguests speak their replies aloud';
+    vb.onclick = () => {
+      setVoiceOn(!isVoiceOn());
+      vb.textContent = isVoiceOn() ? '🗣️ Voice On' : '🤐 Voice Off';
+    };
+    btns.append(vb);
+  }
+  const exit = el('button', 'bb', '🚪 Exit');
+  exit.onclick = handlers.onExit;
+  btns.append(exit);
   h.append(btns);
 
   const isTouch = matchMedia('(pointer: coarse)').matches;
@@ -120,10 +133,17 @@ export function clearToast() {
 
 // ---------- Chat panel ----------
 
-export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend, onClose }) {
+export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend, onClose, voice }) {
   closeChatPanel();
   const panel = el('div', 'chat-panel');
   panel.id = 'chat-panel';
+  // voice: { key, gender } for 1-on-1, or { lookupGender(name) } for group chats
+  // where each reply names a different speaker.
+  const speakAs = (text, name) => {
+    if (!voiceSupported() || !isVoiceOn() || isDiary) return;
+    const gender = name && voice?.lookupGender ? voice.lookupGender(name) : voice?.gender || null;
+    speak(text, name || voice?.key || title, gender);
+  };
 
   const head = el('div', 'chat-head' + (isDiary ? ' diary' : ''));
   const av = el('div', 'chat-avatar');
@@ -133,9 +153,20 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
   names.append(el('div', 'who', title));
   names.append(el('div', 'role', subtitle));
   head.append(names);
+  // Voice toggle — houseguests speak their replies aloud
+  if (voiceSupported() && !isDiary) {
+    const vt = el('button', 'bb close', isVoiceOn() ? '🔊' : '🔈');
+    vt.title = 'Voice mode: houseguests speak replies aloud';
+    vt.onclick = () => {
+      setVoiceOn(!isVoiceOn());
+      vt.textContent = isVoiceOn() ? '🔊' : '🔈';
+      if (isVoiceOn()) speak('Voice on.', 'narrator');
+    };
+    head.append(vt);
+  }
   // Register onClose so it fires however the panel closes (✕, Esc, or a
   // programmatic closeChatPanel() from a phase advance / new conversation).
-  panel._onClose = onClose;
+  panel._onClose = () => { stopSpeaking(); onClose && onClose(); };
   const x = el('button', 'bb close', '✕');
   x.onclick = () => closeChatPanel();
   head.append(x);
@@ -149,6 +180,21 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
   const input = el('input');
   input.placeholder = isDiary ? 'Tell the Diary Room everything...' : 'Say something...';
   input.maxLength = 300;
+  // Dictation mic (Chrome/Edge/Android; iOS users: use the keyboard's 🎤)
+  if (dictationSupported()) {
+    const mic = el('button', 'bb', '🎤');
+    mic.title = 'Dictate your message';
+    let rec = null;
+    mic.onclick = () => {
+      if (rec) { try { rec.stop(); } catch {} rec = null; mic.textContent = '🎤'; return; }
+      mic.textContent = '🔴';
+      rec = startDictation(
+        (text) => { input.value = (input.value ? input.value + ' ' : '') + text; },
+        () => { rec = null; mic.textContent = '🎤'; input.focus(); }
+      );
+    };
+    inputRow.append(mic);
+  }
   const send = el('button', 'bb primary', 'Send');
   let busy = false;
   async function submit() {
@@ -169,10 +215,15 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
           typing.textContent = '(silence — read the room)';
         } else {
           setNamedMsg(typing, reply[0].name, reply[0].text);
-          for (const r of reply.slice(1)) setNamedMsg(addMsg(log, 'them', ''), r.name, r.text);
+          speakAs(reply[0].text, reply[0].name);
+          for (const r of reply.slice(1)) {
+            setNamedMsg(addMsg(log, 'them', ''), r.name, r.text);
+            speakAs(r.text, r.name);
+          }
         }
       } else {
         typing.textContent = reply;
+        speakAs(reply);
       }
     } catch (err) {
       typing.classList.remove('typing');
@@ -206,6 +257,7 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
         const text = await getText();
         typing.classList.remove('typing');
         typing.textContent = text;
+        speakAs(text);
       } catch (err) {
         typing.remove();
         console.error(err);

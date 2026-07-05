@@ -60,7 +60,16 @@ gap. Items are prompt/logic work in `src/ai/*` (free, verifiable in single-playe
 - Goal: a spoken jury exchange — you dictate answers, they reply aloud.
 - Size: medium. Cost: free (browser TTS) or small $ (premium voices).
 
-**Suggested build order:** 4.5.1 → 4.5.2 → 4.5.3 → 4.5.4.
+### 4.5.5 — Server-stored API key (never re-enter it)
+- **Problem:** the key saves per-browser (localStorage), but Safari storage eviction / separate
+  home-screen-app contexts / new devices mean the user keeps re-fishing for it.
+- **Fix:** store the key once on the Cloudflare Worker (secret or DO storage) and route AI calls
+  through the server for single-player too — no device ever needs the key typed in again. Add a
+  light abuse gate later (room password / rate cap) since the page is public.
+- **User tip (no code):** add the game to the iPhone home screen — makes on-device storage sticky.
+- Size: medium. Cost: free-ish.
+
+**Suggested build order:** 4.5.0 → 4.5.1 → 4.5.2 → 4.5.3 → 4.5.4 → 4.5.5.
 
 ---
 
