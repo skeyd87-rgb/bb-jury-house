@@ -309,9 +309,14 @@ export function fallbackSpeech(g, npcId, kind, extra = {}) {
   return { reply: map[kind] || '...' };
 }
 
-export function fallbackJurorQuestion(g, jurorId, finalists) {
+// A juror may be the player/newcomer seat (no cast persona) in multiplayer.
+function jurorPersonality(jurorId) {
   const c = castById(jurorId);
-  const bitter = c.personality.bitterness > 55;
+  return c ? c.personality : { loyalty: 50, bitterness: 50, compSkill: 50, socialSkill: 50, chaos: 50, strategic: 50 };
+}
+
+export function fallbackJurorQuestion(g, jurorId, finalists) {
+  const bitter = jurorPersonality(jurorId).bitterness > 55;
   return {
     questionForPlayer: bitter
       ? `You looked me in the eye and made promises. Why should my vote reward the way you played me?`
@@ -327,10 +332,10 @@ export function fallbackJurorVote(g, jurorId, finalists, qa) {
   const [f1, f2] = finalists;
   const r1 = rel(g, jurorId, f1);
   const r2 = rel(g, jurorId, f2);
-  const c = castById(jurorId);
+  const bitterness = jurorPersonality(jurorId).bitterness;
   // bond + trust + (respect for threat if not bitter) + answer length heuristic
   const score = (r, ans) =>
-    r.bond * 0.4 + r.trust * 0.4 + (c.personality.bitterness < 50 ? r.threat * 0.3 : -r.threat * 0.1) +
+    r.bond * 0.4 + r.trust * 0.4 + (bitterness < 50 ? r.threat * 0.3 : -r.threat * 0.1) +
     Math.min(10, (ans || '').length / 30);
   const s1 = score(r1, qa.f1Answer) + Math.random() * 12;
   const s2 = score(r2, qa.f2Answer) + Math.random() * 12;

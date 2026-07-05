@@ -98,12 +98,258 @@ function startOnlineSeason(game) {
   world.onNpcClick = (id) => {
     const hg = active.find((h) => h.id === id);
     const isHuman = !!(onlineGame.humanSeats && onlineGame.humanSeats[id]);
-    showToast(`<b>${hg?.name || 'Houseguest'}</b> — ${isHuman ? 'a human player' : 'played by AI'}. Live conversations arrive in the next update.`, [
+    showToast(`<b>${hg?.name || 'Houseguest'}</b> — ${isHuman ? 'a human player' : 'played by AI'}. Live conversations arrive with the social layer (Phase 3).`, [
       { label: 'OK', style: 'primary', onClick: () => {} },
     ]);
   };
   animate();
   renderOnlineHud();
+  // Drive the interactive season from server turn broadcasts.
+  room.onGame = (g) => handleOnlineTurn(g);
+  handleOnlineTurn(game);
+}
+
+// ---- Online turn renderer -------------------------------------------------
+// Reacts to the server's authoritative `game.turn`, showing the right UI for
+// THIS player (act if it's your move; watch otherwise) and sending actions.
+
+let onlineOverlay = null;
+let lastTurnSig = null;
+let compRunning = false;
+
+function closeOnlineOverlay() {
+  if (onlineOverlay) { onlineOverlay.close(); onlineOverlay = null; }
+}
+
+function iAmHost() {
+  return onlineGame && room && onlineGame.humanSeats && room.isHost && room.isHost();
+}
+
+function syncOnlineWorld(game) {
+  // Remove evicted houseguests from the 3D house.
+  for (const id of game.evicted) {
+    if (world.npcs.has(id)) world.removeNpc(id);
+  }
+  // HUD: week / phase / who's HoH & nominated.
+  const meId = myEngineId();
+  const me = game.houseguests.find((h) => h.id === meId);
+  const h = document.getElementById('hud');
+  h.innerHTML = '';
+  const top = el('div', 'hud-top');
+  top.append(el('div', 'week', `Week ${game.week} — Online`));
+  top.append(el('div', 'phase', phaseLabelOnline(game)));
+  const bits = [];
+  if (game.hoh) bits.push(`HoH: ${nm(game, game.hoh)}`);
+  if (game.vetoHolder) bits.push(`Veto: ${nm(game, game.vetoHolder)}`);
+  top.append(el('div', 'sub', `You are ${me ? me.name : '—'}${bits.length ? ' · ' + bits.join(' · ') : ''}`));
+  h.append(top);
+  if (game.nominees && game.nominees.length) {
+    const st = el('div', 'hud-status');
+    st.innerHTML = `<span class="nom">On the block:</span> ${game.nominees.map((n) => nm(game, n)).join(' & ')}`;
+    h.append(st);
+  }
+}
+
+function phaseLabelOnline(game) {
+  const k = game.turn?.kind;
+  const map = {
+    intro: 'New Week', comp: game.turn?.comp === 'hoh' ? 'HoH Competition' : game.turn?.comp === 'veto' ? 'Veto Competition' : 'Final HoH',
+    comp_result: 'Results', nominate: 'Nominations', noms_result: 'Nominations',
+    veto_decision: 'Veto Ceremony', veto_result: 'Veto Ceremony', replacement: 'Replacement',
+    vote: 'Live Eviction', eviction_result: 'Eviction', final3_intro: 'Final 3',
+    final_cut: 'Final Eviction', final_cut_result: 'Final Eviction', winner: 'The Finale',
+  };
+  return map[k] || 'The House';
+}
+
+function nm(game, id) {
+  return game.houseguests.find((h) => h.id === id)?.name || id;
+}
+
+function handleOnlineTurn(game) {
+  onlineGame = game;
+  if (!game || game.phase === 'lobby') return;
+  syncOnlineWorld(game);
+  const t = game.turn;
+  if (!t) return;
+  // Signature stable across waitingOn changes so we don't restart mid-action.
+  const sig = [t.kind, game.week, game.phase, t.comp || '', (t.nominees || []).join(','), t.actor || '', t.winner || ''].join('|');
+  const meActing = amIActing(game, t);
+  const fullSig = sig + '|' + meActing;
+  if (fullSig === lastTurnSig) return;
+  lastTurnSig = fullSig;
+  renderOnlineTurn(game, t);
+}
+
+function amIActing(game, t) {
+  const myPid = room?.playerId;
+  const myEngine = myEngineId();
+  if (t.waitingOn && t.waitingOn.includes(myPid)) return true;
+  if (['nominate', 'veto_decision', 'replacement', 'final_cut'].includes(t.kind) && t.actor === myEngine) return true;
+  return false;
+}
+
+function renderOnlineTurn(game, t) {
+  closeOnlineOverlay();
+  const myEngine = myEngineId();
+  const host = iAmHost();
+
+  const waitCard = (kicker, title, body) => {
+    onlineOverlay = cinematic({ kicker, title, bodyHtml: body || '<p class="muted">Waiting on the house…</p>' });
+    onlineOverlay.setActions(host && isResultKind(t.kind) ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : []);
+  };
+
+  switch (t.kind) {
+    case 'intro':
+      onlineOverlay = cinematic({ kicker: `Week ${t.week}`, title: t.week === 1 ? 'Welcome to the Jury Phase' : 'A New Week', bodyHtml: `<p>${t.message}</p>` });
+      onlineOverlay.setActions(host ? [{ label: 'Play HoH Comp ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+
+    case 'comp': {
+      const inComp = t.players.includes(myEngine);
+      const iSubmitted = t.scores && t.scores[myEngine] != null;
+      const compName = { hoh: 'Head of Household', veto: 'Power of Veto', final_hoh: 'Final HoH' }[t.comp] || 'Competition';
+      if (inComp && !iSubmitted && !compRunning) {
+        compRunning = true;
+        onlineOverlay = cinematic({ kicker: compName, title: COMP_NAMES[t.compType], bodyHtml: `<p class="muted">You're competing. Play for it!</p>` });
+        onlineOverlay.setActions([{ label: 'Compete! ▶', style: 'gold', onClick: async () => {
+          closeOnlineOverlay();
+          const score = await runComp(t.compType, overlayRoot);
+          compRunning = false;
+          room.send('compScore', { score });
+          onlineOverlay = cinematic({ kicker: compName, title: `You scored ${Math.round(score)}`, bodyHtml: '<p class="muted">Waiting for the other competitors…</p>' });
+          onlineOverlay.setActions([]);
+        } }]);
+      } else {
+        waitCard(compName, COMP_NAMES[t.compType] || 'Competition', inComp ? '<p class="muted">Score submitted. Waiting for others…</p>' : '<p class="muted">You\'re not in this comp. Watching…</p>');
+      }
+      break;
+    }
+
+    case 'comp_result':
+      onlineOverlay = cinematic({ kicker: 'Results', title: `${t.winnerName} wins ${t.comp === 'veto' ? 'the Veto' : t.comp === 'final_hoh' ? 'the Final HoH' : 'HoH'}!`,
+        bodyHtml: `<p>${t.board.map((b) => `${b.id === t.winner ? '👑 ' : ''}${b.name} — ${Math.round(b.score)}`).join('<br>')}</p>` });
+      onlineOverlay.setActions(host ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+
+    case 'nominate':
+      if (t.actor === myEngine) {
+        pickHouseguests(onlineRenderGame(game), {
+          kicker: 'Nomination Ceremony', title: 'Nominate two houseguests', bodyHtml: '<p class="muted">Everyone will see who you put up.</p>',
+          ids: onlineActiveIds(game).filter((id) => id !== myEngine), count: 2, confirmLabel: 'Lock in Nominations',
+        }).then((ids) => room.send('nominate', { ids }));
+      } else {
+        waitCard('Nomination Ceremony', `${t.actorName} is nominating…`, '<p class="muted">The HoH is choosing two houseguests.</p>');
+      }
+      break;
+
+    case 'noms_result':
+      onlineOverlay = cinematic({ kicker: 'Nomination Ceremony', title: `${nm(game, t.hoh)} nominated ${t.names.join(' and ')}`, bodyHtml: `<p class="muted">${t.nominees.includes(myEngine) ? "You're on the block. Win the veto." : 'The veto could change everything.'}</p>` });
+      onlineOverlay.setActions(host ? [{ label: 'Play Veto Comp ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+
+    case 'veto_decision':
+      if (t.actor === myEngine) {
+        const c = cinematic({ kicker: 'Veto Ceremony', title: 'You hold the Power of Veto', bodyHtml: `<p>On the block: <b>${t.names.join('</b> and <b>')}</b>.</p>` });
+        onlineOverlay = c;
+        c.setActions([
+          ...t.nominees.map((n, i) => ({ label: `Save ${t.names[i]}`, style: 'primary', onClick: () => room.send('vetoDecision', { use: true, savedId: n }) })),
+          { label: 'Do NOT use', style: 'danger', onClick: () => room.send('vetoDecision', { use: false }) },
+        ]);
+      } else {
+        waitCard('Veto Ceremony', `${t.actorName} decides on the veto…`, '<p class="muted">The veto holder is deciding.</p>');
+      }
+      break;
+
+    case 'replacement':
+      if (t.actor === myEngine) {
+        pickHouseguests(onlineRenderGame(game), {
+          kicker: 'Replacement Nominee', title: 'Name the replacement', bodyHtml: `<p class="muted">${t.savedName} came down. Someone takes their seat.</p>`,
+          ids: onlineActiveIds(game).filter((id) => id !== myEngine && !game.nominees.includes(id) && id !== t.savedId), count: 1, confirmLabel: 'Confirm',
+        }).then((ids) => room.send('replacement', { id: ids[0] }));
+      } else {
+        waitCard('Replacement Nominee', `${t.actorName} names a replacement…`);
+      }
+      break;
+
+    case 'veto_result':
+      onlineOverlay = cinematic({ kicker: 'Veto Ceremony', title: t.used ? `Veto used on ${t.savedName}` : 'Veto NOT used', bodyHtml: t.used ? `<p><b>${t.replacementName}</b> is the replacement.</p>` : '<p class="muted">Nominations stay the same.</p>' });
+      onlineOverlay.setActions(host ? [{ label: 'Go to Eviction ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+
+    case 'vote': {
+      const amVoter = t.voters.includes(myEngine);
+      const iVoted = t.votes && t.votes[myEngine] != null;
+      if (amVoter && !iVoted) {
+        pickHouseguests(onlineRenderGame(game), {
+          kicker: 'Live Eviction', title: 'Vote to EVICT', bodyHtml: '<p class="muted">Both nominees will hear how it fell.</p>',
+          ids: t.nominees, count: 1, confirmLabel: 'Cast Vote',
+        }).then((ids) => room.send('vote', { target: ids[0] }));
+      } else {
+        waitCard('Live Eviction', 'The house is voting…', amVoter ? '<p class="muted">Vote cast. Waiting…</p>' : (game.nominees.includes(myEngine) ? '<p class="muted">You\'re on the block. Your fate is in their hands.</p>' : '<p class="muted">Waiting for votes…</p>'));
+      }
+      break;
+    }
+
+    case 'eviction_result': {
+      const lines = Object.entries(t.votes).map(([v, tg]) => `<div class="v"><b>${v}</b> → evict <b>${tg}</b></div>`).join('');
+      onlineOverlay = cinematic({ kicker: 'Live Eviction', title: `${t.evictedName} has been evicted.`, bodyHtml: `<div class="votes-list">${lines}</div><p class="muted">${t.evictedName} joins the jury.</p>` });
+      onlineOverlay.setActions(host ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+    }
+
+    case 'final3_intro':
+      onlineOverlay = cinematic({ kicker: 'Final 3', title: 'Three remain', bodyHtml: `<p>${t.three.join(' · ')}</p><p class="muted">One final HoH decides the Final 2.</p>` });
+      onlineOverlay.setActions(host ? [{ label: 'Play Final HoH ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+
+    case 'final_cut':
+      if (t.actor === myEngine) {
+        pickHouseguests(onlineRenderGame(game), {
+          kicker: 'Final Eviction', title: 'You won! Choose who to take to the end', bodyHtml: '<p class="muted">The one you cut becomes the final juror.</p>',
+          ids: t.others, count: 1, confirmLabel: 'Evict',
+        }).then((ids) => room.send('finalCut', { cutId: ids[0] }));
+      } else {
+        waitCard('Final Eviction', `${t.actorName} won the Final HoH…`, '<p class="muted">They\'re choosing who to take to the Final 2.</p>');
+      }
+      break;
+
+    case 'final_cut_result':
+      onlineOverlay = cinematic({ kicker: 'Final Eviction', title: `${t.finalHohName} evicts ${t.cutName}`, bodyHtml: `<p class="muted">${t.cutName} casts the final jury vote.</p>` });
+      onlineOverlay.setActions(host ? [{ label: 'To the Jury Vote ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+
+    case 'winner': {
+      const iWon = t.winner === myEngine;
+      if (iWon) confetti();
+      const votes = t.votes.map((v) => `<div class="jury-vote-card"><div><b>${v.jurorName}</b> → <b>${v.voteName}</b><div class="r">"${v.reasoning}"</div></div></div>`).join('');
+      onlineOverlay = cinematic({ kicker: 'Season Finale', title: `🏆 ${t.winnerName} wins Big Brother! (${Object.values(t.tally).join('–')})`, cardCls: 'stats-card',
+        bodyHtml: `<div>${votes}</div><p>${iWon ? 'You did it.' : 'Better luck next season.'}</p>` });
+      onlineOverlay.setActions([{ label: 'Back to Title', style: 'gold', onClick: () => { room.disconnect(); location.reload(); } }]);
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+function isResultKind(kind) {
+  return ['comp_result', 'noms_result', 'veto_result', 'eviction_result', 'final3_intro', 'final_cut_result', 'intro'].includes(kind);
+}
+
+// A minimal game-shaped object so the existing pickHouseguests (which reads
+// g.houseguests + g.memory) works from the online snapshot.
+function onlineRenderGame(game) {
+  return {
+    houseguests: game.houseguests,
+    memory: {},
+    promises: [],
+    evicted: game.evicted,
+  };
+}
+function onlineActiveIds(game) {
+  return game.houseguests.map((h) => h.id).filter((id) => !game.evicted.includes(id));
 }
 
 function renderOnlineHud() {
