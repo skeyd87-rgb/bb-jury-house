@@ -95,18 +95,42 @@ function startOnlineSeason(game) {
     if (hg.id === me.id) continue;
     world.addNpc(createCharacter(hg), rooms[i++ % rooms.length]);
   }
-  world.onNpcClick = (id) => {
-    const hg = active.find((h) => h.id === id);
-    const isHuman = !!(onlineGame.humanSeats && onlineGame.humanSeats[id]);
-    showToast(`<b>${hg?.name || 'Houseguest'}</b> — ${isHuman ? 'a human player' : 'played by AI'}. Live conversations arrive with the social layer (Phase 3).`, [
-      { label: 'OK', style: 'primary', onClick: () => {} },
-    ]);
-  };
+  world.onNpcClick = (id) => openOnlineChat(id);
   animate();
   renderOnlineHud();
   // Drive the interactive season from server turn broadcasts.
   room.onGame = (g) => handleOnlineTurn(g);
+  // Incoming message from another human houseguest.
+  room.onChatMsg = (from, fromName, text) => {
+    showToast(`💬 <b>${fromName}</b>: "${text.slice(0, 80)}"`, [
+      { label: 'Reply', style: 'gold', onClick: () => openOnlineChat(from) },
+      { label: 'Later', style: '', onClick: () => {} },
+    ]);
+  };
   handleOnlineTurn(game);
+}
+
+// Online 1-on-1 conversation with a houseguest (AI via server Claude/engine,
+// or another human via relay).
+function openOnlineChat(targetId) {
+  if (onlineOverlay || compRunning) return; // don't interrupt a ceremony/comp
+  const hg = onlineGame.houseguests.find((h) => h.id === targetId);
+  if (!hg || onlineGame.evicted.includes(targetId)) return;
+  const isHuman = !!(onlineGame.humanSeats && onlineGame.humanSeats[targetId]);
+  world.freezeNpc(targetId, true);
+  world.focusOn(targetId);
+  const panel = openChatPanel({
+    title: hg.name,
+    subtitle: `${hg.job}${isHuman ? ' · 🧑 human' : ' · 🤖 AI'}${onlineGame.hoh === targetId ? ' · HoH 👑' : ''}${onlineGame.nominees?.includes(targetId) ? ' · Nominated 🎯' : ''}`,
+    color: hg.color,
+    thread: [],
+    onSend: async (text) => {
+      const { text: reply, note } = await room.sendChat(targetId, text);
+      if (note) panel.addSystemMsg(note);
+      return reply;
+    },
+    onClose: () => { world.freezeNpc(targetId, false); world.clearFocus(); },
+  });
 }
 
 // ---- Online turn renderer -------------------------------------------------
@@ -193,7 +217,9 @@ function amIActing(game, t) {
 }
 
 function renderOnlineTurn(game, t) {
+  if (t.kind !== 'comp') compRunning = false; // never leave it stuck after a comp
   closeOnlineOverlay();
+  document.getElementById('online-social-bar')?.remove();
   const myEngine = myEngineId();
   const host = iAmHost();
 
@@ -326,6 +352,25 @@ function renderOnlineTurn(game, t) {
       onlineOverlay.setActions(host ? [{ label: 'To the Jury Vote ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
+    case 'social': {
+      // Free roam — no modal. Walk the house and tap houseguests to talk.
+      onlineOverlay = null;
+      const bar = el('div', 'hud-buttons');
+      bar.id = 'online-social-bar';
+      const hint = el('div', 'hud-hint');
+      hint.innerHTML = `<b>${t.label}</b> — tap a houseguest to talk.`;
+      bar.append(hint);
+      if (host) {
+        const adv = el('button', 'bb gold', t.next === 'nominations' ? '▶ Nominations' : t.next === 'veto_comp' ? '▶ Veto Comp' : '▶ Live Eviction');
+        adv.onclick = () => room.send('advanceTurn');
+        bar.append(adv);
+      } else {
+        bar.append(el('div', 'hud-hint', '⏳ Host advances when ready'));
+      }
+      document.getElementById('hud').append(bar);
+      break;
+    }
+
     case 'winner': {
       const iWon = t.winner === myEngine;
       if (iWon) confetti();
@@ -396,6 +441,9 @@ async function openMultiplayer() {
 // Debug/test hook (harmless in normal play)
 window.__bb = {
   get g() { return g; },
+  get room() { return room; },
+  get onlineGame() { return onlineGame; },
+  openOnlineChat: (id) => openOnlineChat(id),
   world,
   refresh: () => refresh(),
   advance: () => advance(),

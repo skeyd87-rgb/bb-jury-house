@@ -95,10 +95,10 @@ const VOICE = {
   },
 };
 
-export function fallbackChat(g, npcId, playerMsg) {
+export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
   const intent = INTENTS.find((i) => i.rx.test(playerMsg)).key;
   const targetId = detectTargetId(g, playerMsg);
-  const r = rel(g, npcId, PLAYER_ID);
+  const r = rel(g, npcId, chatterId);
   const c = castById(npcId);
   const v = VOICE[npcId];
 

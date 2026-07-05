@@ -45,10 +45,12 @@ export class Room {
     this.playerId = getPlayerId();
     this.onState = null; // (state) => {}
     this.onGame = null; // (game) => {}  authoritative game snapshot
+    this.onChatMsg = null; // (from, fromName, text) => {}  incoming human message
     this.onOpen = null;
     this.onClose = null;
     this.lastState = null;
     this.lastGame = null;
+    this._chatWaiters = {}; // npcId -> resolve fn
   }
 
   connect(code, name) {
@@ -72,6 +74,11 @@ export class Room {
       } else if (msg.type === 'game') {
         this.lastGame = msg.game;
         this.onGame && this.onGame(msg.game);
+      } else if (msg.type === 'chatReply') {
+        const w = this._chatWaiters[msg.npcId];
+        if (w) { delete this._chatWaiters[msg.npcId]; w({ text: msg.text, note: msg.note }); }
+      } else if (msg.type === 'chatMsg') {
+        this.onChatMsg && this.onChatMsg(msg.from, msg.fromName, msg.text);
       }
     });
     this.socket.addEventListener('close', () => this.onClose && this.onClose());
@@ -84,11 +91,27 @@ export class Room {
     }
   }
 
+  // Send a chat message to a houseguest; resolves with { text, note } reply.
+  sendChat(targetId, text) {
+    return new Promise((resolve) => {
+      this._chatWaiters[targetId] = resolve;
+      this.send('chat', { targetId, text });
+      setTimeout(() => {
+        if (this._chatWaiters[targetId]) { delete this._chatWaiters[targetId]; resolve({ text: '(no reply — try again)' }); }
+      }, 30000);
+    });
+  }
+
   claimSeat(seatId) { this.send('claimSeat', { seatId }); }
   releaseSeat() { this.send('releaseSeat'); }
   setName(name) { this.send('setName', { name }); }
   setSettings(phaseSeconds) { this.send('setSettings', { phaseSeconds }); }
-  startSeason() { this.send('startSeason', { clientTime: Date.now() }); }
+  startSeason() {
+    // The host's Anthropic key (if any) powers server-side houseguest AI. It's
+    // stored server-side only, never broadcast to other players.
+    const apiKey = localStorage.getItem('bbjury.apikey') || '';
+    this.send('startSeason', { clientTime: Date.now(), apiKey });
+  }
 
   isHost() {
     return this.lastState && this.lastState.hostPlayerId === this.playerId;

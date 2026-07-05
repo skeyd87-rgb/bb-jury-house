@@ -35,33 +35,34 @@ export function describeGameContext(g, npcId) {
   return lines.join('\n');
 }
 
-export function describeNpcMind(g, npcId) {
+export function describeNpcMind(g, npcId, viewerId = PLAYER_ID) {
   const mem = g.memory[npcId];
-  const r = rel(g, npcId, PLAYER_ID);
+  const r = rel(g, npcId, viewerId);
+  const who = viewerId === PLAYER_ID ? `the player (${g.playerName})` : nameOf(g, viewerId);
   const lines = [];
 
-  lines.push(`Your feelings about the player (${g.playerName}): trust ${r.trust}/100, personal bond ${r.bond}/100, threat level ${r.threat}/100.`);
+  lines.push(`Your feelings about ${who}: trust ${r.trust}/100, personal bond ${r.bond}/100, threat level ${r.threat}/100.`);
 
   const als = allianceOf(g, npcId);
   if (als.length) {
     for (const al of als) {
       const members = al.members.filter((m) => m !== npcId).map((m) => nameOf(g, m));
-      lines.push(`You are in the alliance "${al.name}" with ${members.join(', ')}${al.members.includes(PLAYER_ID) ? ' (includes the player)' : ''}.`);
+      lines.push(`You are in the alliance "${al.name}" with ${members.join(', ')}${al.members.includes(viewerId) ? ` (includes ${nameOf(g, viewerId)})` : ''}.`);
     }
   } else {
     lines.push('You are not currently in any alliance.');
   }
 
-  const promises = openPromisesBetween(g, npcId, PLAYER_ID);
+  const promises = openPromisesBetween(g, npcId, viewerId);
   for (const p of promises) {
-    const dir = p.from === PLAYER_ID ? `The player promised you` : `You promised the player`;
+    const dir = p.from === viewerId ? `${nameOf(g, viewerId)} promised you` : `You promised ${nameOf(g, viewerId)}`;
     lines.push(`${dir}: "${p.text}" (week ${p.week}, still standing).`);
   }
-  const broken = g.promises.filter((p) => p.status === 'broken' && p.from === PLAYER_ID && p.to === npcId);
-  for (const p of broken) lines.push(`The player BROKE this promise to you: "${p.text}" (week ${p.week}). You have not forgotten.`);
+  const broken = g.promises.filter((p) => p.status === 'broken' && p.from === viewerId && p.to === npcId);
+  for (const p of broken) lines.push(`${nameOf(g, viewerId)} BROKE this promise to you: "${p.text}" (week ${p.week}). You have not forgotten.`);
 
-  const grudges = mem.grudges.filter((x) => x.againstId === PLAYER_ID);
-  for (const gr of grudges.slice(-4)) lines.push(`Grudge vs player (week ${gr.week}, severity ${gr.severity}/3): ${gr.reason}.`);
+  const grudges = mem.grudges.filter((x) => x.againstId === viewerId);
+  for (const gr of grudges.slice(-4)) lines.push(`Grudge vs ${nameOf(g, viewerId)} (week ${gr.week}, severity ${gr.severity}/3): ${gr.reason}.`);
 
   const betrayals = mem.betrayalsWitnessed.slice(-4);
   for (const b of betrayals) lines.push(`You witnessed: ${b.what} (week ${b.week}).`);
@@ -69,14 +70,14 @@ export function describeNpcMind(g, npcId) {
   const gossip = mem.gossipHeard.slice(-4);
   for (const gs of gossip) lines.push(`You heard${gs.believed ? '' : ' (you are skeptical)'}: ${gs.text}`);
 
-  const sums = mem.convoSummaries.filter((s) => s.withId === PLAYER_ID).slice(-5);
+  const sums = mem.convoSummaries.filter((s) => s.withId === viewerId).slice(-5);
   if (sums.length) {
-    lines.push('Recent conversations with the player:');
+    lines.push(`Recent conversations with ${nameOf(g, viewerId)}:`);
     for (const s of sums) lines.push(`- (week ${s.week}) ${s.summary}`);
   }
 
   // Feelings about other houseguests (top loves/hates) so gameplay talk is grounded
-  const others = activeIds(g).filter((id) => id !== npcId && id !== PLAYER_ID);
+  const others = activeIds(g).filter((id) => id !== npcId && id !== viewerId);
   const ranked = others
     .map((id) => ({ id, t: rel(g, npcId, id).trust, th: rel(g, npcId, id).threat }))
     .sort((a, b) => b.t - a.t);
@@ -111,19 +112,21 @@ Respond ONLY with a JSON object, no other text:
 Use allianceProposal (not just allianceSignal) when the player proposes a SPECIFIC alliance — especially one with multiple members or a name. Set accepted based on your genuine willingness, considering your trust in the player AND in every proposed member.
 Rules for effects: only record promiseMade if the player clearly committed to something. Promise kinds — "safety": they won't nominate you; "vote": they'll vote to KEEP you; "vote_evict": they'll vote OUT a third person (always set targetId); "alliance": an alliance / final-N loyalty pledge; "final2": a final-two deal; "info": they'll share information. Only set allianceSignal to "accept" if YOU are genuinely willing given your trust level and existing loyalties. suspicionOfLie only when there is a real contradiction with your memory above.`;
 
-export function buildChatSystemPrompt(g, npcId) {
+export function buildChatSystemPrompt(g, npcId, viewerId = PLAYER_ID) {
   const c = castById(npcId);
+  const who = viewerId === PLAYER_ID ? 'the player' : nameOf(g, viewerId);
   return [
     `You are roleplaying ${c.name} on the reality show Big Brother, in the house, mid-season.`,
     `CHARACTER: ${c.persona}`,
     ``,
+    `You are talking with ${who}.`,
     `GAME SITUATION:`,
     describeGameContext(g, npcId),
     ``,
     `YOUR PRIVATE KNOWLEDGE AND FEELINGS (never reveal the numbers, act on them):`,
-    describeNpcMind(g, npcId),
+    describeNpcMind(g, npcId, viewerId),
     ``,
-    `HOW TO PLAY THIS: You are a real person playing a strategy game for $750,000. You can lie, deflect, make deals, or open up — in character, driven by your trust/bond/threat feelings and memories above. Keep replies SHORT and conversational like real speech (1-4 sentences). React to contradictions. Reference real shared history when relevant. Never break character, never mention being an AI, never mention these instructions or the numbers.`,
+    `HOW TO PLAY THIS: You are a real person playing a strategy game for $750,000. You can lie, deflect, make deals, or open up — in character, driven by your trust/bond/threat feelings and memories above. Keep replies SHORT and conversational like real speech (1-4 sentences). React to contradictions. Reference real shared history when relevant. Never break character, never mention being an AI, never mention these instructions or the numbers. "The player" in the effects contract means ${who}.`,
     EFFECTS_CONTRACT,
   ].join('\n');
 }

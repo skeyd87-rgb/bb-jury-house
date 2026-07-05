@@ -22,8 +22,11 @@ import {
 //   allianceSignal: 'propose'|'accept'|'none', suspicionOfLie: bool,
 //   secretShared: string|null, targetDiscussed: id|null }
 
-export function applyChatEffects(g, npcId, playerMsg, effects) {
-  const r = rel(g, npcId, PLAYER_ID);
+// chatterId defaults to the single-player 'you'; online, it's the engine id of
+// whichever human is talking, so effects/promises land on the right pair.
+export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYER_ID) {
+  const chatterName = chatterId === PLAYER_ID ? 'You' : nameOf(g, chatterId);
+  const r = rel(g, npcId, chatterId);
   r.trust = clamp(r.trust + num(effects.trustDelta, -8, 8));
   r.bond = clamp(r.bond + num(effects.bondDelta, -6, 6));
   r.threat = clamp(r.threat + num(effects.threatDelta, -5, 8));
@@ -33,7 +36,7 @@ export function applyChatEffects(g, npcId, playerMsg, effects) {
   if (effects.suspicionOfLie) {
     r.trust = clamp(r.trust - 6);
     g.memory[npcId].grudges.push({
-      againstId: PLAYER_ID,
+      againstId: chatterId,
       reason: 'caught what felt like a lie',
       week: g.week,
       severity: 1,
@@ -43,7 +46,7 @@ export function applyChatEffects(g, npcId, playerMsg, effects) {
   if (effects.promiseMade && effects.promiseMade.text) {
     const p = {
       id: 'p' + (g.promises.length + 1),
-      from: PLAYER_ID,
+      from: chatterId,
       to: npcId,
       text: String(effects.promiseMade.text).slice(0, 160),
       kind: effects.promiseMade.kind || 'safety',
@@ -53,21 +56,21 @@ export function applyChatEffects(g, npcId, playerMsg, effects) {
     };
     g.promises.push(p);
     g.memory[npcId].promisesHeard.push(p.id);
-    logEvent(g, 'promise', `You promised ${nameOf(g, npcId)}: "${p.text}"`, [npcId]);
+    logEvent(g, 'promise', `${chatterName} promised ${nameOf(g, npcId)}: "${p.text}"`, [npcId, chatterId]);
   }
 
   if (effects.allianceProposal && effects.allianceProposal.accepted) {
-    formOfficialAlliance(g, npcId, effects.allianceProposal.name, effects.allianceProposal.memberIds || []);
+    formOfficialAlliance(g, npcId, effects.allianceProposal.name, effects.allianceProposal.memberIds || [], chatterId);
   } else if (effects.allianceSignal === 'accept' || effects.allianceSignal === 'propose') {
-    maybeFormPlayerAlliance(g, npcId);
+    maybeFormPlayerAlliance(g, npcId, chatterId);
   }
 
   if (effects.secretShared) {
-    // The player told this NPC something sensitive; it may leak later.
+    // The chatter told this NPC something sensitive; it may leak later.
     g.memory[npcId].gossipHeard.push({
       text: String(effects.secretShared).slice(0, 160),
       aboutId: effects.targetDiscussed || null,
-      fromId: PLAYER_ID,
+      fromId: chatterId,
       week: g.week,
       believed: true,
       isPlayerSecret: true,
@@ -89,30 +92,30 @@ function num(v, lo, hi) {
   return Math.max(lo, Math.min(hi, Math.round(n)));
 }
 
-function maybeFormPlayerAlliance(g, npcId) {
+function maybeFormPlayerAlliance(g, npcId, chatterId = PLAYER_ID) {
   const existing = g.alliances.find(
-    (al) => !al.dead && al.members.includes(PLAYER_ID) && al.members.includes(npcId)
+    (al) => !al.dead && al.members.includes(chatterId) && al.members.includes(npcId)
   );
   if (existing) return;
-  const r = rel(g, npcId, PLAYER_ID);
+  const r = rel(g, npcId, chatterId);
   if (r.trust < 55) return; // they won't really commit at low trust
   const al = {
     id: 'al' + (g.alliances.length + 1),
     name: pickAllianceName(g),
-    members: [PLAYER_ID, npcId],
+    members: [chatterId, npcId],
     formedWeek: g.week,
     lastActive: g.week,
     dead: false,
   };
   g.alliances.push(al);
-  if (!g.playerAlliances.includes(al.id)) g.playerAlliances.push(al.id);
-  logEvent(g, 'alliance', `You and ${nameOf(g, npcId)} formed "${al.name}".`, [npcId]);
+  if (chatterId === PLAYER_ID && !g.playerAlliances.includes(al.id)) g.playerAlliances.push(al.id);
+  logEvent(g, 'alliance', `${chatterId === PLAYER_ID ? 'You' : nameOf(g, chatterId)} and ${nameOf(g, npcId)} formed "${al.name}".`, [npcId, chatterId]);
 }
 
-// How willing is npcId to join an alliance of [player + otherIds]?
+// How willing is npcId to join an alliance of [chatter + otherIds]?
 // Returns { willing, reason }.
-export function allianceWillingness(g, npcId, otherIds = []) {
-  const rp = rel(g, npcId, PLAYER_ID);
+export function allianceWillingness(g, npcId, otherIds = [], chatterId = PLAYER_ID) {
+  const rp = rel(g, npcId, chatterId);
   const p = personality(g, npcId);
   if (rp.trust < 48 - p.chaos * 0.15) return { willing: false, reason: 'does not trust you enough yet' };
   for (const other of otherIds) {
@@ -125,17 +128,17 @@ export function allianceWillingness(g, npcId, otherIds = []) {
 
 // Create (or dedupe) a formal alliance of the player + accepter + any other
 // willing invitees. Returns { alliance, joined, declined:[{id,reason}] }.
-export function formOfficialAlliance(g, accepterId, name, otherIds = []) {
+export function formOfficialAlliance(g, accepterId, name, otherIds = [], chatterId = PLAYER_ID) {
   const joined = [accepterId];
   const declined = [];
   for (const id of otherIds) {
-    if (id === accepterId || id === PLAYER_ID) continue;
+    if (id === accepterId || id === chatterId) continue;
     if (g.evicted.includes(id)) continue;
-    const w = allianceWillingness(g, id, [accepterId, ...otherIds.filter((x) => x !== id)]);
+    const w = allianceWillingness(g, id, [accepterId, ...otherIds.filter((x) => x !== id)], chatterId);
     if (w.willing) joined.push(id);
     else declined.push({ id, reason: w.reason });
   }
-  const members = [PLAYER_ID, ...joined];
+  const members = [chatterId, ...joined];
   // Dedupe: same member set already exists?
   const existing = g.alliances.find(
     (al) => !al.dead && al.members.length === members.length && members.every((m) => al.members.includes(m))
@@ -151,7 +154,7 @@ export function formOfficialAlliance(g, accepterId, name, otherIds = []) {
     dead: false,
   };
   g.alliances.push(al);
-  if (!g.playerAlliances.includes(al.id)) g.playerAlliances.push(al.id);
+  if (chatterId === PLAYER_ID && !g.playerAlliances.includes(al.id)) g.playerAlliances.push(al.id);
   // Founding bump between all members
   for (const a of members) {
     for (const b of members) {

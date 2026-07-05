@@ -12,8 +12,9 @@ import {
   decideReplacement, applyVetoSave, applyReplacement, applyVeto, evictionDesire,
   applyEviction, nextPhase, phaseLabel,
 } from '../src/game/season.js';
-import { simulateHouseLife } from '../src/game/social.js';
-import { fallbackJurorVote } from '../src/ai/fallback.js';
+import { simulateHouseLife, applyChatEffects } from '../src/game/social.js';
+import { fallbackJurorVote, fallbackChat } from '../src/ai/fallback.js';
+import { serverNpcChat } from './ai.js';
 
 // Mirror of comps.js COMP_TYPES (kept here to avoid importing the DOM module).
 const COMP_TYPES = ['timing', 'count', 'reaction'];
@@ -41,6 +42,7 @@ export class Room extends Server {
     this.state = (await this.ctx.storage.get('state')) || this.freshLobby();
     this.game = (await this.ctx.storage.get('game')) || null;
     this.turn = (await this.ctx.storage.get('turn')) || null;
+    this.apiKey = (await this.ctx.storage.get('apiKey')) || null; // host's key, never broadcast
   }
 
   async saveGame() {
@@ -426,17 +428,29 @@ export class Room extends Server {
     switch (t.kind) {
       case 'intro': return this.enterHohComp();
       case 'comp_result':
-        if (t.comp === 'hoh') return this.enterNominations();
+        if (t.comp === 'hoh') return this.enterSocial('nominations', 'Work the house before nominations.');
         if (t.comp === 'veto') return this.enterVetoCeremony();
         if (t.comp === 'final_hoh') return this.enterFinalCut(t.winner);
         return;
-      case 'noms_result': return this.enterVetoComp();
-      case 'veto_result': return this.enterEviction();
+      case 'noms_result': return this.enterSocial('veto_comp', 'Campaign and scheme before the veto.');
+      case 'veto_result': return this.enterSocial('eviction', 'Last chance to lock in votes before eviction.');
       case 'eviction_result': return this.advanceWeek();
       case 'final3_intro': return this.enterFinalHoh();
       case 'final_cut_result': return this.enterFinale();
+      case 'social':
+        if (t.next === 'nominations') return this.enterNominations();
+        if (t.next === 'veto_comp') return this.enterVetoComp();
+        if (t.next === 'eviction') return this.enterEviction();
+        return;
       default: return;
     }
+  }
+
+  // Free-roam social window — everyone walks the house and talks; the host
+  // advances when the room is ready.
+  async enterSocial(next, label) {
+    this.game.phase = next === 'nominations' ? 'social_hoh' : next === 'veto_comp' ? 'social_veto' : 'campaigning';
+    await this.setTurn({ kind: 'social', next, label });
   }
 
   // ---- Drop-in/out + timers (Phase 4) --------------------------------------
@@ -531,6 +545,77 @@ export class Room extends Server {
     const hs = this.state.humanSeats || {};
     for (const [engineId, p] of Object.entries(hs)) if (p === pid) return engineId;
     return null;
+  }
+
+  // ---- Social chat (Phase 3) -----------------------------------------------
+
+  sanitizeChatEffects(raw) {
+    const e = raw && typeof raw === 'object' ? raw : {};
+    const ids = this.game.houseguests.map((h) => h.id);
+    const KINDS = ['safety', 'vote', 'final2', 'alliance', 'vote_evict', 'info'];
+    const SIGNALS = ['none', 'propose', 'accept'];
+    return {
+      trustDelta: e.trustDelta ?? 0,
+      bondDelta: e.bondDelta ?? 0,
+      threatDelta: e.threatDelta ?? 0,
+      promiseMade: e.promiseMade && e.promiseMade.text
+        ? { text: String(e.promiseMade.text), kind: KINDS.includes(e.promiseMade.kind) ? e.promiseMade.kind : 'safety', targetId: ids.includes(e.promiseMade.targetId) ? e.promiseMade.targetId : null }
+        : null,
+      allianceSignal: SIGNALS.includes(e.allianceSignal) ? e.allianceSignal : 'none',
+      suspicionOfLie: !!e.suspicionOfLie,
+      secretShared: e.secretShared ? String(e.secretShared) : null,
+      targetDiscussed: ids.includes(e.targetDiscussed) ? e.targetDiscussed : null,
+      allianceProposal: e.allianceProposal && typeof e.allianceProposal === 'object'
+        ? { accepted: !!e.allianceProposal.accepted, name: e.allianceProposal.name ? String(e.allianceProposal.name).slice(0, 40) : null, memberIds: Array.isArray(e.allianceProposal.memberIds) ? e.allianceProposal.memberIds.filter((id) => ids.includes(id)) : [] }
+        : null,
+      summary: e.summary ? String(e.summary).slice(0, 200) : null,
+    };
+  }
+
+  async handleChat(chatterId, targetId, text, connection) {
+    const g = this.game;
+    if (!g || !text) return;
+    if (!activeIds(g).includes(targetId) || targetId === chatterId) return;
+    if (!g.mpThreads) g.mpThreads = {};
+    const key = chatterId + ':' + targetId;
+    const thread = g.mpThreads[key] || (g.mpThreads[key] = []);
+    thread.push({ who: 'you', text });
+
+    // Human target: relay the message to them (they reply from their own chat).
+    if (this.isHuman(targetId)) {
+      const payload = JSON.stringify({ type: 'chatMsg', from: chatterId, fromName: nameOf(g, chatterId), text });
+      for (const c of this.getConnections()) {
+        if (this.connToPlayer.get(c.id) === this.humanFor(targetId)) c.send(payload);
+      }
+      connection.send(JSON.stringify({ type: 'chatReply', npcId: targetId, text: "(sent — they'll see it when they open your chat)", relayed: true }));
+      thread.push({ who: 'them', text: '(relayed)' });
+      await this.saveGame();
+      return;
+    }
+
+    // AI target: Claude (if key) or the built-in engine, effects applied server-side.
+    let result;
+    try {
+      result = await serverNpcChat(g, targetId, text, chatterId, thread, this.apiKey);
+    } catch {
+      result = fallbackChat(g, targetId, text, chatterId);
+    }
+    const reply = String(result.reply || '…').slice(0, 600);
+    const fx = this.sanitizeChatEffects(result.effects);
+    applyChatEffects(g, targetId, text, fx, chatterId);
+    if (fx.summary) {
+      g.memory[targetId].convoSummaries.push({ withId: chatterId, week: g.week, summary: fx.summary });
+      g.memory[targetId].convoSummaries = g.memory[targetId].convoSummaries.slice(-20);
+    }
+    thread.push({ who: 'them', text: reply });
+    if (thread.length > 24) g.mpThreads[key] = thread.slice(-24);
+    await this.saveGame();
+    connection.send(JSON.stringify({
+      type: 'chatReply', npcId: targetId, text: reply,
+      note: fx.promiseMade ? `📋 Promise recorded: "${fx.promiseMade.text}"`
+        : (fx.allianceProposal?.accepted || fx.allianceSignal === 'accept') ? `🤝 ${nameOf(g, targetId)} is in.`
+        : fx.suspicionOfLie ? `👀 ${nameOf(g, targetId)} didn't seem to buy that…` : null,
+    }));
   }
 
   async persist() {
@@ -628,9 +713,18 @@ export class Room extends Server {
         }
         s.phase = 'playing';
         s.startedAt = msg.clientTime || 0;
+        if (msg.apiKey) { this.apiKey = String(msg.apiKey); await this.ctx.storage.put('apiKey', this.apiKey); }
+        s.aiPowered = !!this.apiKey; // clients can show "Claude-powered" (no key value)
         await this.persist();
         this.broadcastState();
         await this.beginSeason(); // kicks off week 1; commits + broadcasts game
+        return;
+      }
+
+      case 'chat': {
+        const pid = this.connToPlayer.get(connection.id);
+        const chatter = this.engineForPlayer(pid);
+        if (chatter && msg.targetId) await this.handleChat(chatter, msg.targetId, String(msg.text || '').slice(0, 400), connection);
         return;
       }
 
