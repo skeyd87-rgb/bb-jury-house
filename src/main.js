@@ -23,6 +23,7 @@ import { getApiKey, setApiKey } from './ai/claude.js';
 import {
   el, renderHud, showToast, clearToast, openChatPanel, closeChatPanel,
   cinematic, cinematicWait, pickHouseguests, cinematicTextInput, confetti, titleScreen,
+  openLiveGroupPanel,
 } from './ui/ui.js';
 import { setMood, sting, setMusicEnabled, stopMusic } from './audio/music.js';
 import { speak, stopSpeaking, isVoiceOn, setVoiceOn, voiceSupported } from './audio/voice.js';
@@ -85,18 +86,22 @@ function startOnlineSeason(game) {
   const meId = myEngineId();
   const active = game.houseguests.filter((h) => !game.evicted.includes(h.id));
 
-  // Build the world from the server roster.
-  const me = active.find((h) => h.id === meId) || active[0];
-  const player = createCharacter(me);
-  scene.add(player);
-  world.setPlayer(player);
+  // Build the world from the server roster. No seat (meId is null) means
+  // this connection is a spectator: everyone renders as an NPC, no avatar of
+  // our own, and the camera auto-orbits (see WorldController.update()).
+  const me = meId ? active.find((h) => h.id === meId) : null;
+  if (me) {
+    const player = createCharacter(me);
+    scene.add(player);
+    world.setPlayer(player);
+  }
   const rooms = ['living', 'kitchen', 'bedroom', 'backyard'];
   let i = 0;
   for (const hg of active) {
-    if (hg.id === me.id) continue;
+    if (me && hg.id === me.id) continue;
     world.addNpc(createCharacter(hg), rooms[i++ % rooms.length]);
   }
-  world.onNpcClick = (id) => openOnlineChat(id);
+  world.onNpcClick = me ? (id) => openOnlineChat(id) : () => {};
   animate();
   renderOnlineHud();
   // Drive the interactive season from server turn broadcasts.
@@ -108,6 +113,10 @@ function startOnlineSeason(game) {
       { label: 'Later', style: '', onClick: () => {} },
     ]);
   };
+  wireOnlineSocialHandlers();
+  wireReconnectHandling();
+  // Live position updates from other connected humans.
+  room.onPos = (id, x, z, rotY) => world.setNetTarget(id, x, z, rotY);
   handleOnlineTurn(game);
 }
 
@@ -135,6 +144,151 @@ function openOnlineChat(targetId) {
   });
 }
 
+// ---- Online social tools (group chat, house meeting, alliances, diary) ----
+
+let activeGroupId = null;
+let groupPanel = null;
+
+function wireOnlineSocialHandlers() {
+  room.onGroupStart = (payload) => {
+    activeGroupId = payload.groupId;
+    const others = payload.members.filter((m) => m !== myEngineId());
+    groupPanel = openLiveGroupPanel({
+      title: payload.isHouseMeeting ? '📢 House Meeting' : `Group: ${payload.memberNames.filter((n, i) => payload.members[i] !== myEngineId()).join(', ')}`,
+      subtitle: payload.isHouseMeeting ? 'Everyone. Everything on the record.' : 'All hear everything · /whisper <name> ... for a private aside',
+      color: payload.isHouseMeeting ? 0xf5c542 : 0x7c5cff,
+      onSend: (text) => room.sendGroupMsg(activeGroupId, text),
+      onClose: () => { activeGroupId = null; groupPanel = null; },
+    });
+    if (payload.founder !== myEngineId()) {
+      groupPanel.addSystemMsg(payload.isHouseMeeting ? `${payload.founderName} calls a house meeting.` : `${payload.founderName} pulls you and ${others.length > 1 ? 'others' : 'someone else'} aside.`);
+    }
+  };
+  room.onGroupMsg = (groupId, id, name, text) => {
+    if (groupId !== activeGroupId || !groupPanel) return;
+    groupPanel.addLine(name, text, id === myEngineId());
+  };
+  room.onGroupSystem = (groupId, text) => {
+    if ((groupId && groupId !== activeGroupId) || !groupPanel) return;
+    groupPanel.addSystemMsg(text);
+  };
+  room.onGroupWhisper = (from, fromName, text) => {
+    showToast(`🤫 <b>${fromName}</b> whispers: "${text.slice(0, 100)}"`);
+  };
+  room.onAllianceResult = (msg) => {
+    let bodyHtml = '';
+    if (msg.accepted.length) {
+      bodyHtml += `<p>✅ In: <b>${msg.accepted.map((a) => a.name).join(', ')}</b></p>`;
+      bodyHtml += msg.alliance
+        ? (msg.alliance.existed ? `<p class="muted">You already had this exact group — deepened, not duplicated.</p>` : `<p><b>"${msg.alliance.name}"</b> is official.</p>`)
+        : '';
+    }
+    for (const d of msg.declined) bodyHtml += `<p>❌ <b>${d.name}</b> passed — ${d.reason}.</p>`;
+    if (!msg.accepted.length) bodyHtml += `<p class="muted">Nobody committed. Build more trust first.</p>`;
+    cinematicWait({ kicker: 'Alliance Invites', title: msg.accepted.length ? 'The word comes back...' : 'Crickets.', bodyHtml, continueLabel: 'OK' });
+  };
+  room.onAllianceLeft = (msg) => {
+    cinematicWait({
+      kicker: 'Alliance Dissolved', title: `You left "${msg.name}".`,
+      bodyHtml: `<p class="muted">${msg.collapsed ? 'With you gone, the alliance collapsed entirely.' : `${msg.others.join(', ')} will remember this.`}</p>`,
+      continueLabel: 'OK',
+    });
+  };
+}
+
+function groupChatFlowOnline(presetIds = null) {
+  if (onlineOverlay || compRunning || activeGroupId) return;
+  const myEngine = myEngineId();
+  if (presetIds) {
+    if (presetIds.length < 1) return;
+    room.startGroup(presetIds, true);
+    return;
+  }
+  pickHouseguests(onlineRenderGame(onlineGame), {
+    kicker: 'Group Conversation', title: 'Pull some people aside',
+    bodyHtml: `<p class="muted">Everything said here is heard — and remembered — by everyone present.</p>`,
+    ids: onlineActiveIds(onlineGame).filter((id) => id !== myEngine),
+    count: { min: 2, max: 4 }, confirmLabel: 'Gather Them', cancelable: true,
+  }).then((picked) => { if (picked && picked.length >= 2) room.startGroup(picked, false); });
+}
+
+function formAllianceFlowOnline() {
+  if (onlineOverlay || compRunning) return;
+  const myEngine = myEngineId();
+  pickHouseguests(onlineRenderGame(onlineGame), {
+    kicker: 'Form an Alliance', title: 'Who do you want in?',
+    bodyHtml: `<p class="muted">Each invitee decides for themselves.</p>`,
+    ids: onlineActiveIds(onlineGame).filter((id) => id !== myEngine),
+    count: { min: 1, max: 3 }, confirmLabel: 'Send the Invites', cancelable: true,
+  }).then(async (picked) => {
+    if (!picked || !picked.length) return;
+    const name = await cinematicTextInput({
+      kicker: 'Form an Alliance', title: 'Name it', quote: 'Every real alliance has a name.',
+      placeholder: 'e.g. The Blindside Brigade', submitLabel: 'Lock It In',
+    });
+    room.formAlliance(picked, name);
+  });
+}
+
+function leaveAllianceFlowOnline(allianceId) {
+  if (onlineOverlay || compRunning) return;
+  const c = cinematic({ kicker: 'Leave Alliance', title: 'Walk out?', bodyHtml: `<p class="muted">Quitting is a soft betrayal — they'll lose trust and hold a grudge.</p>` });
+  c.setActions([
+    { label: 'Walk Away', style: 'danger', onClick: () => { c.close(); room.leaveAllianceOnline(allianceId); } },
+    { label: 'Stay', style: 'primary', onClick: () => c.close() },
+  ]);
+}
+
+// ---- Reconnection UX ----------------------------------------------------
+// Only an UNEXPECTED close (network drop) triggers this — an intentional
+// Leave/disconnect (winner screen, "Leave Room") skips reconnecting.
+
+let reconnectOverlay = null;
+let reconnectAttempts = 0;
+
+function wireReconnectHandling() {
+  room.onClose = (wasUnexpected) => {
+    if (wasUnexpected) showReconnecting();
+  };
+  room.onOpen = () => {
+    if (reconnectOverlay) { reconnectOverlay.close(); reconnectOverlay = null; }
+    reconnectAttempts = 0;
+  };
+}
+
+function showReconnecting() {
+  if (reconnectOverlay) return;
+  reconnectOverlay = cinematic({
+    kicker: 'Connection Lost', title: 'Reconnecting…',
+    bodyHtml: `<p class="muted">The AI is covering your seat while you're disconnected. Trying to get you back in...</p>`,
+  });
+  reconnectOverlay.setActions([{ label: '🚪 Give Up & Leave', style: '', onClick: () => location.reload() }]);
+  attemptReconnect();
+}
+
+function attemptReconnect() {
+  reconnectAttempts++;
+  const name = localStorage.getItem('bbjury.playerName') || 'Player';
+  try { room.reconnect(name); } catch {}
+  setTimeout(() => {
+    if (!reconnectOverlay) return; // already reconnected
+    if (room.socket && room.socket.readyState === 1) return; // open — onOpen will clear it
+    if (reconnectAttempts < 30) attemptReconnect();
+    else if (reconnectOverlay) {
+      reconnectOverlay.setActions([{ label: 'Back to Title', style: 'gold', onClick: () => location.reload() }]);
+    }
+  }, 3000);
+}
+
+function openDiaryOnline() {
+  if (onlineOverlay || compRunning) return;
+  openChatPanel({
+    title: 'Diary Room', subtitle: 'Private. Nothing said here leaves this room.',
+    color: 0xb04a4a, isDiary: true, thread: [],
+    onSend: async (text) => room.sendDiary(text),
+  });
+}
+
 // ---- Online turn renderer -------------------------------------------------
 // Reacts to the server's authoritative `game.turn`, showing the right UI for
 // THIS player (act if it's your move; watch otherwise) and sending actions.
@@ -154,6 +308,23 @@ function iAmHost() {
   return onlineGame && room && onlineGame.humanSeats && room.isHost && room.isHost();
 }
 
+let turnTimerInterval = null;
+function updateTurnTimer(deadline) {
+  if (turnTimerInterval) { clearInterval(turnTimerInterval); turnTimerInterval = null; }
+  if (!deadline) return;
+  const tick = () => {
+    const timerEl = document.getElementById('online-timer');
+    if (!timerEl) { clearInterval(turnTimerInterval); turnTimerInterval = null; return; }
+    const remain = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+    const mm = Math.floor(remain / 60), ss = remain % 60;
+    timerEl.textContent = `⏱ ${mm}:${String(ss).padStart(2, '0')}`;
+    timerEl.classList.toggle('urgent', remain <= 30);
+    if (remain <= 0) { clearInterval(turnTimerInterval); turnTimerInterval = null; }
+  };
+  tick();
+  turnTimerInterval = setInterval(tick, 1000);
+}
+
 function syncOnlineWorld(game) {
   // Remove evicted houseguests from the 3D house.
   for (const id of game.evicted) {
@@ -167,22 +338,58 @@ function syncOnlineWorld(game) {
   const top = el('div', 'hud-top');
   top.append(el('div', 'week', `Week ${game.week} — Online`));
   top.append(el('div', 'phase', phaseLabelOnline(game)));
+  if (game.turn?.turnDeadline) {
+    const timerEl = el('div', 'hud-timer', '');
+    timerEl.id = 'online-timer';
+    top.append(timerEl);
+  }
+  updateTurnTimer(game.turn?.turnDeadline || null);
   const bits = [];
   if (game.hoh) bits.push(`HoH: ${nm(game, game.hoh)}`);
   if (game.vetoHolder) bits.push(`Veto: ${nm(game, game.vetoHolder)}`);
   top.append(el('div', 'sub', `You are ${me ? me.name : '—'}${bits.length ? ' · ' + bits.join(' · ') : ''}`));
   h.append(top);
+  const st = el('div', 'hud-status');
   if (game.nominees && game.nominees.length) {
-    const st = el('div', 'hud-status');
-    st.innerHTML = `<span class="nom">On the block:</span> ${game.nominees.map((n) => nm(game, n)).join(' & ')}`;
-    h.append(st);
+    st.append(el('div', 'hud-line', `<span class="nom">On the block:</span> ${game.nominees.map((n) => nm(game, n)).join(' & ')}`));
   }
+  if (game.jury && game.jury.length) {
+    st.append(el('div', 'hud-line', `<b>Jury (${game.jury.length}):</b> ${game.jury.map((j) => nm(game, j)).join(', ')}`));
+  }
+  for (const a of (game.myAlliances || [])) {
+    const line = el('div', 'hud-line', `<b>${a.name}:</b> ${a.memberNames.join(', ')} <span class="leave-al" title="Leave this alliance">✕</span>`);
+    const x = line.querySelector('.leave-al');
+    if (x) x.onclick = () => leaveAllianceFlowOnline(a.id);
+    st.append(line);
+  }
+  for (const p of (game.myPromises || [])) {
+    st.append(el('div', 'hud-line', `<span class="muted">${p.direction === 'made' ? `You promised ${p.withName}` : `${p.withName} promised you`}: "${p.text}"</span>`));
+  }
+  if (st.childNodes.length) h.append(st);
+
   // Leave Room (drop-in/out: AI covers your seat; rejoin with the same code)
   const btns = el('div', 'hud-buttons');
   btns.style.left = 'auto';
   btns.style.right = 'calc(12px + var(--safe-right))';
+  if (isSpectator()) {
+    btns.append(el('div', 'hud-hint', '👀 Spectating'));
+  } else if (meId) {
+    const dr = el('button', 'bb', '🎥 Diary Room');
+    dr.onclick = () => openDiaryOnline();
+    btns.append(dr);
+    const ga = el('button', 'bb', '🤝 Form Alliance');
+    ga.onclick = () => formAllianceFlowOnline();
+    btns.append(ga);
+    const gc = el('button', 'bb', '💬 Group Talk');
+    gc.onclick = () => groupChatFlowOnline();
+    btns.append(gc);
+    const hm = el('button', 'bb', '📢 House Meeting');
+    hm.onclick = () => groupChatFlowOnline(onlineActiveIds(game).filter((id) => id !== meId));
+    btns.append(hm);
+  }
   const leave = el('button', 'bb', '🚪 Leave');
   leave.onclick = () => {
+    if (isSpectator()) { room.disconnect(); location.reload(); return; }
     // Leaving must work even mid-ceremony (that's the point of drop-in/out) —
     // clear any showing overlay first so this doesn't stack on top of it.
     document.querySelectorAll('.cinematic').forEach((e) => e.remove());
@@ -198,6 +405,10 @@ function syncOnlineWorld(game) {
   };
   btns.append(leave);
   h.append(btns);
+}
+
+function isSpectator() {
+  return !myEngineId();
 }
 
 function phaseLabelOnline(game) {
@@ -460,8 +671,14 @@ function renderOnlineTurn(game, t) {
       const iWon = t.winner === myEngine;
       if (iWon) confetti();
       const votes = t.votes.map((v) => `<div class="jury-vote-card"><div><b>${v.jurorName}</b> → <b>${v.voteName}</b><div class="r">"${v.reasoning}"</div></div></div>`).join('');
+      const s = t.stats;
+      const statsHtml = s ? `
+        <p class="muted">${s.weeks} weeks · ${s.compRecord.length} competitions · ${s.alliancesFormed} alliance${s.alliancesFormed === 1 ? '' : 's'} formed</p>
+        <p class="muted">Promises kept: ${s.promisesKept} · broken: ${s.promisesBroken}</p>
+        <p class="muted">Eviction order: ${s.evictionOrder.join(' → ')}</p>
+      ` : '';
       onlineOverlay = cinematic({ kicker: 'Season Finale', title: `🏆 ${t.winnerName} wins Big Brother! (${Object.values(t.tally).join('–')})`, cardCls: 'stats-card',
-        bodyHtml: `<div>${votes}</div><p>${iWon ? 'You did it.' : 'Better luck next season.'}</p>` });
+        bodyHtml: `<div>${votes}</div>${statsHtml}<p>${iWon ? 'You did it.' : 'Better luck next season.'}</p>` });
       onlineOverlay.setActions([{ label: 'Back to Title', style: 'gold', onClick: () => { room.disconnect(); location.reload(); } }]);
       break;
     }
@@ -569,12 +786,26 @@ function startWorld() {
   scheduleApproaches();
 }
 
+let lastPosSentAt = 0;
+let lastPosSent = null;
 function animate() {
   requestAnimationFrame(animate);
   resize();
   world.update();
   updateFx(world.clock.elapsedTime);
   renderer.render(scene, camera);
+
+  // Broadcast our own position to other connected humans (throttled).
+  if (onlineMode && room && world.player) {
+    const now = performance.now();
+    const p = world.player.position;
+    const moved = !lastPosSent || Math.hypot(p.x - lastPosSent.x, p.z - lastPosSent.z) > 0.08;
+    if (now - lastPosSentAt > 150 && moved) {
+      lastPosSentAt = now;
+      lastPosSent = { x: p.x, z: p.z };
+      room.sendPos(p.x, p.z, world.player.rotation.y);
+    }
+  }
 }
 
 // ---------- HUD / shared ----------

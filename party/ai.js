@@ -5,8 +5,11 @@
 import {
   buildChatSystemPrompt, buildThreadMessages,
   buildJurorQuestionPrompt, buildOpponentAnswerPrompt, buildJurorVotePrompt,
+  buildGroupSystemPrompt, buildDiarySystemPrompt,
 } from '../src/ai/prompts.js';
-import { fallbackChat, fallbackJurorQuestion, fallbackJurorVote } from '../src/ai/fallback.js';
+import {
+  fallbackChat, fallbackJurorQuestion, fallbackJurorVote, fallbackGroupChat, fallbackDiary,
+} from '../src/ai/fallback.js';
 import { extractJson } from '../src/ai/claude.js';
 
 const MODEL = 'claude-sonnet-5';
@@ -92,4 +95,50 @@ export async function serverJurorVote(g, jurorId, finalists, qa, apiKey) {
   }
   const fb = fallbackJurorVote(g, jurorId, finalists, qa);
   return { vote: fb.vote, reasoning: fb.reasoning };
+}
+
+// AI members of a group conversation reply (and form opinions) at once.
+// aiMemberIds: only the AI-controlled participants — human members answer
+// through their own client turns, not this call. Returns
+// { replies: [{id, reply}], effects: {id: {...}}, promiseMade, allianceProposal }.
+export async function serverGroupChat(g, aiMemberIds, chatterId, playerMsg, history, apiKey) {
+  if (apiKey && aiMemberIds.length) {
+    try {
+      const msgs = history.slice(-14).map((m) => ({
+        role: m.who === 'you' ? 'user' : 'assistant',
+        content: m.who === 'you' ? m.text : JSON.stringify({ replies: [{ id: m.id, reply: m.text }] }),
+      }));
+      msgs.push({ role: 'user', content: playerMsg });
+      if (msgs[0]?.role === 'assistant') msgs.unshift({ role: 'user', content: '(The group gathers.)' });
+      const text = await callClaude(
+        apiKey,
+        buildGroupSystemPrompt(g, aiMemberIds, chatterId),
+        msgs,
+        Math.min(3000, 700 + aiMemberIds.length * 300)
+      );
+      const json = extractJson(text);
+      if (json && Array.isArray(json.replies)) return json;
+    } catch (err) {
+      // fall through to the built-in engine
+    }
+  }
+  return fallbackGroupChat(g, aiMemberIds, playerMsg, chatterId);
+}
+
+// Diary Room: zero game-state side effects, purely reflective. Returns a string.
+export async function serverDiaryChat(g, speakerId, diaryLog, apiKey) {
+  if (apiKey) {
+    try {
+      const msgs = diaryLog.slice(-10).map((m) => ({
+        role: m.who === 'you' ? 'user' : 'assistant',
+        content: m.who === 'you' ? m.text : JSON.stringify({ reply: m.text }),
+      }));
+      const text = await callClaude(apiKey, buildDiarySystemPrompt(g, speakerId), msgs, 300);
+      const json = extractJson(text);
+      if (json && json.reply) return String(json.reply).slice(0, 400);
+    } catch (err) {
+      // fall through
+    }
+  }
+  return fallbackDiary(g).reply;
 }

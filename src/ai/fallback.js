@@ -237,13 +237,13 @@ export function fallbackOpener(g, npcId, reason) {
 
 // Group chat without an API key: 1-2 members respond via the 1:1 engine,
 // effects returned per member at reduced strength.
-export function fallbackGroupChat(g, memberIds, playerMsg) {
+export function fallbackGroupChat(g, memberIds, playerMsg, chatterId = PLAYER_ID) {
   const talkers = [...memberIds].sort(() => Math.random() - 0.5).slice(0, Math.min(2, memberIds.length));
   const replies = [];
   const effects = {};
   let promiseMade = null;
   for (const id of memberIds) {
-    const r = fallbackChat(g, id, playerMsg);
+    const r = fallbackChat(g, id, playerMsg, chatterId);
     if (talkers.includes(id)) replies.push({ id, reply: r.reply });
     effects[id] = {
       trustDelta: Math.round((r.effects.trustDelta || 0) * 0.7),
@@ -257,7 +257,7 @@ export function fallbackGroupChat(g, memberIds, playerMsg) {
   // Alliance pitch to the group?
   let allianceProposal = null;
   if (/\b(alliance|work together|team up|final ?\d|ride together)\b/i.test(playerMsg)) {
-    const decliners = memberIds.filter((id) => rel(g, id, PLAYER_ID).trust < 50);
+    const decliners = memberIds.filter((id) => rel(g, id, chatterId).trust < 50);
     allianceProposal = { accepted: decliners.length <= memberIds.length / 2, name: null, decliners };
   }
   return { replies, effects, promiseMade, allianceProposal };

@@ -12,9 +12,14 @@ import {
   decideReplacement, applyVetoSave, applyReplacement, applyVeto, evictionDesire,
   applyEviction, nextPhase, phaseLabel,
 } from '../src/game/season.js';
-import { simulateHouseLife, applyChatEffects } from '../src/game/social.js';
-import { fallbackChat } from '../src/ai/fallback.js';
-import { serverNpcChat, serverJurorQuestion, serverOpponentAnswer, serverJurorVote } from './ai.js';
+import {
+  simulateHouseLife, applyChatEffects, formOfficialAlliance, leaveAlliance, allianceWillingness,
+} from '../src/game/social.js';
+import { fallbackChat, fallbackDiary } from '../src/ai/fallback.js';
+import {
+  serverNpcChat, serverJurorQuestion, serverOpponentAnswer, serverJurorVote,
+  serverGroupChat, serverDiaryChat,
+} from './ai.js';
 
 // Mirror of comps.js COMP_TYPES (kept here to avoid importing the DOM module).
 const COMP_TYPES = ['timing', 'count', 'reaction'];
@@ -88,10 +93,13 @@ export class Room extends Server {
 
   // Render-safe projection of the authoritative game (no hidden social/memory
   // state — those stay server-side and are revealed only as the game dictates).
-  projectGame() {
+  // viewerEngineId, if given, adds a personalized slice: only that viewer's OWN
+  // alliances and OWN open promises (never anyone else's — see invariant in
+  // CLAUDE.md about not leaking hidden social state).
+  projectGame(viewerEngineId = null) {
     const g = this.game;
     if (!g) return null;
-    return {
+    const base = {
       week: g.week,
       phase: g.phase,
       hoh: g.hoh,
@@ -114,11 +122,30 @@ export class Room extends Server {
         hairStyle: h.hairStyle,
       })),
     };
+    if (viewerEngineId) {
+      base.myAlliances = (g.alliances || [])
+        .filter((a) => !a.dead && a.members.includes(viewerEngineId))
+        .map((a) => ({ id: a.id, name: a.name, memberNames: a.members.filter((m) => m !== viewerEngineId).map((m) => nameOf(g, m)) }));
+      base.myPromises = (g.promises || [])
+        .filter((p) => p.status === 'open' && (p.from === viewerEngineId || p.to === viewerEngineId))
+        .map((p) => ({
+          text: p.text, kind: p.kind,
+          withName: nameOf(g, p.from === viewerEngineId ? p.to : p.from),
+          direction: p.from === viewerEngineId ? 'made' : 'received',
+        }));
+    }
+    return base;
   }
 
   broadcastGame() {
-    const game = this.projectGame();
-    if (game) this.broadcast(JSON.stringify({ type: 'game', game }));
+    const g = this.game;
+    if (!g) return;
+    const spectatorPayload = JSON.stringify({ type: 'game', game: this.projectGame() });
+    for (const c of this.getConnections()) {
+      const pid = this.connToPlayer.get(c.id);
+      const engineId = pid ? this.engineForPlayer(pid) : null;
+      c.send(engineId ? JSON.stringify({ type: 'game', game: this.projectGame(engineId) }) : spectatorPayload);
+    }
   }
 
   async commit() {
@@ -139,7 +166,18 @@ export class Room extends Server {
 
   async setTurn(turn) {
     this.turn = turn;
+    this.applyTurnTimer();
     await this.commit();
+  }
+
+  // Stamps the current turn with a deadline (so clients can show a countdown)
+  // and (re)schedules the Durable Object alarm that force-resolves it.
+  applyTurnTimer() {
+    if (!this.turn) return;
+    const secs = this.turnTimerSeconds();
+    if (secs > 0) this.turn.turnDeadline = Date.now() + secs * 1000;
+    else delete this.turn.turnDeadline;
+    this.scheduleTurnTimer();
   }
 
   async beginSeason() {
@@ -179,6 +217,7 @@ export class Room extends Server {
     for (const id of players) if (!this.isActiveHuman(id)) scores[id] = Math.round(npcCompScore(g, id));
     const waitingOn = this.humanPlayersAmong(players);
     this.turn = { kind: 'comp', comp, compType, players, scores, waitingOn };
+    this.applyTurnTimer();
     if (waitingOn.length === 0) return this.resolveComp();
     await this.commit();
   }
@@ -300,6 +339,7 @@ export class Room extends Server {
     for (const v of voters) if (!this.isActiveHuman(v)) votes[v] = evictionDesire(g, v, n1, n2) >= 0 ? n1 : n2;
     const waitingOn = this.humanPlayersAmong(voters);
     this.turn = { kind: 'vote', nominees: [n1, n2], names: [nameOf(g, n1), nameOf(g, n2)], voters, votes, waitingOn };
+    this.applyTurnTimer();
     if (waitingOn.length === 0) return this.resolveEviction();
     await this.commit();
   }
@@ -445,6 +485,7 @@ export class Room extends Server {
       kind: 'jury_answer', juror, jurorName: nameOf(g, juror), finalists,
       questions: { [f1]: qF1, [f2]: qF2 }, toneNote, answers, waitingOn,
     };
+    this.applyTurnTimer();
     if (waitingOn.length === 0) return this.resolveJurorAnswer();
     await this.commit();
   }
@@ -515,7 +556,22 @@ export class Room extends Server {
       finalists, finalistNames: finalists.map((f) => nameOf(g, f)),
       votes, tally: { [nameOf(g, finalists[0])]: a, [nameOf(g, finalists[1])]: b },
       winner, winnerName: nameOf(g, winner),
+      stats: this.buildOnlineStats(),
     });
+  }
+
+  // Post-game summary — the season is over, so the no-hidden-state invariant
+  // no longer applies; every player sees the same full recap.
+  buildOnlineStats() {
+    const g = this.game;
+    return {
+      weeks: g.week,
+      compRecord: (g.compHistory || []).map((c) => ({ week: c.week, type: c.type, winner: nameOf(g, c.winner) })),
+      evictionOrder: g.evicted.map((id) => nameOf(g, id)),
+      promisesKept: (g.promises || []).filter((p) => p.status === 'kept').length,
+      promisesBroken: (g.promises || []).filter((p) => p.status === 'broken').length,
+      alliancesFormed: (g.alliances || []).length,
+    };
   }
 
   // Host (or the sole actor) advances a result/intro screen to the next phase.
@@ -744,12 +800,211 @@ export class Room extends Server {
     thread.push({ who: 'them', text: reply });
     if (thread.length > 24) g.mpThreads[key] = thread.slice(-24);
     await this.saveGame();
+    this.broadcastGame(); // in case effects touched alliances/promises (personalized panels)
     connection.send(JSON.stringify({
       type: 'chatReply', npcId: targetId, text: reply,
       note: fx.promiseMade ? `📋 Promise recorded: "${fx.promiseMade.text}"`
         : (fx.allianceProposal?.accepted || fx.allianceSignal === 'accept') ? `🤝 ${nameOf(g, targetId)} is in.`
         : fx.suspicionOfLie ? `👀 ${nameOf(g, targetId)} didn't seem to buy that…` : null,
     }));
+  }
+
+  // ---- Group conversations, alliances, diary (Phase 5b/5c) -----------------
+
+  sendToPid(pid, obj) {
+    const payload = JSON.stringify(obj);
+    for (const c of this.getConnections()) {
+      if (this.connToPlayer.get(c.id) === pid) c.send(payload);
+    }
+  }
+
+  sendToEngine(engineId, obj) {
+    const pid = this.humanFor(engineId);
+    if (pid) this.sendToPid(pid, obj);
+  }
+
+  async handleStartGroup(pid, memberIds, isHouseMeeting) {
+    const g = this.game;
+    if (!g) return;
+    const founder = this.engineForPlayer(pid);
+    if (!founder) return;
+    const ids = activeIds(g).filter((id) => id !== founder && memberIds.includes(id));
+    if (ids.length < (isHouseMeeting ? 1 : 2)) return;
+    if (!g.mpGroups) g.mpGroups = {};
+    const groupId = 'grp' + (Object.keys(g.mpGroups).length + 1) + '_' + g.week;
+    const members = [founder, ...ids];
+    g.mpGroups[groupId] = { id: groupId, members, founder, isHouseMeeting: !!isHouseMeeting, log: [] };
+    if (isHouseMeeting) logEvent(g, 'house_meeting', `${nameOf(g, founder)} called a house meeting.`, ids);
+    const payload = {
+      type: 'groupStart', groupId, members, memberNames: members.map((m) => nameOf(g, m)),
+      founder, founderName: nameOf(g, founder), isHouseMeeting: !!isHouseMeeting,
+    };
+    for (const m of members) if (this.isHuman(m)) this.sendToEngine(m, payload);
+    await this.saveGame();
+  }
+
+  async handleGroupMsg(pid, groupId, text) {
+    const g = this.game;
+    const grp = g?.mpGroups?.[groupId];
+    if (!grp || !text) return;
+    const senderId = this.engineForPlayer(pid);
+    if (!senderId || !grp.members.includes(senderId)) return;
+
+    // Whisper: /whisper <name> <msg> — only that member truly hears it, but the
+    // rest of the group notices the huddle (matches the single-player mechanic).
+    const wm = text.match(/^\/(?:whisper|w)\s+(\S+)\s+([\s\S]+)/i);
+    if (wm) {
+      const targetId = grp.members.find((id) => id !== senderId && nameOf(g, id).toLowerCase() === wm[1].toLowerCase());
+      if (!targetId) {
+        this.sendToPid(pid, { type: 'groupSystem', groupId, text: `(No one named "${wm[1]}" is in this group.)` });
+        return;
+      }
+      const secret = wm[2];
+      for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: senderId, name: nameOf(g, senderId), text: `🤫 (whispers to ${nameOf(g, targetId)}) ${secret}` });
+      let whisperReply = null;
+      if (this.isHuman(targetId)) {
+        this.sendToEngine(targetId, { type: 'groupWhisper', groupId, from: senderId, fromName: nameOf(g, senderId), text: secret });
+      } else {
+        const r = await serverNpcChat(g, targetId, secret, senderId, [], this.apiKey);
+        whisperReply = String(r.reply || '…').slice(0, 400);
+        const fx = this.sanitizeChatEffects(r.effects);
+        applyChatEffects(g, targetId, secret, fx, senderId);
+        for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: targetId, name: nameOf(g, targetId), text: `🤫 ${whisperReply}` });
+      }
+      // Everyone else clocks the whispering.
+      for (const id of grp.members) {
+        if (id === senderId || id === targetId || !g.social[id]?.[senderId]) continue;
+        g.social[id][senderId].threat = Math.min(100, g.social[id][senderId].threat + 5);
+        g.social[id][senderId].trust = Math.max(0, g.social[id][senderId].trust - 3);
+        g.memory[id]?.gossipHeard.push({
+          text: `caught ${nameOf(g, senderId)} whispering with ${nameOf(g, targetId)} in a group — didn't like it`,
+          aboutId: senderId, fromId: id, week: g.week, believed: true,
+        });
+        if (this.isHuman(id)) this.sendToEngine(id, { type: 'groupSystem', groupId, text: `🤫 You noticed ${nameOf(g, senderId)} whispering to ${nameOf(g, targetId)}.` });
+      }
+      await this.saveGame();
+      return;
+    }
+
+    grp.log.push({ who: 'you', id: senderId, text });
+    for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: senderId, name: nameOf(g, senderId), text });
+
+    const aiMembers = grp.members.filter((m) => !this.isHuman(m));
+    let result;
+    try {
+      result = await serverGroupChat(g, aiMembers, senderId, text, grp.log, this.apiKey);
+    } catch {
+      result = null;
+    }
+    if (!result || !Array.isArray(result.replies)) return;
+
+    const replies = result.replies.filter((r) => aiMembers.includes(r.id) && r.reply).slice(0, 3);
+    for (const r of replies) {
+      const reply = String(r.reply).slice(0, 400);
+      grp.log.push({ who: 'them', id: r.id, text: reply });
+      for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: r.id, name: nameOf(g, r.id), text: reply });
+    }
+    for (const id of aiMembers) {
+      const raw = (result.effects && result.effects[id]) || {};
+      const fx = this.sanitizeChatEffects({ ...raw, promiseMade: result.promiseMade || null });
+      fx.allianceSignal = 'none';
+      fx.allianceProposal = null; // proposals are resolved once below, not per member
+      applyChatEffects(g, id, text, fx, senderId);
+      if (fx.summary) {
+        g.memory[id].convoSummaries.push({ withId: senderId, week: g.week, summary: `(group) ${fx.summary}` });
+        g.memory[id].convoSummaries = g.memory[id].convoSummaries.slice(-20);
+      }
+    }
+    if (result.promiseMade) {
+      for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupSystem', groupId, text: `📋 Everyone here heard that promise: "${result.promiseMade.text}"` });
+    }
+    if (result.allianceProposal) {
+      if (result.allianceProposal.accepted) {
+        const decliners = (result.allianceProposal.decliners || []).filter((id) => aiMembers.includes(id));
+        const accepters = grp.members.filter((id) => id !== senderId && !decliners.includes(id));
+        if (accepters.length) {
+          const alRes = formOfficialAlliance(g, accepters[0], result.allianceProposal.name, accepters.slice(1), senderId);
+          for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupSystem', groupId, text: `🤝 "${alRes.alliance.name}" is official: ${[senderId, ...accepters].map((id) => nameOf(g, id)).join(', ')}${decliners.length ? ` (out: ${decliners.map((id) => nameOf(g, id)).join(', ')})` : ''}` });
+        }
+      } else {
+        for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupSystem', groupId, text: `🚫 The room didn't commit. They'll remember it was asked.` });
+      }
+    }
+    await this.saveGame();
+    this.broadcastGame();
+  }
+
+  // Dedicated "Form Alliance" button flow: invite a specific list of members.
+  // Online simplification: human invitees are auto-included (a real synchronous
+  // accept/decline turn for humans is out of scope for this pass) while AI
+  // invitees decide via allianceWillingness, exactly as single-player does.
+  async handleFormAlliance(pid, memberIds, name) {
+    const g = this.game;
+    if (!g) return;
+    const founder = this.engineForPlayer(pid);
+    if (!founder) return;
+    const picked = activeIds(g).filter((id) => id !== founder && memberIds.includes(id));
+    if (!picked.length) return;
+    const accepts = [], declines = [];
+    for (const id of picked) {
+      if (this.isHuman(id)) { accepts.push({ id, reason: 'in' }); continue; }
+      const w = allianceWillingness(g, id, picked.filter((x) => x !== id), founder);
+      (w.willing ? accepts : declines).push({ id, reason: w.reason });
+    }
+    let result = null;
+    if (accepts.length) {
+      result = formOfficialAlliance(g, accepts[0].id, name, accepts.slice(1).map((a) => a.id), founder);
+    }
+    for (const d of declines) {
+      if (g.social[d.id]?.[founder]) g.social[d.id][founder].threat = Math.min(100, g.social[d.id][founder].threat + 6);
+    }
+    this.sendToPid(pid, {
+      type: 'allianceResult', accepted: accepts.map((a) => ({ id: a.id, name: nameOf(g, a.id) })),
+      declined: declines.map((d) => ({ id: d.id, name: nameOf(g, d.id), reason: d.reason })),
+      alliance: result ? { id: result.alliance.id, name: result.alliance.name, existed: result.existed } : null,
+    });
+    for (const a of accepts) {
+      if (a.id !== accepts[0].id && this.isHuman(a.id) && result) {
+        this.sendToEngine(a.id, { type: 'groupSystem', groupId: null, text: `🤝 You joined "${result.alliance.name}" with ${nameOf(g, founder)}.` });
+      }
+    }
+    await this.saveGame();
+    this.broadcastGame();
+  }
+
+  async handleLeaveAlliance(pid, allianceId) {
+    const g = this.game;
+    if (!g) return;
+    const engineId = this.engineForPlayer(pid);
+    if (!engineId) return;
+    const res = leaveAlliance(g, allianceId, engineId);
+    if (!res) return;
+    this.sendToPid(pid, { type: 'allianceLeft', name: res.name, others: res.others.map((id) => nameOf(g, id)), collapsed: res.collapsed });
+    for (const id of res.others) {
+      if (this.isHuman(id)) this.sendToEngine(id, { type: 'groupSystem', groupId: null, text: `💔 ${nameOf(g, engineId)} walked out of "${res.name}".` });
+    }
+    await this.saveGame();
+    this.broadcastGame();
+  }
+
+  async handleDiary(pid, text) {
+    const g = this.game;
+    if (!g || !text) return;
+    const engineId = this.engineForPlayer(pid);
+    if (!engineId) return;
+    if (!g.mpDiary) g.mpDiary = {};
+    const log = g.mpDiary[engineId] || (g.mpDiary[engineId] = []);
+    log.push({ who: 'you', text: String(text).slice(0, 400) });
+    let reply;
+    try {
+      reply = await serverDiaryChat(g, engineId, log, this.apiKey);
+    } catch {
+      reply = fallbackDiary(g).reply;
+    }
+    log.push({ who: 'them', text: reply });
+    if (log.length > 30) g.mpDiary[engineId] = log.slice(-30);
+    await this.saveGame();
+    this.sendToPid(pid, { type: 'diaryReply', text: reply });
   }
 
   async persist() {
@@ -861,6 +1116,20 @@ export class Room extends Server {
         if (chatter && msg.targetId) await this.handleChat(chatter, msg.targetId, String(msg.text || '').slice(0, 400), connection);
         return;
       }
+      case 'pos': {
+        // Ephemeral position relay — not persisted, not part of authoritative
+        // game state, just a live broadcast so other humans see you walk around.
+        const pid = this.connToPlayer.get(connection.id);
+        const engineId = pid ? this.engineForPlayer(pid) : null;
+        if (!engineId) return;
+        const x = Number(msg.x), z = Number(msg.z), rotY = Number(msg.rotY);
+        if (!isFinite(x) || !isFinite(z) || !isFinite(rotY)) return;
+        const payload = JSON.stringify({ type: 'pos', id: engineId, x, z, rotY });
+        for (const c of this.getConnections()) {
+          if (c.id !== connection.id) c.send(payload);
+        }
+        return;
+      }
 
       // ---- In-game player actions ----
       case 'advanceTurn': {
@@ -911,6 +1180,31 @@ export class Room extends Server {
       case 'juryVote': {
         const pid = this.connToPlayer.get(connection.id);
         if (pid) await this.submitJurorVote(pid, msg.vote, msg.reasoning);
+        return;
+      }
+      case 'startGroup': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleStartGroup(pid, msg.memberIds || [], !!msg.isHouseMeeting);
+        return;
+      }
+      case 'groupMsg': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleGroupMsg(pid, msg.groupId, String(msg.text || '').slice(0, 400));
+        return;
+      }
+      case 'formAlliance': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleFormAlliance(pid, msg.memberIds || [], msg.name ? String(msg.name).slice(0, 40) : null);
+        return;
+      }
+      case 'leaveAlliance': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleLeaveAlliance(pid, msg.allianceId);
+        return;
+      }
+      case 'diary': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleDiary(pid, msg.text);
         return;
       }
       case 'forceResolve': {

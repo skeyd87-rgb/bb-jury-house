@@ -267,6 +267,76 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
   };
 }
 
+// A group-chat panel fed by server pushes rather than request/response: any
+// member (human or AI) may speak at any time, so lines arrive out of band
+// instead of as a reply to `onSend`. Used for online Group Talk/House Meeting.
+export function openLiveGroupPanel({ title, subtitle, color, onSend, onClose }) {
+  closeChatPanel();
+  const panel = el('div', 'chat-panel');
+  panel.id = 'chat-panel';
+
+  const head = el('div', 'chat-head');
+  const av = el('div', 'chat-avatar');
+  av.style.background = `radial-gradient(circle at 35% 30%, #fff3, ${colorHex(color)})`;
+  head.append(av);
+  const names = el('div');
+  names.append(el('div', 'who', title));
+  names.append(el('div', 'role', subtitle));
+  head.append(names);
+  panel._onClose = () => { onClose && onClose(); };
+  const x = el('button', 'bb close', '✕');
+  x.onclick = () => closeChatPanel();
+  head.append(x);
+  panel.append(head);
+
+  const log = el('div', 'chat-log');
+  panel.append(log);
+
+  const inputRow = el('div', 'chat-input');
+  const input = el('input');
+  input.placeholder = 'Say something... (/whisper <name> <msg> for a private aside)';
+  input.maxLength = 300;
+  if (dictationSupported()) {
+    const mic = el('button', 'bb', '🎤');
+    mic.title = 'Dictate your message';
+    let rec = null;
+    mic.onclick = () => {
+      if (rec) { try { rec.stop(); } catch {} rec = null; mic.textContent = '🎤'; return; }
+      mic.textContent = '🔴';
+      rec = startDictation(
+        (text) => { input.value = (input.value ? input.value + ' ' : '') + text; },
+        () => { rec = null; mic.textContent = '🎤'; input.focus(); }
+      );
+    };
+    inputRow.append(mic);
+  }
+  const send = el('button', 'bb primary', 'Send');
+  function submit() {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    onSend(text);
+    input.focus();
+  }
+  send.onclick = submit;
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submit();
+    if (e.key === 'Escape') closeChatPanel();
+  });
+  inputRow.append(input, send);
+  panel.append(inputRow);
+
+  overlayRoot().append(panel);
+  input.focus();
+  return {
+    addLine: (name, text, isSelf) => {
+      setNamedMsg(addMsg(log, isSelf ? 'you' : 'them', ''), name, text);
+      log.scrollTop = log.scrollHeight;
+    },
+    addSystemMsg: (text) => { addMsg(log, 'sys', text); log.scrollTop = log.scrollHeight; },
+  };
+}
+
 function addMsg(log, who, text) {
   const m = el('div', 'msg ' + who, '');
   m.textContent = text;

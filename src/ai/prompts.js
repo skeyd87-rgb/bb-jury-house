@@ -170,10 +170,11 @@ export function buildOpenerPrompt(g, npcId, reason) {
 
 // ---- Diary Room -------------------------------------------------------------
 
-export function buildDiarySystemPrompt(g) {
+export function buildDiarySystemPrompt(g, speakerId = PLAYER_ID) {
+  const speakerName = speakerId === PLAYER_ID ? g.playerName : nameOf(g, speakerId);
   return [
-    `You are the Diary Room producer voice on Big Brother. The player (${g.playerName}) is confessing/strategizing privately.`,
-    `GAME SITUATION:\n${describeGameContext(g, PLAYER_ID)}`,
+    `You are the Diary Room producer voice on Big Brother. ${speakerName} is confessing/strategizing privately.`,
+    `GAME SITUATION:\n${describeGameContext(g, speakerId)}`,
     `Recent events: ${g.events.slice(-6).map((e) => e.text).join(' | ') || 'quiet so far'}`,
     `Respond as the classic DR producer: warm, a little wry, asks ONE leading question that pushes the player to reflect on strategy or feelings ("So... do you actually trust Marcus, or do you just need him this week?"). 1-3 sentences. This conversation has zero effect on the game. Respond ONLY with JSON: {"reply": "..."}`,
   ].join('\n');
@@ -257,10 +258,11 @@ export function buildOpponentAnswerPrompt(g, opponentId, jurorId, question) {
 
 // ---- Group conversations ------------------------------------------------------
 
-export function buildGroupSystemPrompt(g, memberIds) {
+export function buildGroupSystemPrompt(g, memberIds, chatterId = PLAYER_ID) {
   const members = memberIds.map((id) => castById(id));
+  const chatterName = chatterId === PLAYER_ID ? g.playerName : nameOf(g, chatterId);
   const lines = [
-    `You are running a GROUP CONVERSATION on Big Brother. The player (${g.playerName}) is talking with ${members.map((m) => m.name).join(', ')} — all present, all hearing everything.`,
+    `You are running a GROUP CONVERSATION on Big Brother. ${chatterName} is talking with ${members.map((m) => m.name).join(', ')} — all present, all hearing everything.`,
     ``,
     `GAME SITUATION:`,
     describeGameContext(g, memberIds[0]),

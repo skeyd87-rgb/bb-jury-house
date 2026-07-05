@@ -31,7 +31,7 @@ export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYE
   r.bond = clamp(r.bond + num(effects.bondDelta, -6, 6));
   r.threat = clamp(r.threat + num(effects.threatDelta, -5, 8));
   // Talking to an ally counts as maintenance (staves off alliance decay).
-  touchAlliances(g, npcId);
+  touchAlliances(g, npcId, chatterId);
 
   if (effects.suspicionOfLie) {
     r.trust = clamp(r.trust - 6);
@@ -166,59 +166,66 @@ export function formOfficialAlliance(g, accepterId, name, otherIds = [], chatter
   return { alliance: al, joined, declined, existed: false };
 }
 
-// Mark every player-alliance containing npcId as freshly maintained this week.
-export function touchAlliances(g, npcId) {
+// Mark alliances containing both npcId and otherId as freshly maintained.
+// Online, otherId is whichever engine id is doing the talking (any houseguest,
+// not just the single-player 'you').
+export function touchAlliances(g, npcId, otherId = PLAYER_ID) {
   for (const al of g.alliances) {
-    if (al.dead || !al.members.includes(PLAYER_ID) || !al.members.includes(npcId)) continue;
+    if (al.dead || !al.members.includes(otherId) || !al.members.includes(npcId)) continue;
     al.lastActive = g.week;
   }
 }
 
-// Player voluntarily quits an alliance. Soft betrayal: trust/bond hit + grudge
-// scaled by each member's loyalty. Alliance dies if <2 members remain.
-export function leaveAlliance(g, allianceId) {
+// leaverId voluntarily quits an alliance (defaults to the single-player 'you',
+// but online any houseguest can walk out). Soft betrayal: trust/bond hit +
+// grudge scaled by each remaining member's loyalty. Alliance dies if <2 remain.
+export function leaveAlliance(g, allianceId, leaverId = PLAYER_ID) {
   const al = g.alliances.find((a) => a.id === allianceId);
-  if (!al || al.dead || !al.members.includes(PLAYER_ID)) return null;
-  const others = al.members.filter((m) => m !== PLAYER_ID && !g.evicted.includes(m));
+  if (!al || al.dead || !al.members.includes(leaverId)) return null;
+  const others = al.members.filter((m) => m !== leaverId && !g.evicted.includes(m));
   for (const id of others) {
     const p = personality(g, id);
-    const r = rel(g, id, PLAYER_ID);
+    const r = rel(g, id, leaverId);
     const hit = 10 + Math.round(p.loyalty * 0.25); // loyal members take it hardest
     r.trust = clamp(r.trust - hit);
     r.bond = clamp(r.bond - Math.round(hit * 0.6));
     r.threat = clamp(r.threat + 5);
     g.memory[id].grudges.push({
-      againstId: PLAYER_ID,
+      againstId: leaverId,
       reason: `walked out on our alliance "${al.name}"`,
       week: g.week,
       severity: p.loyalty > 70 ? 2 : 1,
     });
   }
-  al.members = al.members.filter((m) => m !== PLAYER_ID);
-  g.playerAlliances = g.playerAlliances.filter((id) => id !== allianceId);
+  al.members = al.members.filter((m) => m !== leaverId);
+  if (leaverId === PLAYER_ID) g.playerAlliances = g.playerAlliances.filter((id) => id !== allianceId);
   if (al.members.filter((m) => !g.evicted.includes(m)).length < 2) al.dead = true;
-  logEvent(g, 'alliance_leave', `You walked out of "${al.name}".`, others);
+  logEvent(g, 'alliance_leave', `${leaverId === PLAYER_ID ? 'You' : nameOf(g, leaverId)} walked out of "${al.name}".`, others);
   return { name: al.name, others, collapsed: al.dead };
 }
 
-// Called each phase: player alliances left unmaintained slowly rot and fade.
+// Called each phase: alliances left unmaintained slowly rot and fade. Decays
+// every live pairwise relationship among members, not just player-facing ones,
+// so AI-vs-AI and human-vs-human online alliances rot the same way.
 export function decayAlliances(g, rand = Math.random) {
   for (const al of g.alliances) {
-    if (al.dead || !al.members.includes(PLAYER_ID)) continue;
+    if (al.dead) continue;
     if (al.lastActive == null) al.lastActive = g.week;
     const stale = g.week - al.lastActive;
     if (stale < 2) continue;
-    // Bonds between player and members quietly cool
-    for (const m of al.members) {
-      if (m === PLAYER_ID || g.evicted.includes(m)) continue;
-      const r = rel(g, m, PLAYER_ID);
-      r.bond = clamp(r.bond - 3);
-      r.trust = clamp(r.trust - 2);
+    const alive = al.members.filter((m) => !g.evicted.includes(m));
+    for (const a of alive) {
+      for (const b of alive) {
+        if (a === b || !g.social[a]?.[b]) continue;
+        const r = rel(g, a, b);
+        r.bond = clamp(r.bond - 3);
+        r.trust = clamp(r.trust - 2);
+      }
     }
     if (stale >= 3 && rand() < 0.5) {
       al.dead = true;
       g.playerAlliances = g.playerAlliances.filter((id) => id !== al.id);
-      logEvent(g, 'alliance_dead', `"${al.name}" has quietly fizzled out — you stopped tending it.`, al.members.filter((m) => m !== PLAYER_ID));
+      logEvent(g, 'alliance_dead', `"${al.name}" has quietly fizzled out — nobody tended it.`, alive);
     }
   }
 }

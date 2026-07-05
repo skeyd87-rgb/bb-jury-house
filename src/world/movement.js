@@ -359,6 +359,17 @@ export class WorldController {
     if (st) st.frozen = frozen;
   }
 
+  // Online: another connected human just reported their real position. Drive
+  // that NPC there directly (bypassing local wander AI) instead of guessing.
+  // Falls back to normal AI wander if updates stop arriving (they disconnected
+  // or a message got dropped) after a short grace period.
+  setNetTarget(id, x, z, rotY) {
+    const st = this.npcState.get(id);
+    if (!st) return;
+    st.net = { x, z, rotY };
+    st.netUntil = this.clock.elapsedTime + 2.5;
+  }
+
   // Cinematic close-up on an NPC's face during conversation.
   focusOn(id) {
     this.focusNpcId = id;
@@ -410,6 +421,18 @@ export class WorldController {
           const to = this.player.position.clone().sub(char.position);
           char.rotation.y = Math.atan2(to.x, to.z);
         }
+        continue;
+      }
+      // Online: a real human is reporting this NPC's position — drive there
+      // directly instead of running local wander/approach AI on top of it.
+      if (st.net && t < (st.netUntil || 0)) {
+        const before = char.position.x + char.position.z;
+        char.position.x += (st.net.x - char.position.x) * Math.min(1, dt * 8);
+        char.position.z += (st.net.z - char.position.z) * Math.min(1, dt * 8);
+        char.rotation.y = st.net.rotY;
+        const netMoving = Math.abs(char.position.x + char.position.z - before) > 0.001;
+        updateSwim(char);
+        animateCharacter(char, netMoving, dt, t);
         continue;
       }
       let npcMoving = false;
@@ -506,6 +529,14 @@ export class WorldController {
       const cz = pz + Math.cos(this.camAngle) * this.camDist;
       this.camera.position.lerp(new THREE.Vector3(cx, this.camHeight, cz), 0.08);
       this.camera.lookAt(px, 1.2, pz);
+    } else {
+      // Spectator: no controlled avatar — slow automatic orbit over the house
+      // so there's always something to watch instead of a static/black view.
+      this.camAngle += dt * 0.06;
+      const cx = Math.sin(this.camAngle) * 20;
+      const cz = Math.cos(this.camAngle) * 20;
+      this.camera.position.lerp(new THREE.Vector3(cx, 16, cz), 0.03);
+      this.camera.lookAt(0, 0, 0);
     }
 
     return dt;

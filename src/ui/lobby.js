@@ -166,6 +166,8 @@ export function showLobby(room, initialState, { onStart, onLeave }) {
       ctrl.append(start);
       card.append(ctrl);
       card.append(el('div', 'keynote', 'You are the host. Unclaimed seats are played by AI. You can start whenever.'));
+    } else if (!mySeat && seated.length >= 9) {
+      card.append(el('div', 'keynote', `All 9 seats are taken — you'll watch as a spectator once the season starts.`));
     } else {
       card.append(el('div', 'keynote', `Waiting for the host to start…`));
     }

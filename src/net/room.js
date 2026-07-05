@@ -48,9 +48,18 @@ export class Room {
     this.onChatMsg = null; // (from, fromName, text) => {}  incoming human message
     this.onOpen = null;
     this.onClose = null;
+    this.onGroupStart = null; // (payload) => {}
+    this.onGroupMsg = null; // (groupId, id, name, text) => {}
+    this.onGroupSystem = null; // (groupId, text) => {}
+    this.onGroupWhisper = null; // (from, fromName, text) => {}
+    this.onAllianceResult = null; // (payload) => {}
+    this.onAllianceLeft = null; // (payload) => {}
+    this.onPos = null; // (engineId, x, z, rotY) => {}
     this.lastState = null;
     this.lastGame = null;
     this._chatWaiters = {}; // npcId -> resolve fn
+    this._wasConnected = false;
+    this._explicitDisconnect = false;
   }
 
   connect(code, name) {
@@ -58,6 +67,7 @@ export class Room {
     this.socket = new PartySocket({ host: PARTY_HOST, party: 'room', room: code });
 
     this.socket.addEventListener('open', () => {
+      this._wasConnected = true;
       this.send('hello', { playerId: this.playerId, name });
       this.onOpen && this.onOpen();
     });
@@ -79,9 +89,30 @@ export class Room {
         if (w) { delete this._chatWaiters[msg.npcId]; w({ text: msg.text, note: msg.note }); }
       } else if (msg.type === 'chatMsg') {
         this.onChatMsg && this.onChatMsg(msg.from, msg.fromName, msg.text);
+      } else if (msg.type === 'groupStart') {
+        this.onGroupStart && this.onGroupStart(msg);
+      } else if (msg.type === 'groupMsg') {
+        this.onGroupMsg && this.onGroupMsg(msg.groupId, msg.id, msg.name, msg.text);
+      } else if (msg.type === 'groupSystem') {
+        this.onGroupSystem && this.onGroupSystem(msg.groupId, msg.text);
+      } else if (msg.type === 'groupWhisper') {
+        this.onGroupWhisper && this.onGroupWhisper(msg.from, msg.fromName, msg.text);
+      } else if (msg.type === 'allianceResult') {
+        this.onAllianceResult && this.onAllianceResult(msg);
+      } else if (msg.type === 'allianceLeft') {
+        this.onAllianceLeft && this.onAllianceLeft(msg);
+      } else if (msg.type === 'diaryReply') {
+        if (this._diaryWaiter) { const w = this._diaryWaiter; this._diaryWaiter = null; w(msg.text); }
+      } else if (msg.type === 'pos') {
+        this.onPos && this.onPos(msg.id, msg.x, msg.z, msg.rotY);
       }
     });
-    this.socket.addEventListener('close', () => this.onClose && this.onClose());
+    this.socket.addEventListener('close', () => {
+      const wasConnected = this._wasConnected;
+      this._wasConnected = false;
+      this.onClose && this.onClose(wasConnected && !this._explicitDisconnect);
+    });
+    this._explicitDisconnect = false;
     return this;
   }
 
@@ -101,6 +132,21 @@ export class Room {
       }, 30000);
     });
   }
+
+  startGroup(memberIds, isHouseMeeting) { this.send('startGroup', { memberIds, isHouseMeeting }); }
+  sendGroupMsg(groupId, text) { this.send('groupMsg', { groupId, text }); }
+  formAlliance(memberIds, name) { this.send('formAlliance', { memberIds, name }); }
+  leaveAllianceOnline(allianceId) { this.send('leaveAlliance', { allianceId }); }
+
+  sendDiary(text) {
+    return new Promise((resolve) => {
+      this._diaryWaiter = resolve;
+      this.send('diary', { text });
+      setTimeout(() => { if (this._diaryWaiter === resolve) { this._diaryWaiter = null; resolve('(no reply — try again)'); } }, 30000);
+    });
+  }
+
+  sendPos(x, z, rotY) { this.send('pos', { x, z, rotY }); }
 
   claimSeat(seatId) { this.send('claimSeat', { seatId }); }
   releaseSeat() { this.send('releaseSeat'); }
@@ -123,7 +169,14 @@ export class Room {
   }
 
   disconnect() {
+    this._explicitDisconnect = true;
     this.socket && this.socket.close();
     this.socket = null;
+  }
+
+  // Reconnect the same room/name after an unexpected drop (does not reset
+  // playerId, so the server reunites us with our existing seat).
+  reconnect(name) {
+    this.connect(this.code, name);
   }
 }
