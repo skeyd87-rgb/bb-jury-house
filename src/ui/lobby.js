@@ -94,6 +94,33 @@ export function showLobby(room, initialState, { onStart, onLeave }) {
     card.append(el('div', 'eye', '👁️'));
     const code = el('div', 'lobby-code', `ROOM CODE: <b>${state.code}</b>`);
     card.append(code);
+
+    // Copy-invite: puts a ready-to-paste message on the clipboard.
+    const gameUrl = location.href.split('#')[0].split('?')[0];
+    const invite = `Join my Big Brother house! 👁️\nGo to ${gameUrl}\nTap "Play Online" and enter room code: ${state.code}`;
+    const inviteBtn = el('button', 'bb primary sm', '📋 Copy Invite');
+    inviteBtn.style.margin = '4px auto 0';
+    inviteBtn.onclick = async () => {
+      let ok = false;
+      try {
+        await navigator.clipboard.writeText(invite);
+        ok = true;
+      } catch {
+        // Fallback for browsers/contexts without the async clipboard API
+        const ta = document.createElement('textarea');
+        ta.value = invite;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.append(ta);
+        ta.select();
+        try { ok = document.execCommand('copy'); } catch {}
+        ta.remove();
+      }
+      inviteBtn.textContent = ok ? '✓ Invite Copied!' : '⚠ Copy failed — code above';
+      setTimeout(() => (inviteBtn.textContent = '📋 Copy Invite'), 2200);
+    };
+    card.append(inviteBtn);
+
     card.append(el('div', 'tag', `${seated.length}/9 seats claimed · share the code to invite`));
 
     const grid = el('div', 'seat-grid');
