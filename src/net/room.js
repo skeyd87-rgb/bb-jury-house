@@ -44,9 +44,11 @@ export class Room {
     this.code = null;
     this.playerId = getPlayerId();
     this.onState = null; // (state) => {}
+    this.onGame = null; // (game) => {}  authoritative game snapshot
     this.onOpen = null;
     this.onClose = null;
     this.lastState = null;
+    this.lastGame = null;
   }
 
   connect(code, name) {
@@ -67,6 +69,9 @@ export class Room {
       if (msg.type === 'state') {
         this.lastState = msg.state;
         this.onState && this.onState(msg.state);
+      } else if (msg.type === 'game') {
+        this.lastGame = msg.game;
+        this.onGame && this.onGame(msg.game);
       }
     });
     this.socket.addEventListener('close', () => this.onClose && this.onClose());

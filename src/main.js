@@ -21,7 +21,7 @@ import {
 } from './ai/dialogue.js';
 import { getApiKey, setApiKey } from './ai/claude.js';
 import {
-  renderHud, showToast, clearToast, openChatPanel, closeChatPanel,
+  el, renderHud, showToast, clearToast, openChatPanel, closeChatPanel,
   cinematic, cinematicWait, pickHouseguests, cinematicTextInput, confetti, titleScreen,
 } from './ui/ui.js';
 import { setMood, sting, setMusicEnabled, stopMusic } from './audio/music.js';
@@ -62,8 +62,64 @@ function showTitle() {
 }
 showTitle();
 
-// ---------- Multiplayer (Phase 1: lobby) ----------
+// ---------- Multiplayer ----------
 let room = null;
+let onlineGame = null; // authoritative game snapshot from the server
+let onlineMode = false;
+
+// Which engine houseguest id does THIS player control?
+function myEngineId() {
+  const hs = onlineGame?.humanSeats || {};
+  for (const [engineId, pid] of Object.entries(hs)) {
+    if (pid === room?.playerId) return engineId;
+  }
+  return null;
+}
+
+// Phase 2 Step 1: enter the shared house rendered from the server's game state.
+// The season loop (comps, ceremonies, chat) is wired in later steps.
+function startOnlineSeason(game) {
+  onlineGame = game;
+  onlineMode = true;
+  const meId = myEngineId();
+  const active = game.houseguests.filter((h) => !game.evicted.includes(h.id));
+
+  // Build the world from the server roster.
+  const me = active.find((h) => h.id === meId) || active[0];
+  const player = createCharacter(me);
+  scene.add(player);
+  world.setPlayer(player);
+  const rooms = ['living', 'kitchen', 'bedroom', 'backyard'];
+  let i = 0;
+  for (const hg of active) {
+    if (hg.id === me.id) continue;
+    world.addNpc(createCharacter(hg), rooms[i++ % rooms.length]);
+  }
+  world.onNpcClick = (id) => {
+    const hg = active.find((h) => h.id === id);
+    const isHuman = !!(onlineGame.humanSeats && onlineGame.humanSeats[id]);
+    showToast(`<b>${hg?.name || 'Houseguest'}</b> — ${isHuman ? 'a human player' : 'played by AI'}. Live conversations arrive in the next update.`, [
+      { label: 'OK', style: 'primary', onClick: () => {} },
+    ]);
+  };
+  animate();
+  renderOnlineHud();
+}
+
+function renderOnlineHud() {
+  const meId = myEngineId();
+  const me = onlineGame.houseguests.find((h) => h.id === meId);
+  const humanCount = Object.keys(onlineGame.humanSeats || {}).length;
+  const h = document.getElementById('hud');
+  h.innerHTML = '';
+  const top = el('div', 'hud-top');
+  top.append(el('div', 'week', `Week ${onlineGame.week} — Online`));
+  top.append(el('div', 'phase', 'The House'));
+  top.append(el('div', 'sub', `You are ${me ? me.name : '—'} · ${humanCount} human${humanCount !== 1 ? 's' : ''} in the house`));
+  h.append(top);
+  const hint = el('div', 'hud-hint', 'You\'re in the shared house. <b>Tap</b> to move, <b>drag</b> to look. Comps, chat & ceremonies are coming online next.');
+  h.append(hint);
+}
 
 async function openMultiplayer() {
   const { showMultiplayerEntry, showLobby } = await import('./ui/lobby.js');
@@ -73,16 +129,11 @@ async function openMultiplayer() {
       room = r;
       showLobby(room, state, {
         onLeave: () => { room = null; showTitle(); },
-        onStart: (s) => {
-          // Phase 2 wires real online gameplay here. For now, a placeholder so
-          // the lobby → start handshake is verifiable end-to-end.
-          const wrap = document.createElement('div');
-          wrap.className = 'title-screen';
-          wrap.innerHTML = `<div class="title-card"><div class="eye">👁️</div>
-            <h1>SEASON <span>STARTING</span></h1>
-            <div class="tag">Room ${s.code} — ${Object.values(s.seats).filter(x=>x.occupant).length} human(s) seated.</div>
-            <div class="keynote">Online gameplay lands in Phase 2. The lobby, room codes, and seat claiming all work.<br>Your seat: <b>${s.seats[room.mySeatId()]?.occupantName || '—'}</b>${room.isHost() ? ' · you are the host' : ''}.</div></div>`;
-          document.body.append(wrap);
+        onStart: () => {
+          // Season started server-side; wait for the authoritative game snapshot
+          // then drop into the shared house.
+          if (room.lastGame) startOnlineSeason(room.lastGame);
+          else room.onGame = (game) => startOnlineSeason(game);
         },
       });
     },

@@ -5,7 +5,8 @@
 // Client connects with party name "room" (kebab of the `Room` DO binding).
 
 import { Server, routePartykitRequest } from 'partyserver';
-import { CAST } from '../src/game/cast.js';
+import { CAST, PLAYER_ID } from '../src/game/cast.js';
+import { newGame } from '../src/game/state.js';
 
 // The 9 claimable houseguest seats: the 8 established cast + one "newcomer"
 // seat (the single-player 'you' slot) whose occupant names their houseguest.
@@ -23,6 +24,7 @@ export class Room extends Server {
 
   async onStart() {
     this.state = (await this.ctx.storage.get('state')) || this.freshLobby();
+    this.game = (await this.ctx.storage.get('game')) || null;
   }
 
   freshLobby() {
@@ -32,12 +34,52 @@ export class Room extends Server {
     }
     return {
       code: this.name,
-      phase: 'lobby', // 'lobby' | 'playing' (Phase 2)
+      phase: 'lobby', // 'lobby' | 'playing'
       hostPlayerId: null,
       seats,
       settings: { phaseSeconds: 1200 },
       players: {}, // playerId -> { name, seatId, online }
+      humanSeats: {}, // engineHouseguestId -> playerId (who controls that houseguest)
     };
+  }
+
+  // Lobby seat id -> engine houseguest id. The 'newcomer' seat is the engine's
+  // built-in 'you' slot; the 8 cast seats map to themselves.
+  seatToEngineId(seatId) {
+    return seatId === 'newcomer' ? PLAYER_ID : seatId;
+  }
+
+  // Render-safe projection of the authoritative game (no hidden social/memory
+  // state — those stay server-side and are revealed only as the game dictates).
+  projectGame() {
+    const g = this.game;
+    if (!g) return null;
+    return {
+      week: g.week,
+      phase: g.phase,
+      hoh: g.hoh,
+      nominees: g.nominees,
+      vetoHolder: g.vetoHolder,
+      jury: g.jury,
+      evicted: g.evicted,
+      humanSeats: this.state.humanSeats,
+      houseguests: g.houseguests.map((h) => ({
+        id: h.id,
+        name: h.name,
+        job: h.job,
+        color: h.color,
+        hair: h.hair,
+        skin: h.skin,
+        build: h.build,
+        gender: h.gender,
+        hairStyle: h.hairStyle,
+      })),
+    };
+  }
+
+  broadcastGame() {
+    const game = this.projectGame();
+    if (game) this.broadcast(JSON.stringify({ type: 'game', game }));
   }
 
   async persist() {
@@ -51,6 +93,8 @@ export class Room extends Server {
   onConnect(connection) {
     // Send current state immediately; seating happens on the client's `hello`.
     connection.send(JSON.stringify({ type: 'state', state: this.state }));
+    const game = this.projectGame();
+    if (game) connection.send(JSON.stringify({ type: 'game', game }));
   }
 
   async onMessage(connection, raw) {
@@ -120,11 +164,24 @@ export class Room extends Server {
         const pid = this.connToPlayer.get(connection.id);
         if (pid !== s.hostPlayerId) return;
         if (s.phase !== 'lobby') return;
-        const humansSeated = Object.values(s.seats).filter((x) => x.occupant).length;
-        if (humansSeated < 1) return;
+        const claimed = Object.values(s.seats).filter((x) => x.occupant);
+        if (claimed.length < 1) return;
+
+        // Build the authoritative game and seat the humans into houseguests.
+        const newcomer = s.seats.newcomer;
+        const playerName = (newcomer.occupant && newcomer.occupantName) || 'You';
+        this.game = newGame(playerName);
+        s.humanSeats = {};
+        for (const seat of claimed) {
+          s.humanSeats[this.seatToEngineId(seat.id)] = seat.occupant;
+        }
         s.phase = 'playing';
         s.startedAt = msg.clientTime || 0;
-        break;
+        await this.ctx.storage.put('game', this.game);
+        await this.persist();
+        this.broadcastState();
+        this.broadcastGame();
+        return; // already broadcast
       }
 
       default:
