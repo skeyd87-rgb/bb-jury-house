@@ -11,7 +11,7 @@ const PARTY_HOST =
   import.meta.env?.VITE_PARTYKIT_HOST ||
   (location.hostname === 'localhost' || location.hostname === '127.0.0.1'
     ? 'localhost:1999'
-    : 'PARTY_HOST_PLACEHOLDER'); // set to bb-jury-house.<subdomain>.workers.dev after deploy
+    : 'bb-jury-house.skeyd87.workers.dev'); // deployed Cloudflare Worker
 
 const PID_KEY = 'bbjury.playerId';
 
