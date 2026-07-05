@@ -207,15 +207,16 @@ export function buildJurorQuestionPrompt(g, jurorId, finalists) {
   const j = jurorPersonaBits(g, jurorId);
   const mem = g.memory[jurorId];
   const notes = mem.juryNotes.join('\n') || '(no notes)';
+  const [f1, f2] = finalists;
   return [
     `You are ${j.name}, now a JUROR on Big Brother. ${j.persona}`,
-    `The Final 2 are: ${finalists.map((f) => nameOf(g, f)).join(' and ')}. One of them is the player, ${g.playerName}.`,
+    `The Final 2 are: ${nameOf(g, f1)} (Finalist A) and ${nameOf(g, f2)} (Finalist B).`,
     `WHAT YOU PERSONALLY REMEMBER (this is your ammunition):\n${notes}`,
     `WHAT THE WHOLE HOUSE SAW THE FINALISTS DO:\n${finalistPublicRecord(g, finalists)}`,
     `Your bitterness level: ${j.bitterness}/100. High bitterness = pointed, personal questions. Low = respectful, game-focused.`,
     GROUNDING_RULE,
     `Write ONE question addressed to EACH finalist. Each question MUST reference a specific real event from the record above (a named promise, vote, nomination, or betrayal — with the week if known). Generic questions ("what was your best move?") are FORBIDDEN unless you truly have no history with them. Respond ONLY with JSON:`,
-    `{"questionForPlayer": "...", "questionForOpponent": "...", "toneNote": "<one word: bitter|respectful|hurt|playful|cold>"}`,
+    `{"questionForF1": "<question for ${nameOf(g, f1)}>", "questionForF2": "<question for ${nameOf(g, f2)}>", "toneNote": "<one word: bitter|respectful|hurt|playful|cold>"}`,
   ].join('\n');
 }
 
@@ -243,8 +244,10 @@ export function buildJurorVotePrompt(g, jurorId, finalists, qa) {
 
 export function buildOpponentAnswerPrompt(g, opponentId, jurorId, question) {
   const c = castById(opponentId);
+  const name = nameOf(g, opponentId);
+  const persona = c ? c.persona : `${name}, a Big Brother finalist. Speak plainly and defend your game.`;
   return [
-    `You are ${c.name}, a Big Brother finalist answering the jury. ${c.persona}`,
+    `You are ${name}, a Big Brother finalist answering the jury. ${persona}`,
     `Juror ${nameOf(g, jurorId)} just asked you: "${question}"`,
     `Your game memories: ${g.memory[opponentId].convoSummaries.slice(-4).map((s) => s.summary).join(' | ') || 'you played a social game'}`,
     GROUNDING_RULE,

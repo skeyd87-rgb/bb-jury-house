@@ -328,12 +328,12 @@ export function fallbackJurorQuestion(g, jurorId, finalists) {
     if (kept) return `You actually kept your word to me${kept.text ? ` about "${kept.text}"` : ''}. Was that strategy, or would you have honored it even if it cost you the game?`;
     return generic;
   };
-  const opp = finalists.find((f) => f !== PLAYER_ID) || finalists[1];
+  const [f1, f2] = finalists;
   return {
-    questionForPlayer: qFor(finalists[0] === PLAYER_ID ? PLAYER_ID : finalists[0], bitter
+    questionForF1: qFor(f1, bitter
       ? `You looked me in the eye and made promises. Why should my vote reward the way you played me?`
-      : `What was the single best move of your game, and why does it beat everything ${nameOf(g, opp)} did?`),
-    questionForOpponent: qFor(opp, bitter
+      : `What was the single best move of your game, and why does it beat everything ${nameOf(g, f2)} did?`),
+    questionForF2: qFor(f2, bitter
       ? `Everyone says you played a "quiet game." Convince me that wasn't just hiding.`
       : `What move are you most proud of, and who did it hurt?`),
     toneNote: bitter ? 'bitter' : 'respectful',

@@ -4,8 +4,9 @@
 
 import {
   buildChatSystemPrompt, buildThreadMessages,
+  buildJurorQuestionPrompt, buildOpponentAnswerPrompt, buildJurorVotePrompt,
 } from '../src/ai/prompts.js';
-import { fallbackChat } from '../src/ai/fallback.js';
+import { fallbackChat, fallbackJurorQuestion, fallbackJurorVote } from '../src/ai/fallback.js';
 import { extractJson } from '../src/ai/claude.js';
 
 const MODEL = 'claude-sonnet-5';
@@ -40,4 +41,55 @@ export async function serverNpcChat(g, npcId, playerMsg, chatterId, thread, apiK
     }
   }
   return fallbackChat(g, npcId, playerMsg, chatterId);
+}
+
+// AI juror asks each finalist one question. Returns { questionForF1, questionForF2, toneNote }.
+export async function serverJurorQuestion(g, jurorId, finalists, apiKey) {
+  if (apiKey) {
+    try {
+      const text = await callClaude(apiKey, buildJurorQuestionPrompt(g, jurorId, finalists), [
+        { role: 'user', content: 'Ask your questions now.' },
+      ], 600);
+      const json = extractJson(text);
+      if (json && json.questionForF1 && json.questionForF2) return json;
+    } catch (err) {
+      // fall through to the built-in engine
+    }
+  }
+  return fallbackJurorQuestion(g, jurorId, finalists);
+}
+
+// AI finalist answers a juror's question. Returns a string reply.
+export async function serverOpponentAnswer(g, opponentId, jurorId, question, apiKey) {
+  if (apiKey) {
+    try {
+      const text = await callClaude(apiKey, buildOpponentAnswerPrompt(g, opponentId, jurorId, question), [
+        { role: 'user', content: 'Answer the juror now.' },
+      ], 300);
+      const json = extractJson(text);
+      if (json && json.reply) return String(json.reply).slice(0, 500);
+    } catch (err) {
+      // fall through
+    }
+  }
+  return "I played my heart out, I owned my choices, and I'm asking for your respect, not your forgiveness.";
+}
+
+// AI juror casts a vote after hearing both answers. Returns { vote, reasoning }.
+export async function serverJurorVote(g, jurorId, finalists, qa, apiKey) {
+  if (apiKey) {
+    try {
+      const text = await callClaude(apiKey, buildJurorVotePrompt(g, jurorId, finalists, qa), [
+        { role: 'user', content: 'Cast your vote now.' },
+      ], 600);
+      const json = extractJson(text);
+      if (json && json.vote && finalists.includes(json.vote)) {
+        return { vote: json.vote, reasoning: String(json.reasoning || '').slice(0, 300) };
+      }
+    } catch (err) {
+      // fall through
+    }
+  }
+  const fb = fallbackJurorVote(g, jurorId, finalists, qa);
+  return { vote: fb.vote, reasoning: fb.reasoning };
 }

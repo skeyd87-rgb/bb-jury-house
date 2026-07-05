@@ -13,8 +13,8 @@ import {
   applyEviction, nextPhase, phaseLabel,
 } from '../src/game/season.js';
 import { simulateHouseLife, applyChatEffects } from '../src/game/social.js';
-import { fallbackJurorVote, fallbackChat } from '../src/ai/fallback.js';
-import { serverNpcChat } from './ai.js';
+import { fallbackChat } from '../src/ai/fallback.js';
+import { serverNpcChat, serverJurorQuestion, serverOpponentAnswer, serverJurorVote } from './ai.js';
 
 // Mirror of comps.js COMP_TYPES (kept here to avoid importing the DOM module).
 const COMP_TYPES = ['timing', 'count', 'reaction'];
@@ -392,21 +392,123 @@ export class Room extends Server {
     await this.setTurn({ kind: 'final_cut_result', finalHoh, finalHohName: nameOf(g, finalHoh), cut, cutName: nameOf(g, cut) });
   }
 
+  // ---- Interactive jury Q&A (Phase 5a) -------------------------------------
+  // One question -> both finalists answer -> juror votes, repeated per juror.
+  // Any of the three roles (juror, finalist A, finalist B) may be human or AI,
+  // in any combination. `g.juryPhase` accumulates votes across the sequence.
+
   async enterFinale() {
     const g = this.game;
     g.phase = 'finale';
     const finalists = activeIds(g);
     const jurors = g.jury.slice(-7);
-    // Engine-based jury vote (interactive Claude Q&A arrives with the Phase 3
-    // social layer). Each juror votes via the fallback judgment.
-    const votes = [];
-    let a = 0, b = 0;
-    const qa = { f1Answer: 'I owned my game and every move I made.', f2Answer: 'I played my heart out.' };
-    for (const j of jurors) {
-      const v = fallbackJurorVote(g, j, finalists, qa);
-      votes.push({ juror: j, jurorName: nameOf(g, j), vote: v.vote, voteName: nameOf(g, v.vote), reasoning: v.reasoning });
-      if (v.vote === finalists[0]) a++; else b++;
+    g.juryPhase = { finalists, jurors, idx: 0, votes: [] };
+    await this.enterJurorQuestion();
+  }
+
+  async enterJurorQuestion() {
+    const g = this.game;
+    const jp = g.juryPhase;
+    if (jp.idx >= jp.jurors.length) return this.finishJury();
+    const juror = jp.jurors[jp.idx];
+    const finalists = jp.finalists;
+    if (this.isActiveHuman(juror)) {
+      await this.setTurn({
+        kind: 'jury_question', juror, jurorName: nameOf(g, juror), finalists,
+        finalistNames: finalists.map((f) => nameOf(g, f)), waitingOn: [this.humanFor(juror)],
+      });
+    } else {
+      const q = await serverJurorQuestion(g, juror, finalists, this.apiKey);
+      await this.beginJurorAnswer(juror, finalists, q.questionForF1, q.questionForF2, q.toneNote);
     }
+  }
+
+  async submitJurorQuestion(pid, text) {
+    const g = this.game;
+    const t = this.turn;
+    if (!t || t.kind !== 'jury_question') return;
+    if (this.humanFor(t.juror) !== pid) return;
+    const q = String(text || '').slice(0, 300) || 'What was your best move, and why does it beat the other side of this final two?';
+    await this.beginJurorAnswer(t.juror, t.finalists, q, q, 'measured');
+  }
+
+  async beginJurorAnswer(juror, finalists, qF1, qF2, toneNote) {
+    const g = this.game;
+    const [f1, f2] = finalists;
+    const answers = {};
+    const waitingOn = [];
+    for (const [fid, q] of [[f1, qF1], [f2, qF2]]) {
+      if (this.isActiveHuman(fid)) waitingOn.push(this.humanFor(fid));
+      else answers[fid] = await serverOpponentAnswer(g, fid, juror, q, this.apiKey);
+    }
+    this.turn = {
+      kind: 'jury_answer', juror, jurorName: nameOf(g, juror), finalists,
+      questions: { [f1]: qF1, [f2]: qF2 }, toneNote, answers, waitingOn,
+    };
+    if (waitingOn.length === 0) return this.resolveJurorAnswer();
+    await this.commit();
+  }
+
+  async submitJurorAnswer(pid, text) {
+    const g = this.game;
+    const t = this.turn;
+    if (!t || t.kind !== 'jury_answer') return;
+    const engineId = this.engineForPlayer(pid);
+    if (!engineId || !t.finalists.includes(engineId)) return;
+    if (t.answers[engineId] != null && !t.waitingOn.includes(pid)) return;
+    t.answers[engineId] = String(text || '').slice(0, 500) || "I stand by how I played this game.";
+    t.waitingOn = t.waitingOn.filter((p) => p !== pid);
+    if (t.waitingOn.length === 0) return this.resolveJurorAnswer();
+    await this.commit();
+  }
+
+  async resolveJurorAnswer() {
+    const g = this.game;
+    const t = this.turn;
+    await this.setTurn({
+      kind: 'jury_answer_result', juror: t.juror, jurorName: t.jurorName, finalists: t.finalists,
+      questions: t.questions, answers: t.answers, toneNote: t.toneNote,
+    });
+  }
+
+  async enterJurorVote() {
+    const g = this.game;
+    const t = this.turn; // the jury_answer_result we just showed
+    const juror = t.juror;
+    const finalists = t.finalists;
+    if (this.isActiveHuman(juror)) {
+      await this.setTurn({
+        kind: 'jury_vote', juror, jurorName: nameOf(g, juror), finalists,
+        finalistNames: finalists.map((f) => nameOf(g, f)), questions: t.questions, answers: t.answers,
+        waitingOn: [this.humanFor(juror)],
+      });
+    } else {
+      const qa = { f1Answer: t.answers[finalists[0]], f2Answer: t.answers[finalists[1]] };
+      const v = await serverJurorVote(g, juror, finalists, qa, this.apiKey);
+      await this.recordJurorVote(juror, finalists, v.vote, v.reasoning);
+    }
+  }
+
+  async submitJurorVote(pid, vote, reasoning) {
+    const g = this.game;
+    const t = this.turn;
+    if (!t || t.kind !== 'jury_vote') return;
+    if (this.humanFor(t.juror) !== pid) return;
+    if (!t.finalists.includes(vote)) return;
+    await this.recordJurorVote(t.juror, t.finalists, vote, String(reasoning || '').slice(0, 300) || 'That is my vote.');
+  }
+
+  async recordJurorVote(juror, finalists, vote, reasoning) {
+    const g = this.game;
+    g.juryPhase.votes.push({ juror, jurorName: nameOf(g, juror), vote, voteName: nameOf(g, vote), reasoning });
+    await this.setTurn({ kind: 'jury_vote_result', juror, jurorName: nameOf(g, juror), vote, voteName: nameOf(g, vote), reasoning });
+  }
+
+  async finishJury() {
+    const g = this.game;
+    const { finalists, votes } = g.juryPhase;
+    let a = 0, b = 0;
+    for (const v of votes) if (v.vote === finalists[0]) a++; else b++;
     const winner = a >= b ? finalists[0] : finalists[1];
     await this.setTurn({
       kind: 'winner',
@@ -437,6 +539,10 @@ export class Room extends Server {
       case 'eviction_result': return this.advanceWeek();
       case 'final3_intro': return this.enterFinalHoh();
       case 'final_cut_result': return this.enterFinale();
+      case 'jury_answer_result': return this.enterJurorVote();
+      case 'jury_vote_result':
+        this.game.juryPhase.idx++;
+        return this.enterJurorQuestion();
       case 'social':
         if (t.next === 'nominations') return this.enterNominations();
         if (t.next === 'veto_comp') return this.enterVetoComp();
@@ -491,6 +597,22 @@ export class Room extends Server {
         const cut = evictionDesire(g, t.actor, t.others[0], t.others[1]) >= 0 ? t.others[0] : t.others[1];
         return this.doFinalCut(t.actor, cut);
       }
+      case 'jury_question': {
+        const q = await serverJurorQuestion(g, t.juror, t.finalists, this.apiKey);
+        return this.beginJurorAnswer(t.juror, t.finalists, q.questionForF1, q.questionForF2, q.toneNote);
+      }
+      case 'jury_answer': {
+        for (const fid of t.finalists) {
+          if (t.answers[fid] == null) t.answers[fid] = await serverOpponentAnswer(g, fid, t.juror, t.questions[fid], this.apiKey);
+        }
+        t.waitingOn = [];
+        return this.resolveJurorAnswer();
+      }
+      case 'jury_vote': {
+        const qa = { f1Answer: t.answers[t.finalists[0]], f2Answer: t.answers[t.finalists[1]] };
+        const v = await serverJurorVote(g, t.juror, t.finalists, qa, this.apiKey);
+        return this.recordJurorVote(t.juror, t.finalists, v.vote, v.reasoning);
+      }
       default:
         return this.advanceResultTurn(); // result/intro screens just advance
     }
@@ -517,13 +639,25 @@ export class Room extends Server {
     if (['nominate', 'veto_decision', 'replacement', 'final_cut'].includes(t.kind) && t.actor === engineId) {
       return this.forceResolveTurn();
     }
+    if (t.kind === 'jury_question' && t.juror === engineId) {
+      return this.forceResolveTurn();
+    }
+    if (t.kind === 'jury_answer' && t.finalists.includes(engineId) && t.answers[engineId] == null) {
+      t.answers[engineId] = await serverOpponentAnswer(g, engineId, t.juror, t.questions[engineId], this.apiKey);
+      t.waitingOn = t.waitingOn.filter((p) => p !== this.humanFor(engineId));
+      if (t.waitingOn.length === 0) return this.resolveJurorAnswer();
+      return this.commit();
+    }
+    if (t.kind === 'jury_vote' && t.juror === engineId) {
+      return this.forceResolveTurn();
+    }
   }
 
   // Duration (seconds) before the phase timer auto-covers absent players.
   turnTimerSeconds() {
     const t = this.turn;
     if (!t) return 0;
-    if (['comp', 'nominate', 'veto_decision', 'replacement', 'vote', 'final_cut'].includes(t.kind)) {
+    if (['comp', 'nominate', 'veto_decision', 'replacement', 'vote', 'final_cut', 'jury_question', 'jury_answer', 'jury_vote'].includes(t.kind)) {
       return this.state.settings.phaseSeconds || 1200;
     }
     return 180; // result/intro screens auto-advance if the host is away
@@ -762,6 +896,21 @@ export class Room extends Server {
       case 'finalCut': {
         const pid = this.connToPlayer.get(connection.id);
         if (pid) await this.submitFinalCut(pid, msg.cutId);
+        return;
+      }
+      case 'juryQuestion': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.submitJurorQuestion(pid, msg.text);
+        return;
+      }
+      case 'juryAnswer': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.submitJurorAnswer(pid, msg.text);
+        return;
+      }
+      case 'juryVote': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.submitJurorVote(pid, msg.vote, msg.reasoning);
         return;
       }
       case 'forceResolve': {

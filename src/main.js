@@ -208,6 +208,8 @@ function phaseLabelOnline(game) {
     veto_decision: 'Veto Ceremony', veto_result: 'Veto Ceremony', replacement: 'Replacement',
     vote: 'Live Eviction', eviction_result: 'Eviction', final3_intro: 'Final 3',
     final_cut: 'Final Eviction', final_cut_result: 'Final Eviction', winner: 'The Finale',
+    jury_question: 'Jury Q&A', jury_answer: 'Jury Q&A', jury_answer_result: 'Jury Q&A',
+    jury_vote: 'The Jury Votes', jury_vote_result: 'The Jury Votes',
   };
   return map[k] || 'The House';
 }
@@ -375,6 +377,66 @@ function renderOnlineTurn(game, t) {
       onlineOverlay.setActions(host ? [{ label: 'To the Jury Vote ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
+    case 'jury_question':
+      if (t.juror === myEngine) {
+        cinematicTextInput({
+          kicker: 'Jury Q&A', title: 'Ask the finalists one question',
+          quote: `(Sent to both ${t.finalistNames.join(' and ')} — they'll each answer it in their own words.)`,
+          placeholder: 'What do you want to know before you vote?',
+          submitLabel: 'Ask',
+        }).then((text) => room.send('juryQuestion', { text }));
+      } else {
+        waitCard('Jury Q&A', `${t.jurorName} is thinking of a question…`, `<p class="muted">Waiting on the juror.</p>`);
+      }
+      break;
+
+    case 'jury_answer': {
+      const q = t.questions[myEngine];
+      const iAnswered = t.answers[myEngine] != null;
+      if (t.finalists.includes(myEngine) && !iAnswered) {
+        speak(q, t.juror);
+        cinematicTextInput({
+          kicker: `Juror: ${t.jurorName}`, title: `${t.jurorName} asks you:`, quote: `"${q}"`,
+          placeholder: 'Own your game. This answer decides a vote...',
+          submitLabel: 'Deliver Answer',
+        }).then((text) => { stopSpeaking(); room.send('juryAnswer', { text }); });
+      } else {
+        waitCard(`Juror: ${t.jurorName}`, 'Waiting on the finalists to answer…');
+      }
+      break;
+    }
+
+    case 'jury_answer_result': {
+      const [f1, f2] = t.finalists;
+      const body = `<p><b>${nm(game, f1)}</b> was asked: "${t.questions[f1]}"<br>→ "${t.answers[f1]}"</p>
+        <p><b>${nm(game, f2)}</b> was asked: "${t.questions[f2]}"<br>→ "${t.answers[f2]}"</p>`;
+      onlineOverlay = cinematic({ kicker: `Juror: ${t.jurorName}`, title: 'Both finalists answered', bodyHtml: body });
+      onlineOverlay.setActions(host ? [{ label: 'To the Vote ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+    }
+
+    case 'jury_vote':
+      if (t.juror === myEngine) {
+        const [f1, f2] = t.finalists;
+        const c = cinematic({
+          kicker: 'Cast Your Vote', title: 'Who wins Big Brother?',
+          bodyHtml: `<p><b>${nm(game, f1)}</b>: "${t.answers[f1]}"</p><p><b>${nm(game, f2)}</b>: "${t.answers[f2]}"</p>`,
+        });
+        onlineOverlay = c;
+        c.setActions(t.finalists.map((fid, i) => ({
+          label: `Vote for ${t.finalistNames[i]}`, style: 'gold',
+          onClick: () => room.send('juryVote', { vote: fid, reasoning: '' }),
+        })));
+      } else {
+        waitCard('The Jury Votes', `${t.jurorName} is deciding…`);
+      }
+      break;
+
+    case 'jury_vote_result':
+      onlineOverlay = cinematic({ kicker: 'Vote Cast', title: `${t.jurorName} votes for ${t.voteName}`, bodyHtml: `<p class="quote">"${t.reasoning}"</p>` });
+      onlineOverlay.setActions(host ? [{ label: 'Next ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+
     case 'social': {
       // Free roam — no modal. Walk the house and tap houseguests to talk.
       onlineOverlay = null;
@@ -410,7 +472,7 @@ function renderOnlineTurn(game, t) {
 }
 
 function isResultKind(kind) {
-  return ['comp_result', 'noms_result', 'veto_result', 'eviction_result', 'final3_intro', 'final_cut_result', 'intro'].includes(kind);
+  return ['comp_result', 'noms_result', 'veto_result', 'eviction_result', 'final3_intro', 'final_cut_result', 'intro', 'jury_answer_result', 'jury_vote_result'].includes(kind);
 }
 
 // A minimal game-shaped object so the existing pickHouseguests (which reads
@@ -1412,23 +1474,23 @@ async function runFinale() {
   for (const j of jurors) {
     const jHg = g.houseguests.find((h) => h.id === j);
     const q = await jurorQuestion(g, j, [PLAYER_ID, opp]);
-    speak(q.questionForPlayer, j, jHg?.gender);
+    speak(q.questionForF1, j, jHg?.gender);
     // Player answers their question
     const playerAnswer = await cinematicTextInput({
       kicker: `Juror: ${nameOf(g, j)} (${q.toneNote || 'measured'})`,
       title: `${nameOf(g, j)} asks you:`,
-      quote: `"${q.questionForPlayer}"`,
+      quote: `"${q.questionForF1}"`,
       placeholder: 'Own your game. This answer decides a vote...',
       submitLabel: 'Deliver Answer',
     });
     stopSpeaking();
     // Opponent answers theirs
-    const oppAnswer = await opponentJuryAnswer(g, opp, j, q.questionForOpponent);
-    speak(q.questionForOpponent, j, jHg?.gender);
+    const oppAnswer = await opponentJuryAnswer(g, opp, j, q.questionForF2);
+    speak(q.questionForF2, j, jHg?.gender);
     await cinematicWait({
       kicker: `Juror: ${nameOf(g, j)}`,
       title: `${nameOf(g, j)} turns to ${nameOf(g, opp)}:`,
-      quote: `"${q.questionForOpponent}"`,
+      quote: `"${q.questionForF2}"`,
       bodyHtml: `<p><b>${nameOf(g, opp)}:</b> "${oppAnswer}"</p>`,
       continueLabel: jurors.indexOf(j) === jurors.length - 1 ? 'The Jury Votes' : 'Next Juror',
     });

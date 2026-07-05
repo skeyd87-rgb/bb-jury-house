@@ -255,7 +255,7 @@ export async function jurorQuestion(g, jurorId, finalists) {
         messages: [{ role: 'user', content: 'Ask your questions now.' }],
         maxTokens: 600,
       });
-      if (r.questionForPlayer && r.questionForOpponent) return r;
+      if (r.questionForF1 && r.questionForF2) return r;
     } catch (err) {
       console.warn('Juror question fallback:', err);
     }

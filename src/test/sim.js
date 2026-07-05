@@ -110,7 +110,7 @@ function simSeason(log) {
   let playerVotesWon = 0;
   for (const j of jurors) {
     const q = fallbackJurorQuestion(g, j, finalists);
-    if (!q.questionForPlayer) throw new Error('no juror question');
+    if (!q.questionForF1) throw new Error('no juror question');
     const qa = { f1Answer: 'I owned my game and every promise I made mattered.', f2Answer: 'I played hard.' };
     const v = fallbackJurorVote(g, j, finalists, qa);
     if (!finalists.includes(v.vote)) throw new Error('bad jury vote');
