@@ -284,8 +284,7 @@ function showReconnecting() {
 
 function attemptReconnect() {
   reconnectAttempts++;
-  const name = localStorage.getItem('bbjury.playerName') || 'Player';
-  try { room.reconnect(name); } catch {}
+  try { room.reconnect(); } catch {}
   setTimeout(() => {
     if (!reconnectOverlay) return; // already reconnected
     if (room.socket && room.socket.readyState === 1) return; // open — onOpen will clear it
@@ -313,9 +312,16 @@ function takeOverFlowOnline(eligibleIds) {
     kicker: 'Take Over', title: 'Choose a houseguest to play as',
     bodyHtml: `<p class="muted">AI has been playing them so far — you take over from here.</p>`,
     ids: eligibleIds, count: 1, confirmLabel: 'Take Over', cancelable: true,
-  }).then((picked) => {
+  }).then(async (picked) => {
     if (!picked || !picked.length) return;
-    room.claimLiveSeat(picked[0] === PLAYER_ID ? 'newcomer' : picked[0]);
+    const id = picked[0];
+    const currentName = onlineGame.houseguests.find((h) => h.id === id)?.name || '';
+    const typed = await cinematicTextInput({
+      kicker: 'Take Over', title: 'Name your houseguest (or leave blank to keep it as-is)',
+      placeholder: currentName, submitLabel: 'Confirm',
+    });
+    const name = typed === '(no answer)' ? currentName : typed;
+    room.claimLiveSeat(id === PLAYER_ID ? 'newcomer' : id, name);
   });
 }
 
@@ -457,7 +463,26 @@ function syncOnlineWorld(game) {
     ]);
   };
   btns.append(leave);
+  if (iAmHost()) {
+    const end = el('button', 'bb danger', '🛑 End Session');
+    end.onclick = () => endSessionFlowOnline();
+    btns.append(end);
+  }
   h.append(btns);
+}
+
+// Host-only hard shutdown: ends the room for everyone, not just this seat.
+function endSessionFlowOnline() {
+  document.querySelectorAll('.cinematic').forEach((e) => e.remove());
+  const c = cinematic({
+    kicker: 'End Session',
+    title: 'End this session for everyone?',
+    bodyHtml: '<p class="muted">Nobody will be able to rejoin this room afterward — this closes it for the whole house, not just you.</p>',
+  });
+  c.setActions([
+    { label: '🛑 End for Everyone', style: 'danger', onClick: () => { room.endSession(); c.close(); } },
+    { label: 'Cancel', style: 'primary', onClick: () => c.close() },
+  ]);
 }
 
 function isSpectator() {
@@ -782,6 +807,17 @@ async function openMultiplayer() {
     onBack: () => showTitle(),
     onEnter: (r, state) => {
       room = r;
+      // Fires whether we're still in the lobby or already mid-season —
+      // the host force-ended the room for everyone.
+      room.onRoomClosed = (reason) => {
+        document.querySelectorAll('.cinematic').forEach((e) => e.remove());
+        const c = cinematic({
+          kicker: 'Session Ended', title: reason || 'The host ended this session.',
+          bodyHtml: '<p class="muted">Returning to the title screen…</p>',
+        });
+        c.setActions([{ label: 'OK', style: 'gold', onClick: () => location.reload() }]);
+        setTimeout(() => location.reload(), 4000);
+      };
       showLobby(room, state, {
         onLeave: () => { room = null; showTitle(); },
         onStart: () => {

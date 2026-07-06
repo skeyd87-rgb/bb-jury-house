@@ -56,6 +56,7 @@ export class Room {
     this.onAllianceLeft = null; // (payload) => {}
     this.onPos = null; // (engineId, x, z, rotY) => {}
     this.onAiStatus = null; // (usedAi: bool) => {} — fires on any server response carrying an AI-vs-fallback flag
+    this.onRoomClosed = null; // (reason: string) => {} — host force-ended the session for everyone
     this.lastState = null;
     this.lastGame = null;
     this._chatWaiters = {}; // npcId -> resolve fn
@@ -107,6 +108,9 @@ export class Room {
         if (this._diaryWaiter) { const w = this._diaryWaiter; this._diaryWaiter = null; w(msg.text); }
       } else if (msg.type === 'pos') {
         this.onPos && this.onPos(msg.id, msg.x, msg.z, msg.rotY);
+      } else if (msg.type === 'roomClosed') {
+        this._explicitDisconnect = true; // host ended it — don't try to reconnect
+        this.onRoomClosed && this.onRoomClosed(msg.reason);
       }
     });
     this.socket.addEventListener('close', () => {
@@ -151,7 +155,8 @@ export class Room {
   sendPos(x, z, rotY) { this.send('pos', { x, z, rotY }); }
 
   claimSeat(seatId) { this.send('claimSeat', { seatId }); }
-  claimLiveSeat(seatId) { this.send('claimLiveSeat', { seatId }); }
+  claimLiveSeat(seatId, name) { this.send('claimLiveSeat', { seatId, name }); }
+  endSession() { this.send('endSession'); }
   releaseSeat() { this.send('releaseSeat'); }
   setName(name) { this.send('setName', { name }); }
   setSettings(phaseSeconds) { this.send('setSettings', { phaseSeconds }); }

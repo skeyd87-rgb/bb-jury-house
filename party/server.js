@@ -1019,7 +1019,7 @@ export class Room extends Server {
   // claimed by any human (mid-season — the lobby-only claimSeat is for
   // before the season starts). AI covers everyone until someone claims them,
   // exactly like a Newcomer or cast seat left unclaimed at lobby time.
-  async handleClaimLiveSeat(pid, seatId) {
+  async handleClaimLiveSeat(pid, seatId, customName) {
     const g = this.game;
     const s = this.state;
     if (!g || s.phase !== 'playing') return;
@@ -1032,12 +1032,18 @@ export class Room extends Server {
     s.humanSeats[engineId] = pid;
     if (!s.players[pid]) s.players[pid] = { name: 'Player', seatId: null, online: true };
     s.players[pid].seatId = seatId;
+    const name = (customName && String(customName).trim().slice(0, 20)) || seatDef.name;
     if (s.seats[seatId]) {
       s.seats[seatId].occupant = pid;
-      s.seats[seatId].occupantName = seatDef.fixed ? seatDef.name : s.players[pid].name;
+      s.seats[seatId].occupantName = name;
       s.seats[seatId].connected = true;
     }
+    // Same as at season start: a custom name carries into the actual game,
+    // not just the (mostly moot, post-lobby) seat card.
+    const hg = g.houseguests.find((h) => h.id === engineId);
+    if (hg && name !== hg.name) hg.name = name;
     await this.persist();
+    await this.saveGame();
     this.broadcastState();
     this.broadcastGame();
   }
@@ -1085,8 +1091,12 @@ export class Room extends Server {
         const pid = this.connToPlayer.get(connection.id);
         if (!pid || !s.players[pid]) return;
         s.players[pid].name = String(msg.name || 'Player').slice(0, 20);
+        // Renaming applies to whichever seat this player currently occupies —
+        // any seat, cast member or Newcomer alike (only the occupant of that
+        // seat can rename it, since seatId is looked up from their own player
+        // record, not passed in by the client).
         const seatId = s.players[pid].seatId;
-        if (seatId && s.seats[seatId] && !s.seats[seatId].fixed) {
+        if (seatId && s.seats[seatId] && s.seats[seatId].occupant === pid) {
           s.seats[seatId].occupantName = s.players[pid].name;
         }
         break;
@@ -1108,7 +1118,7 @@ export class Room extends Server {
 
       case 'claimLiveSeat': {
         const pid = this.connToPlayer.get(connection.id);
-        if (pid) await this.handleClaimLiveSeat(pid, msg.seatId);
+        if (pid) await this.handleClaimLiveSeat(pid, msg.seatId, msg.name);
         return;
       }
 
@@ -1140,6 +1150,13 @@ export class Room extends Server {
         s.humanSeats = {};
         for (const seat of claimed) {
           s.humanSeats[this.seatToEngineId(seat.id)] = seat.occupant;
+          // A renamed cast seat (e.g. "Rae" -> "Wife") carries that name into
+          // the actual game — nameOf() reads g.houseguests everywhere (HUD,
+          // dialogue, jury), so this isn't just a lobby-card cosmetic.
+          if (seat.id !== 'newcomer' && seat.occupantName) {
+            const hg = this.game.houseguests.find((h) => h.id === seat.id);
+            if (hg) hg.name = seat.occupantName;
+          }
         }
         s.phase = 'playing';
         s.startedAt = msg.clientTime || 0;
@@ -1255,6 +1272,14 @@ export class Room extends Server {
         return;
       }
 
+      case 'endSession': {
+        // Hard shutdown, distinct from Leave: ends the room for EVERYONE, not
+        // just the host's own seat. Host-only, works in the lobby or mid-game.
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid === this.state.hostPlayerId) await this.endSession();
+        return;
+      }
+
       default:
         return;
     }
@@ -1275,6 +1300,26 @@ export class Room extends Server {
       if (!seat.fixed) seat.name = 'Newcomer';
     }
     player.seatId = null;
+  }
+
+  // Host force-shutdown: end the room for everyone right now. Tells every
+  // connection why, then resets storage to a clean lobby so a stray
+  // reconnect with the same code doesn't resurrect stale state, and finally
+  // drops every socket.
+  async endSession() {
+    const payload = JSON.stringify({ type: 'roomClosed', reason: 'The host ended this session.' });
+    for (const c of this.getConnections()) {
+      try { c.send(payload); } catch {}
+    }
+    this.state = this.freshLobby();
+    this.game = null;
+    this.turn = null;
+    this.apiKey = null;
+    await this.ctx.storage.deleteAll();
+    for (const c of this.getConnections()) {
+      try { c.close(); } catch {}
+    }
+    this.connToPlayer.clear();
   }
 
   async onClose(connection) {

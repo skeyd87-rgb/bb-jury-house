@@ -8,9 +8,9 @@ function colorHex(c) {
   return '#' + (c || 0xffffff).toString(16).padStart(6, '0');
 }
 
-const LAST_NAME_KEY = 'bbjury.playerName';
-
-// Entry: choose Host or Join. onEnter(room) fires once connected & in a lobby.
+// Entry: choose Host or Join. Your name is chosen per-houseguest when you
+// claim a seat in the lobby (see the seat card's rename box), not up front —
+// there's no separate "account name" anymore.
 export function showMultiplayerEntry({ onEnter, onBack }) {
   const wrap = el('div', 'title-screen');
   const card = el('div', 'title-card');
@@ -18,19 +18,13 @@ export function showMultiplayerEntry({ onEnter, onBack }) {
   card.append(el('h1', '', 'PLAY <span>ONLINE</span>'));
   card.append(el('div', 'tag', 'Host a house, or join with a code.'));
 
-  const nameInput = el('input');
-  nameInput.placeholder = 'Your name';
-  nameInput.maxLength = 20;
-  nameInput.value = localStorage.getItem(LAST_NAME_KEY) || '';
-  card.append(nameInput);
-
   const codeInput = el('input');
   codeInput.placeholder = 'Room code (to join)';
   codeInput.maxLength = 10;
   codeInput.style.textTransform = 'uppercase';
   card.append(codeInput);
 
-  const status = el('div', 'keynote', 'Your name is how the house knows you.');
+  const status = el('div', 'keynote', 'Enter a room code to join, or host a new house.');
   card.append(status);
 
   const row = el('div', 'cine-actions');
@@ -43,8 +37,6 @@ export function showMultiplayerEntry({ onEnter, onBack }) {
   document.body.append(wrap);
 
   function begin(code) {
-    const name = nameInput.value.trim() || 'Player';
-    localStorage.setItem(LAST_NAME_KEY, name);
     status.textContent = 'Connecting…';
     const room = new Room();
     let entered = false;
@@ -58,7 +50,7 @@ export function showMultiplayerEntry({ onEnter, onBack }) {
     room.onClose = () => {
       if (!entered) status.innerHTML = '<span style="color:#ff8f8f">Could not connect. Is the server running?</span>';
     };
-    room.connect(code, name);
+    room.connect(code);
   }
 
   hostBtn.onclick = () => begin(makeRoomCode());
@@ -138,23 +130,21 @@ export function showLobby(room, initialState, { onStart, onLeave }) {
         claim.onclick = () => room.claimSeat(seat.id);
         s.append(claim);
       } else if (mine) {
-        // The newcomer seat has no fixed cast name — let the player name their
-        // houseguest, same as picking a name in single-player.
-        if (!seat.fixed) {
-          const renameRow = el('div', 'seat-rename');
-          const nameInput = el('input');
-          nameInput.value = seat.occupantName || '';
-          nameInput.maxLength = 20;
-          nameInput.placeholder = 'Your houseguest\'s name';
-          const renameBtn = el('button', 'bb sm', 'Rename');
-          renameBtn.onclick = () => {
-            const v = nameInput.value.trim();
-            if (v) room.setName(v);
-          };
-          nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') renameBtn.click(); });
-          renameRow.append(nameInput, renameBtn);
-          s.append(renameRow);
-        }
+        // Whoever claims a seat can rename that houseguest — whether it's the
+        // nameless Newcomer or an established cast member like Rae.
+        const renameRow = el('div', 'seat-rename');
+        const nameInput = el('input');
+        nameInput.value = seat.occupantName || '';
+        nameInput.maxLength = 20;
+        nameInput.placeholder = 'Houseguest name';
+        const renameBtn = el('button', 'bb sm', 'Rename');
+        renameBtn.onclick = () => {
+          const v = nameInput.value.trim();
+          if (v) room.setName(v);
+        };
+        nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') renameBtn.click(); });
+        renameRow.append(nameInput, renameBtn);
+        s.append(renameRow);
         const leave = el('button', 'bb sm', 'Leave seat');
         leave.onclick = () => room.releaseSeat();
         s.append(leave);
@@ -197,6 +187,13 @@ export function showLobby(room, initialState, { onStart, onLeave }) {
       onLeave && onLeave();
     };
     leaveRow.append(leave);
+    if (isHost) {
+      const end = el('button', 'bb danger', '🛑 End Session for Everyone');
+      end.onclick = () => {
+        if (confirm('End this session for everyone in the room?')) room.endSession();
+      };
+      leaveRow.append(end);
+    }
     card.append(leaveRow);
   }
 
