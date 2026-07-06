@@ -305,6 +305,36 @@ function openDiaryOnline() {
   });
 }
 
+// A spectator (joined after the season started) can take over any still-active
+// houseguest nobody has claimed — AI covered them until now.
+function takeOverFlowOnline(eligibleIds) {
+  if (onlineOverlay || compRunning) return;
+  pickHouseguests(onlineRenderGame(onlineGame), {
+    kicker: 'Take Over', title: 'Choose a houseguest to play as',
+    bodyHtml: `<p class="muted">AI has been playing them so far — you take over from here.</p>`,
+    ids: eligibleIds, count: 1, confirmLabel: 'Take Over', cancelable: true,
+  }).then((picked) => {
+    if (!picked || !picked.length) return;
+    room.claimLiveSeat(picked[0] === PLAYER_ID ? 'newcomer' : picked[0]);
+  });
+}
+
+// Once a spectator's claim goes through, myEngineId() resolves for the first
+// time — swap the free-orbit spectator camera for a real controllable avatar.
+function maybeUpgradeSpectator(game) {
+  if (!onlineMode || world.player) return; // already have an avatar
+  const meId = myEngineId();
+  if (!meId) return; // still a spectator
+  const hg = game.houseguests.find((h) => h.id === meId);
+  if (!hg) return;
+  if (world.npcs.has(meId)) world.removeNpc(meId); // was AI-driven as an NPC until now
+  const player = createCharacter(hg);
+  scene.add(player);
+  world.setPlayer(player);
+  world.onNpcClick = (id) => openOnlineChat(id);
+  showToast(`🎮 You're now playing ${hg.name}!`);
+}
+
 // ---- Online turn renderer -------------------------------------------------
 // Reacts to the server's authoritative `game.turn`, showing the right UI for
 // THIS player (act if it's your move; watch otherwise) and sending actions.
@@ -388,7 +418,14 @@ function syncOnlineWorld(game) {
   btns.style.left = 'auto';
   btns.style.right = 'calc(12px + var(--safe-right))';
   if (isSpectator()) {
-    btns.append(el('div', 'hud-hint', '👀 Spectating'));
+    const eligible = onlineActiveIds(game).filter((id) => !(game.humanSeats && game.humanSeats[id]));
+    if (eligible.length) {
+      const to = el('button', 'bb gold', '🎮 Take Over a Houseguest');
+      to.onclick = () => takeOverFlowOnline(eligible);
+      btns.append(to);
+    } else {
+      btns.append(el('div', 'hud-hint', '👀 Spectating'));
+    }
   } else if (meId) {
     const dr = el('button', 'bb', '🎥 Diary Room');
     dr.onclick = () => openDiaryOnline();
@@ -448,6 +485,7 @@ function nm(game, id) {
 function handleOnlineTurn(game) {
   onlineGame = game;
   if (!game || game.phase === 'lobby') return;
+  maybeUpgradeSpectator(game);
   syncOnlineWorld(game);
   const t = game.turn;
   if (!t) return;

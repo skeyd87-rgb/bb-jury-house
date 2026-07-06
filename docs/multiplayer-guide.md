@@ -15,10 +15,11 @@ npx wrangler secret put ANTHROPIC_API_KEY
 
 Paste your Anthropic key when prompted. Once set, every single-player game *and*
 every multiplayer room automatically gets Claude-powered houseguests — no
-player, ever, on any device, has to paste in a key. If you skip this, the game
-still works fine (a built-in offline dialogue engine covers AI houseguests),
-and any player can still paste their own personal key on the title screen if
-they want to use their own billing instead.
+player, ever, on any device, has to paste in a key (there's no key field in the
+app at all). If you skip this, the game still works fine — a built-in offline
+dialogue engine covers AI houseguests instead. A tiny dot in the top-left
+corner of the screen shows which mode is active: green means Claude is
+answering, gray means the offline engine has taken over for that reply.
 
 ## 2. Hosting a session
 
@@ -43,6 +44,10 @@ they want to use their own billing instead.
 - If more than 9 people show up, extras who don't grab a seat automatically
   become **spectators** once the host starts — they watch the house from a
   free-floating camera and can't act, but they see everything live.
+- **Joining after the season already started?** You'll land as a spectator
+  too — but if any houseguest is still active and nobody's claimed them yet,
+  a **🎮 Take Over a Houseguest** button appears. Pick one and you're playing
+  them from that moment on (AI covered whatever happened before you joined).
 - The host can set the **social phase length** (5 min to 2 hours) — this is
   how long each free-roam window lasts before the timer auto-advances (see
   §5). Good for a same-room game night (5–10 min) vs. an async group-chat-style

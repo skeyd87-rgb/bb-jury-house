@@ -1015,6 +1015,33 @@ export class Room extends Server {
     this.sendToPid(pid, { type: 'diaryReply', text: reply, usedAi });
   }
 
+  // A late joiner takes over a still-active houseguest that's never been
+  // claimed by any human (mid-season — the lobby-only claimSeat is for
+  // before the season starts). AI covers everyone until someone claims them,
+  // exactly like a Newcomer or cast seat left unclaimed at lobby time.
+  async handleClaimLiveSeat(pid, seatId) {
+    const g = this.game;
+    const s = this.state;
+    if (!g || s.phase !== 'playing') return;
+    const seatDef = SEAT_DEFS.find((sd) => sd.id === seatId);
+    if (!seatDef) return;
+    const engineId = this.seatToEngineId(seatId);
+    if (!activeIds(g).includes(engineId)) return; // evicted/gone — nothing to take over
+    if (this.isActiveHuman(engineId)) return; // someone's already actively playing them
+    if (!s.humanSeats) s.humanSeats = {};
+    s.humanSeats[engineId] = pid;
+    if (!s.players[pid]) s.players[pid] = { name: 'Player', seatId: null, online: true };
+    s.players[pid].seatId = seatId;
+    if (s.seats[seatId]) {
+      s.seats[seatId].occupant = pid;
+      s.seats[seatId].occupantName = seatDef.fixed ? seatDef.name : s.players[pid].name;
+      s.seats[seatId].connected = true;
+    }
+    await this.persist();
+    this.broadcastState();
+    this.broadcastGame();
+  }
+
   async persist() {
     await this.ctx.storage.put('state', this.state);
   }
@@ -1077,6 +1104,12 @@ export class Room extends Server {
         seat.connected = true;
         s.players[pid].seatId = msg.seatId;
         break;
+      }
+
+      case 'claimLiveSeat': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleClaimLiveSeat(pid, msg.seatId);
+        return;
       }
 
       case 'releaseSeat': {

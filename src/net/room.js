@@ -151,6 +151,7 @@ export class Room {
   sendPos(x, z, rotY) { this.send('pos', { x, z, rotY }); }
 
   claimSeat(seatId) { this.send('claimSeat', { seatId }); }
+  claimLiveSeat(seatId) { this.send('claimLiveSeat', { seatId }); }
   releaseSeat() { this.send('releaseSeat'); }
   setName(name) { this.send('setName', { name }); }
   setSettings(phaseSeconds) { this.send('setSettings', { phaseSeconds }); }
