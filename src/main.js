@@ -307,7 +307,11 @@ function openDiaryOnline() {
 // A spectator (joined after the season started) can take over any still-active
 // houseguest nobody has claimed — AI covered them until now.
 function takeOverFlowOnline(eligibleIds) {
-  if (onlineOverlay || compRunning) return;
+  // Unlike the other online flows, spectators have no turn-critical overlay
+  // of their own to protect — comps/results/ceremonies are all happening to
+  // OTHER people. Gating this the same way silently no-op'd the button
+  // almost any time a result screen was up, which is most of the time.
+  document.querySelectorAll('.cinematic').forEach((e) => e.remove());
   pickHouseguests(onlineRenderGame(onlineGame), {
     kicker: 'Take Over', title: 'Choose a houseguest to play as',
     bodyHtml: `<p class="muted">AI has been playing them so far — you take over from here.</p>`,
