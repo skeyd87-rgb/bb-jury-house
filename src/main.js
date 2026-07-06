@@ -311,7 +311,11 @@ function takeOverFlowOnline(eligibleIds) {
   // of their own to protect — comps/results/ceremonies are all happening to
   // OTHER people. Gating this the same way silently no-op'd the button
   // almost any time a result screen was up, which is most of the time.
-  document.querySelectorAll('.cinematic').forEach((e) => e.remove());
+  // Must go through closeOnlineOverlay() (not a raw DOM clear) — it also
+  // resets the onlineOverlay variable itself, or every other online flow
+  // (chat, Diary Room, Group Talk...) stays silently blocked for the rest
+  // of the session, since they all gate on that same now-stale reference.
+  closeOnlineOverlay();
   pickHouseguests(onlineRenderGame(onlineGame), {
     kicker: 'Take Over', title: 'Choose a houseguest to play as',
     bodyHtml: `<p class="muted">AI has been playing them so far — you take over from here.</p>`,
