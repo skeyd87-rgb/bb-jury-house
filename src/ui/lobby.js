@@ -2,10 +2,19 @@
 // host controls. Renders live from server state broadcasts.
 
 import { el } from './ui.js';
-import { Room, makeRoomCode, normalizeCode, getPlayerId } from '../net/room.js';
+import { Room, makeRoomCode, normalizeCode, getPlayerId, getRecentRooms, rememberRoom, forgetRoom } from '../net/room.js';
 
 function colorHex(c) {
   return '#' + (c || 0xffffff).toString(16).padStart(6, '0');
+}
+
+// "2m ago", "3h ago", "5d ago" — coarse enough that we don't need a library.
+function relativeTime(ts) {
+  const mins = Math.max(1, Math.round((Date.now() - ts) / 60000));
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
 }
 
 // Entry: choose Host or Join. Your name is chosen per-houseguest when you
@@ -27,6 +36,33 @@ export function showMultiplayerEntry({ onEnter, onBack }) {
   const status = el('div', 'keynote', 'Enter a room code to join, or host a new house.');
   card.append(status);
 
+  // Quick-rejoin: rooms you've been in before, one click instead of retyping
+  // the code — the thing you actually want right after "Leave Room".
+  const recent = getRecentRooms();
+  if (recent.length) {
+    card.append(el('div', 'recent-rooms-label', 'Rejoin a recent session:'));
+    const recentBox = el('div', 'recent-rooms');
+    for (const r of recent) {
+      const row = el('div', 'recent-room-row');
+      const btn = el('button', 'bb sm', `${r.code} · ${relativeTime(r.lastSeen)}`);
+      btn.onclick = () => begin(r.code);
+      const forget = el('button', 'bb sm recent-room-forget', '✕');
+      forget.title = 'Remove from this list';
+      forget.onclick = (e) => {
+        e.stopPropagation();
+        forgetRoom(r.code);
+        row.remove();
+        if (!recentBox.childElementCount) {
+          recentBox.previousElementSibling?.remove();
+          recentBox.remove();
+        }
+      };
+      row.append(btn, forget);
+      recentBox.append(row);
+    }
+    card.append(recentBox);
+  }
+
   const row = el('div', 'cine-actions');
   const hostBtn = el('button', 'bb gold', '＋ Host New House');
   const joinBtn = el('button', 'bb primary', '→ Join with Code');
@@ -43,6 +79,7 @@ export function showMultiplayerEntry({ onEnter, onBack }) {
     room.onState = (state) => {
       if (!entered) {
         entered = true;
+        rememberRoom(code);
         wrap.remove();
         onEnter(room, state);
       }

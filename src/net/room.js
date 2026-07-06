@@ -38,6 +38,38 @@ export function normalizeCode(input) {
   return 'BB-' + c;
 }
 
+// Recently-joined rooms, so leaving a session doesn't mean retyping the code
+// to get back in — shown as one-click chips on the entry screen.
+const RECENT_KEY = 'bbjury.recentRooms';
+const MAX_RECENT = 5;
+
+export function getRecentRooms() {
+  try {
+    const list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberRoom(code) {
+  if (!code) return;
+  const list = getRecentRooms().filter((r) => r.code !== code);
+  list.unshift({ code, lastSeen: Date.now() });
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, MAX_RECENT)));
+  } catch {
+    // storage full/unavailable — quietly skip, not worth interrupting play
+  }
+}
+
+export function forgetRoom(code) {
+  const list = getRecentRooms().filter((r) => r.code !== code);
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+  } catch {}
+}
+
 export class Room {
   constructor() {
     this.socket = null;

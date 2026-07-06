@@ -253,6 +253,15 @@ button.bb:disabled { opacity: 0.45; cursor: default; transform: none; }
 .title-card .keynote { font-size: 12px; color: var(--muted); margin: 8px 0 16px; line-height: 1.5; }
 .title-card .keynote a { color: var(--gold); }
 
+/* Quick-rejoin list on the multiplayer entry screen — one click back into a
+   room you already left, instead of retyping its code. */
+.recent-rooms-label { font-size: 11px; letter-spacing: 1px; color: var(--muted); text-transform: uppercase; margin: 2px 0 8px; }
+.recent-rooms { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.recent-room-row { display: flex; gap: 6px; }
+.recent-room-row button:first-child { flex: 1; text-align: left; }
+.recent-room-forget { flex: 0 0 auto; padding: 8px 12px !important; opacity: 0.6; }
+.recent-room-forget:hover { opacity: 1; }
+
 /* jury reveal */
 .jury-vote-card { display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,0.05); border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; text-align: left; animation: slideDown 0.4s ease; }
 .jury-vote-card .dot { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; }
