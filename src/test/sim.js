@@ -12,6 +12,7 @@ import { simulateHouseLife, chooseApproacher } from '../game/social.js';
 import { PLAYER_ID } from '../game/cast.js';
 import { fallbackChat, fallbackJurorQuestion, fallbackJurorVote } from '../ai/fallback.js';
 import { applyChatEffects } from '../game/social.js';
+import { buildFinaleContext } from '../game/finale.js';
 
 const PLAYER_LINES = [
   'Want to work together? Final two, you and me.',
@@ -86,7 +87,6 @@ function simSeason(log) {
     let { votes, evicted, tiedBrokenByHoh } = resolveEviction(g, pv);
     if (evicted === null) evicted = g.nominees[0]; // player-HoH tie-break
     applyEviction(g, evicted, votes);
-    if (evicted === PLAYER_ID) return { result: 'player_evicted', week: g.week, g };
     nextPhase(g);
   }
   if (guard >= 30) throw new Error('season did not converge');
@@ -100,12 +100,10 @@ function simSeason(log) {
     ? others[Math.floor(Math.random() * 2)]
     : (evictionDesire(g, fhoh.winner, others[0], others[1]) >= 0 ? others[0] : others[1]);
   applyEviction(g, cut, {});
-  if (cut === PLAYER_ID) return { result: 'player_cut_f3', week: g.week, g };
 
   // Finale
-  const finalists = activeIds(g);
+  const { finalists, jurors } = buildFinaleContext(g);
   if (finalists.length !== 2) throw new Error('finalists ' + finalists.length);
-  const jurors = g.jury.slice(-7);
   if (jurors.length !== 7) throw new Error('jury size ' + g.jury.length);
   let playerVotesWon = 0;
   for (const j of jurors) {
@@ -115,6 +113,9 @@ function simSeason(log) {
     const v = fallbackJurorVote(g, j, finalists, qa);
     if (!finalists.includes(v.vote)) throw new Error('bad jury vote');
     if (v.vote === PLAYER_ID) playerVotesWon++;
+  }
+  if (!finalists.includes(PLAYER_ID) && jurors.includes(PLAYER_ID)) {
+    return { result: 'player_juror', votes: playerVotesWon, week: g.week, g };
   }
   return {
     result: finalists.includes(PLAYER_ID) ? (playerVotesWon >= 4 ? 'player_wins' : 'player_f2_loss') : 'npc_final',
@@ -130,7 +131,7 @@ export function runSims(n = 60) {
     try {
       const r = simSeason();
       out.results[r.result] = (out.results[r.result] || 0) + 1;
-      if (r.result === 'player_evicted') out.evictWeeks = [...(out.evictWeeks || []), r.week];
+      if (r.result === 'player_juror') out.juryWeeks = [...(out.juryWeeks || []), r.week];
       out.promises += r.g.promises.length;
       out.betrayals += r.g.events.filter((e) => e.type === 'betrayal').length;
       out.leaks += r.g.events.filter((e) => e.type === 'leak').length;

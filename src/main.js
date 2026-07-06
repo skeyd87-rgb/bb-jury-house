@@ -13,6 +13,7 @@ import {
   decideVetoUse, decideReplacement, applyVeto, applyVetoSave, applyReplacement,
   resolveEviction, applyEviction, nextPhase, evictionDesire, phaseLabel,
 } from './game/season.js';
+import { buildFinaleContext, countJuryVotes, winnerFromJuryVotes, playerPlacement } from './game/finale.js';
 import { chooseApproacher, APPROACH_REASON_TEXT, allianceWillingness, formOfficialAlliance, leaveAlliance } from './game/social.js';
 import { randomCompType, COMP_NAMES, runComp } from './game/comps.js';
 import {
@@ -894,7 +895,7 @@ window.__bb = {
   refresh: () => refresh(),
   advance: () => advance(),
   openChat: (id, opener, reason) => openNpcChat(id, opener, reason),
-  testReveal: (votes, opp) => revealJuryVotes(votes, opp),
+  testReveal: (votes, finalistsOrOpp) => revealJuryVotes(votes, Array.isArray(finalistsOrOpp) ? finalistsOrOpp : [PLAYER_ID, finalistsOrOpp]),
   openDiary: () => openDiary(),
   // test helper: evict ids without ceremony, then jump to final 3
   ff: async (ids) => {
@@ -1695,7 +1696,7 @@ async function runEviction() {
     continueLabel: evicted === PLAYER_ID ? 'Face the Music' : 'Continue',
   });
 
-  if (evicted === PLAYER_ID) return gameOverEvicted();
+  if (evicted === PLAYER_ID) return continueAsJuror();
 
   world.removeNpc(evicted);
 
@@ -1708,23 +1709,56 @@ async function runEviction() {
   }
 }
 
-function gameOverEvicted() {
-  stopMusic();
+async function continueAsJuror() {
   sting('lose');
-  const place = getOrdinal(activeIds(g).length + 1);
-  const stats = buildSeasonStats(g, { result: 'evicted', place });
-  archiveSeason(stats);
-  const c = cinematic({
-    kicker: 'Evicted',
-    title: `Your game ends in ${place} place.`,
-    bodyHtml: `<p>The house voted you out, Week ${g.week}. The season goes on without you.</p>
-      <p class="muted">${g.events.filter((e) => e.type === 'betrayal').length} betrayals, ${g.promises.filter((p) => p.from === PLAYER_ID && p.status === 'broken').length} broken promises of your own, ${g.promises.filter((p) => p.from === PLAYER_ID && p.status === 'kept').length} kept.</p>`,
+  const place = getOrdinal(playerPlacement(g));
+  await cinematicWait({
+    kicker: 'Jury House',
+    title: `You were evicted in ${place} place.`,
+    bodyHtml: `<p>Your game for the money is over, but your season is not. You join the jury and will question the Final 2 before casting a vote.</p>
+      <p class="muted">The remaining houseguests will play out the rest of the season without you.</p>`,
+    continueLabel: 'Watch the Rest Unfold',
   });
-  c.setActions([
-    { label: '📊 Season Stats', style: 'primary', onClick: () => showStatsPage(stats) },
-    { label: '🧠 Post-Game Analysis', style: 'primary', onClick: () => showAnalysis(stats) },
-    { label: 'New Season', style: 'gold', onClick: () => { clearSave(); location.reload(); } },
-  ]);
+
+  simulateNpcSeasonToFinalThree();
+  if (activeIds(g).length <= 2) await runFinale();
+  else await runFinalThree();
+}
+
+function simulateNpcSeasonToFinalThree() {
+  while (activeIds(g).length > 3) {
+    g.phase = 'hoh_comp';
+    const outgoing = g.lastHoh && !g.evicted.includes(g.lastHoh) ? g.lastHoh : null;
+    const hoh = resolveComp(g, 0, { excludeIds: outgoing ? [outgoing] : [], playerPlays: false });
+    g.hoh = hoh.winner;
+    g.compHistory.push({ week: g.week, type: 'hoh', winner: hoh.winner, scores: hoh.scores });
+    logEvent(g, 'hoh', `${nameOf(g, hoh.winner)} won HoH.`, [hoh.winner]);
+
+    g.phase = 'nominations';
+    applyNominations(g, g.hoh, decideNominations(g, g.hoh));
+
+    g.phase = 'veto_comp';
+    const vp = vetoPlayers(g);
+    const notPlaying = activeIds(g).filter((id) => !vp.includes(id));
+    const veto = resolveComp(g, 0, { excludeIds: notPlaying, playerPlays: false });
+    g.vetoHolder = veto.winner;
+    g.compHistory.push({ week: g.week, type: 'veto', winner: veto.winner, scores: veto.scores });
+    const d = decideVetoUse(g, g.vetoHolder);
+    if (d.use) {
+      const replacement = decideReplacement(g, g.hoh, [...g.nominees, d.savedId, g.vetoHolder]);
+      applyVeto(g, g.vetoHolder, true, d.savedId, replacement);
+    } else {
+      applyVeto(g, g.vetoHolder, false);
+    }
+
+    g.phase = 'eviction';
+    const { votes, evicted, tally } = resolveEviction(g, null);
+    g.voteHistory.push({ week: g.week, votes: { ...votes }, tally: { ...tally } });
+    applyEviction(g, evicted, votes);
+    world.removeNpc(evicted);
+    nextPhase(g);
+  }
+  refresh();
 }
 
 async function showAnalysis(stats) {
@@ -1758,19 +1792,25 @@ async function runFinalThree() {
   refresh();
   setMoodForPhase();
   const three = activeIds(g);
+  const playerActive = three.includes(PLAYER_ID);
   await cinematicWait({
     kicker: 'Final 3',
     title: 'Three remain. One final HoH.',
     bodyHtml: `<p>${three.map((id) => nameOf(g, id)).join(' · ')}</p><p class="muted">The final Head of Household chooses who to take to the end — and who to send to the jury they'll face.</p>`,
-    continueLabel: 'Play the Final HoH',
+    continueLabel: playerActive ? 'Play the Final HoH' : 'Watch the Final HoH',
   });
 
   g.phase = 'final_hoh';
   refresh();
   setMood('comp');
-  const type = randomCompType();
-  const playerScore = await runComp(type, overlayRoot);
-  const { winner, scores } = resolveComp(g, playerScore, { excludeIds: [] });
+  let winner, scores;
+  if (playerActive) {
+    const type = randomCompType();
+    const playerScore = await runComp(type, overlayRoot);
+    ({ winner, scores } = resolveComp(g, playerScore, { excludeIds: [] }));
+  } else {
+    ({ winner, scores } = resolveComp(g, 0, { excludeIds: [], playerPlays: false }));
+  }
   g.hoh = winner;
   logEvent(g, 'final_hoh', `${nameOf(g, winner)} won the Final HoH.`, [winner]);
   sting(winner === PLAYER_ID ? 'win' : 'reveal');
@@ -1802,10 +1842,9 @@ async function runFinalThree() {
     title: `${nameOf(g, winner)} evicts ${cut === PLAYER_ID ? 'YOU' : nameOf(g, cut)}.`,
     quote: goodbye ? `"${goodbye}"` : null,
     bodyHtml: `<p class="muted">${nameOf(g, cut)} becomes the final member of the jury.</p>`,
-    continueLabel: cut === PLAYER_ID ? 'Accept It' : 'To the Finale',
+    continueLabel: cut === PLAYER_ID ? 'Join the Jury' : 'To the Finale',
   });
 
-  if (cut === PLAYER_ID) return gameOverEvicted();
   await runFinale();
 }
 
@@ -1827,48 +1866,96 @@ async function runFinale() {
   g.phase = 'finale';
   refresh();
   setMood('finale');
-  const finalists = activeIds(g); // player + 1 NPC (player must be here to reach this code)
-  const opp = finalists.find((id) => id !== PLAYER_ID);
+  const { finalists, jurors, playerRole } = buildFinaleContext(g);
+  const playerIsFinalist = playerRole === 'finalist';
+  const [f1, f2] = finalists;
   // Any promise still standing between the finalists was honored to the end.
   for (const p of g.promises) {
     if (p.status === 'open' && p.kind !== 'info') p.status = 'kept';
   }
-  const jurors = g.jury.slice(-7); // the 7 jurors
 
   await cinematicWait({
     kicker: 'The Finale',
-    title: `Final 2: You and ${nameOf(g, opp)}.`,
-    bodyHtml: `<p>The jury — ${jurors.map((j) => nameOf(g, j)).join(', ')} — will question you both, then vote.</p><p class="muted">They remember every promise, every vote, every betrayal. Answer for your game.</p>`,
-    continueLabel: 'Face the Jury',
+    title: `Final 2: ${finalistName(f1)} and ${finalistName(f2)}.`,
+    bodyHtml: playerIsFinalist
+      ? `<p>The jury — ${jurors.map((j) => nameOf(g, j)).join(', ')} — will question you both, then vote.</p><p class="muted">They remember every promise, every vote, every betrayal. Answer for your game.</p>`
+      : `<p>The jury — ${jurors.map((j) => nameOf(g, j)).join(', ')} — will question the Final 2, then vote.</p><p class="muted">You are on the jury now. Your question and vote still matter.</p>`,
+    continueLabel: playerIsFinalist ? 'Face the Jury' : 'Begin Jury Questioning',
   });
 
   const qaByJuror = {};
   for (const j of jurors) {
     const jHg = g.houseguests.find((h) => h.id === j);
-    const q = await jurorQuestion(g, j, [PLAYER_ID, opp]);
+    const lastJuror = jurors.indexOf(j) === jurors.length - 1;
+
+    if (j === PLAYER_ID && !playerIsFinalist) {
+      const question = await cinematicTextInput({
+        kicker: 'Your Jury Question',
+        title: `Ask ${nameOf(g, f1)} and ${nameOf(g, f2)} one question`,
+        placeholder: 'Example: Explain the move you made that deserves my vote...',
+        submitLabel: 'Ask the Final 2',
+      });
+      const f1Answer = await opponentJuryAnswer(g, f1, PLAYER_ID, question);
+      const f2Answer = await opponentJuryAnswer(g, f2, PLAYER_ID, question);
+      await cinematicWait({
+        kicker: 'Your Jury Question',
+        title: 'The Final 2 answer you',
+        quote: `"${question}"`,
+        bodyHtml: `<p><b>${nameOf(g, f1)}:</b> "${f1Answer}"</p><p><b>${nameOf(g, f2)}:</b> "${f2Answer}"</p>`,
+        continueLabel: lastJuror ? 'The Jury Votes' : 'Next Juror',
+      });
+      qaByJuror[j] = { f1Answer, f2Answer };
+      saveGame(g);
+      continue;
+    }
+
+    const q = await jurorQuestion(g, j, finalists);
     speak(q.questionForF1, j, jHg?.gender);
-    // Player answers their question
-    const playerAnswer = await cinematicTextInput({
-      kicker: `Juror: ${nameOf(g, j)} (${q.toneNote || 'measured'})`,
-      title: `${nameOf(g, j)} asks you:`,
-      quote: `"${q.questionForF1}"`,
-      placeholder: 'Own your game. This answer decides a vote...',
-      submitLabel: 'Deliver Answer',
-    });
+
+    let f1Answer;
+    if (f1 === PLAYER_ID) {
+      f1Answer = await cinematicTextInput({
+        kicker: `Juror: ${nameOf(g, j)} (${q.toneNote || 'measured'})`,
+        title: `${nameOf(g, j)} asks you:`,
+        quote: `"${q.questionForF1}"`,
+        placeholder: 'Own your game. This answer decides a vote...',
+        submitLabel: 'Deliver Answer',
+      });
+    } else {
+      f1Answer = await opponentJuryAnswer(g, f1, j, q.questionForF1);
+      await cinematicWait({
+        kicker: `Juror: ${nameOf(g, j)}`,
+        title: `${nameOf(g, j)} asks ${nameOf(g, f1)}:`,
+        quote: `"${q.questionForF1}"`,
+        bodyHtml: `<p><b>${nameOf(g, f1)}:</b> "${f1Answer}"</p>`,
+        continueLabel: 'Next Answer',
+      });
+    }
     stopSpeaking();
-    // Opponent answers theirs
-    const oppAnswer = await opponentJuryAnswer(g, opp, j, q.questionForF2);
+
+    let f2Answer;
     speak(q.questionForF2, j, jHg?.gender);
-    await cinematicWait({
-      kicker: `Juror: ${nameOf(g, j)}`,
-      title: `${nameOf(g, j)} turns to ${nameOf(g, opp)}:`,
-      quote: `"${q.questionForF2}"`,
-      bodyHtml: `<p><b>${nameOf(g, opp)}:</b> "${oppAnswer}"</p>`,
-      continueLabel: jurors.indexOf(j) === jurors.length - 1 ? 'The Jury Votes' : 'Next Juror',
-    });
+    if (f2 === PLAYER_ID) {
+      f2Answer = await cinematicTextInput({
+        kicker: `Juror: ${nameOf(g, j)} (${q.toneNote || 'measured'})`,
+        title: `${nameOf(g, j)} asks you:`,
+        quote: `"${q.questionForF2}"`,
+        placeholder: 'Own your game. This answer decides a vote...',
+        submitLabel: 'Deliver Answer',
+      });
+    } else {
+      f2Answer = await opponentJuryAnswer(g, f2, j, q.questionForF2);
+      await cinematicWait({
+        kicker: `Juror: ${nameOf(g, j)}`,
+        title: `${nameOf(g, j)} turns to ${nameOf(g, f2)}:`,
+        quote: `"${q.questionForF2}"`,
+        bodyHtml: `<p><b>${nameOf(g, f2)}:</b> "${f2Answer}"</p>`,
+        continueLabel: lastJuror ? 'The Jury Votes' : 'Next Juror',
+      });
+    }
     stopSpeaking();
-    speak(oppAnswer, opp);
-    qaByJuror[j] = { f1Answer: playerAnswer, f2Answer: oppAnswer };
+    if (f2 !== PLAYER_ID) speak(f2Answer, f2);
+    qaByJuror[j] = { f1Answer, f2Answer };
     saveGame(g);
   }
   stopSpeaking();
@@ -1876,30 +1963,45 @@ async function runFinale() {
   // Votes
   const votes = [];
   for (const j of jurors) {
-    const v = await jurorVote(g, j, [PLAYER_ID, opp], qaByJuror[j]);
-    votes.push({ juror: j, ...v });
+    if (j === PLAYER_ID && !playerIsFinalist) {
+      const [vote] = await pickHouseguests(g, {
+        kicker: 'Jury Vote',
+        title: 'Cast your vote for the winner',
+        bodyHtml: '<p class="muted">You are voting for the finalist you want to win Big Brother.</p>',
+        ids: finalists,
+        count: 1,
+        confirmLabel: 'Lock Vote',
+        meta: (id) => `${nameOf(g, id)} - finalist`,
+      });
+      votes.push({ juror: j, vote, reasoning: `My vote is for ${nameOf(g, vote)}. They gave me the better answer and earned the win from where I sat.` });
+    } else {
+      const v = await jurorVote(g, j, finalists, qaByJuror[j]);
+      votes.push({ juror: j, ...v });
+    }
   }
 
   // Reveal one by one
-  await revealJuryVotes(votes, opp);
+  await revealJuryVotes(votes, finalists);
 }
 
-function revealJuryVotes(votes, opp) {
+function revealJuryVotes(votes, finalists) {
   return new Promise((resolve) => {
     setMood('tension');
     const need = Math.floor(votes.length / 2) + 1;
     const c = cinematic({
       kicker: 'The Jury Votes',
       title: `First to ${need} keys wins Big Brother.`,
-      bodyHtml: `<div class="jury-tally"><div class="t" id="tally-you">You: 0</div><div class="t" id="tally-opp">${nameOf(g, opp)}: 0</div></div><div id="reveal-status"></div><div id="vote-cards"></div>`,
+      bodyHtml: `<div class="jury-tally">${finalists.map((id, i) => `<div class="t" id="tally-${i}">${finalistName(id)}: 0</div>`).join('')}</div><div id="reveal-status"></div><div id="vote-cards"></div>`,
     });
     const cards = c.card.querySelector('#vote-cards');
     const statusEl = c.card.querySelector('#reveal-status');
-    let youN = 0, oppN = 0, i = 0, decided = false, busyKey = false;
+    const counts = Object.fromEntries(finalists.map((id) => [id, 0]));
+    let i = 0, decided = false, busyKey = false;
 
     function preLine() {
-      if (youN === need - 1 && oppN === need - 1) return `${youN}–${oppN}. It all comes down to this key.`;
-      if (youN === need - 1 || oppN === need - 1) return 'This key could seal it...';
+      const nums = finalists.map((id) => counts[id]);
+      if (nums.every((n) => n === need - 1)) return `${nums.join('-')}. It all comes down to this key.`;
+      if (nums.some((n) => n === need - 1)) return 'This key could seal it...';
       if (votes.length - i === 1) return 'The final key.';
       return '';
     }
@@ -1923,22 +2025,23 @@ function revealJuryVotes(votes, opp) {
       speak(v.reasoning, v.juror, hg.gender);
 
       setTimeout(() => {
-        card.querySelector('.key-vote').textContent = v.vote === PLAYER_ID ? 'YOU' : nameOf(g, v.vote);
+        card.querySelector('.key-vote').textContent = finalistVoteName(v.vote);
         card.classList.add('revealed');
-        if (v.vote === PLAYER_ID) youN++; else oppN++;
-        const ty = c.card.querySelector('#tally-you');
-        const to = c.card.querySelector('#tally-opp');
-        ty.textContent = `You: ${youN}`;
-        to.textContent = `${nameOf(g, opp)}: ${oppN}`;
-        ty.classList.toggle('lead', youN >= oppN);
-        to.classList.toggle('lead', oppN > youN);
+        counts[v.vote]++;
+        for (const [idx, id] of finalists.entries()) {
+          const tallyEl = c.card.querySelector(`#tally-${idx}`);
+          tallyEl.textContent = `${finalistName(id)}: ${counts[id]}`;
+          tallyEl.classList.toggle('lead', counts[id] === Math.max(...Object.values(counts)));
+        }
 
-        if (!decided && (youN >= need || oppN >= need)) {
+        const currentWinner = winnerFromJuryVotes(finalists, votes.slice(0, i));
+        if (!decided && counts[currentWinner] >= need) {
           decided = true;
-          sting(youN >= need ? 'win' : 'lose');
-          statusEl.textContent = `That's ${need}. ${youN >= need ? 'YOU have' : nameOf(g, opp) + ' has'} won Big Brother!`;
+          sting(currentWinner === PLAYER_ID ? 'win' : 'reveal');
+          statusEl.textContent = `That's ${need}. ${finalistName(currentWinner)} has won Big Brother!`;
         } else if (!decided) {
-          statusEl.textContent = youN === oppN ? `Tied at ${youN}–${oppN}.` : '';
+          const nums = Object.values(counts);
+          statusEl.textContent = nums.every((n) => n === nums[0]) ? `Tied at ${nums.join('-')}.` : '';
         }
 
         busyKey = false;
@@ -1953,7 +2056,7 @@ function revealJuryVotes(votes, opp) {
     function finish() {
       setTimeout(() => {
         c.close();
-        showWinner(youN > oppN ? PLAYER_ID : opp, youN, oppN, opp, votes);
+        showWinner(winnerFromJuryVotes(finalists, votes), countJuryVotes(finalists, votes), finalists, votes);
         resolve();
       }, 400);
     }
@@ -1962,16 +2065,23 @@ function revealJuryVotes(votes, opp) {
   });
 }
 
-function showWinner(winner, youN, oppN, opp, juryVoteList = []) {
+function showWinner(winner, counts, finalists, juryVoteList = []) {
   stopMusic();
+  const playerIsFinalist = finalists.includes(PLAYER_ID);
   const won = winner === PLAYER_ID;
-  sting(won ? 'win' : 'lose');
+  sting(won ? 'win' : 'reveal');
   if (won) confetti();
 
-  const stats = buildSeasonStats(g, {
+  const [f1, f2] = finalists;
+  const f1Votes = counts[f1] || 0;
+  const f2Votes = counts[f2] || 0;
+  const loser = finalists.find((id) => id !== winner);
+  const playerOpponent = finalists.find((id) => id !== PLAYER_ID);
+
+  const stats = buildSeasonStats(g, playerIsFinalist ? {
     result: won ? 'winner' : 'runner-up',
     place: won ? '1st' : '2nd',
-    tally: { you: youN, opp: oppN, oppName: nameOf(g, opp) },
+    tally: { you: counts[PLAYER_ID] || 0, opp: counts[playerOpponent] || 0, oppName: nameOf(g, playerOpponent) },
     juryVotes: juryVoteList.map((v) => {
       const hg = g.houseguests.find((h) => h.id === v.juror);
       return {
@@ -1981,21 +2091,36 @@ function showWinner(winner, youN, oppN, opp, juryVoteList = []) {
         reasoning: v.reasoning,
       };
     }),
+  } : {
+    result: 'evicted',
+    place: getOrdinal(playerPlacement(g)),
   });
   archiveSeason(stats);
 
   const c = cinematic({
     kicker: 'Season Finale',
-    title: won
-      ? `🏆 By a vote of ${youN}–${oppN}, YOU are the winner of Big Brother!`
-      : `By a vote of ${oppN}–${youN}, ${nameOf(g, opp)} wins Big Brother.`,
-    bodyHtml: won
-      ? `<p>$750,000. The jury respected your game — promises kept: ${g.promises.filter((p) => p.from === PLAYER_ID && p.status === 'kept').length}, promises broken: ${g.promises.filter((p) => p.from === PLAYER_ID && p.status === 'broken').length}.</p>`
-      : `<p>Second place, $75,000. The jury had their reasons — ${oppN} of them.</p><p class="muted">Promises broken: ${g.promises.filter((p) => p.from === PLAYER_ID && p.status === 'broken').length}. The jury remembered.</p>`,
+    title: playerIsFinalist
+      ? (won
+        ? `🏆 By a vote of ${counts[PLAYER_ID] || 0}–${counts[loser] || 0}, YOU are the winner of Big Brother!`
+        : `By a vote of ${counts[winner] || 0}–${counts[PLAYER_ID] || 0}, ${nameOf(g, winner)} wins Big Brother.`)
+      : `By a vote of ${counts[winner] || 0}–${counts[loser] || 0}, ${nameOf(g, winner)} wins Big Brother.`,
+    bodyHtml: playerIsFinalist
+      ? (won
+        ? `<p>$750,000. The jury respected your game — promises kept: ${g.promises.filter((p) => p.from === PLAYER_ID && p.status === 'kept').length}, promises broken: ${g.promises.filter((p) => p.from === PLAYER_ID && p.status === 'broken').length}.</p>`
+        : `<p>Second place, $75,000. The jury had their reasons — ${counts[winner] || 0} of them.</p><p class="muted">Promises broken: ${g.promises.filter((p) => p.from === PLAYER_ID && p.status === 'broken').length}. The jury remembered.</p>`)
+      : `<p>You finished ${getOrdinal(playerPlacement(g))}, joined the jury, questioned the Final 2, and cast your vote.</p><p class="muted">Final tally: ${nameOf(g, f1)} ${f1Votes}, ${nameOf(g, f2)} ${f2Votes}.</p>`,
   });
   c.setActions([
     { label: '📊 Season Stats', style: 'primary', onClick: () => showStatsPage(stats) },
     { label: '🧠 Post-Game Analysis', style: 'primary', onClick: () => showAnalysis(stats) },
     { label: 'New Season', style: 'gold', onClick: () => { clearSave(); location.reload(); } },
   ]);
+}
+
+function finalistName(id) {
+  return id === PLAYER_ID ? 'You' : nameOf(g, id);
+}
+
+function finalistVoteName(id) {
+  return id === PLAYER_ID ? 'YOU' : nameOf(g, id);
 }
