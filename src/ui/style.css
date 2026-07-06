@@ -35,6 +35,21 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; color: var(--text); }
 #ai-status-dot.ai-on { background: #4ade80; box-shadow: 0 0 4px rgba(74, 222, 128, 0.6); }
 #ai-status-dot.ai-off { background: #6b7280; }
 
+/* Room code, pinned top-right during online play — a quiet reminder of what
+   to type back in if the tab/app gets closed. Lives outside #hud, same
+   reasoning as the AI dot: HUD rebuilds every turn and would wipe it. */
+#room-code-badge {
+  display: none;
+  position: fixed; top: calc(8px + var(--safe-top)); right: calc(10px + var(--safe-right));
+  background: var(--panel); border: 1px solid var(--panel-border);
+  border-radius: 10px; padding: 4px 10px; font-size: 11px; letter-spacing: 1px;
+  color: var(--muted); z-index: 5; pointer-events: none;
+}
+#room-code-badge b { color: var(--text); letter-spacing: 1.5px; }
+@media (max-width: 720px) {
+  #room-code-badge { font-size: 10px; padding: 3px 8px; }
+}
+
 /* ---------- HUD ---------- */
 .hud-top {
   position: absolute; top: calc(12px + var(--safe-top)); left: 50%; transform: translateX(-50%);

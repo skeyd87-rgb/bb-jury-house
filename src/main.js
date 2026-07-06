@@ -41,6 +41,17 @@ onAiStatusChange((status) => {
   aiDot.title = status === 'ai' ? 'Claude AI active' : status === 'offline' ? 'Offline mode (built-in dialogue engine)' : 'Waiting for the first AI reply…';
 });
 
+// ---------- Room code badge (online only) ----------
+// A quiet top-right reminder of the code to rejoin with, in case the tab/app
+// closes mid-season. Lives outside #hud so per-turn HUD rebuilds don't wipe it.
+const roomCodeBadge = document.createElement('div');
+roomCodeBadge.id = 'room-code-badge';
+document.body.append(roomCodeBadge);
+function showRoomCodeBadge(code) {
+  roomCodeBadge.innerHTML = `Room <b>${code}</b>`;
+  roomCodeBadge.style.display = 'block';
+}
+
 // ---------- Boot ----------
 
 const canvas = document.getElementById('scene');
@@ -96,6 +107,7 @@ function startOnlineSeason(game) {
   onlineSeasonStarted = true;
   onlineGame = game;
   onlineMode = true;
+  if (room?.code) showRoomCodeBadge(room.code);
   const meId = myEngineId();
   const active = game.houseguests.filter((h) => !game.evicted.includes(h.id));
 
