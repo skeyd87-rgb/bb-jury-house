@@ -121,6 +121,10 @@ function startOnlineSeason(game) {
   room.onGame = (g) => handleOnlineTurn(g);
   // Incoming message from another human houseguest.
   room.onChatMsg = (from, fromName, text) => {
+    if (openChatTargetId === from && openChatPanelRef) {
+      openChatPanelRef.addTheirMsg(text);
+      return;
+    }
     showToast(`💬 <b>${fromName}</b>: "${text.slice(0, 80)}"`, [
       { label: 'Reply', style: 'gold', onClick: () => openOnlineChat(from) },
       { label: 'Later', style: '', onClick: () => {} },
@@ -137,27 +141,46 @@ function startOnlineSeason(game) {
 }
 
 // Online 1-on-1 conversation with a houseguest (AI via server Claude/engine,
-// or another human via relay).
-function openOnlineChat(targetId) {
+// or another human via relay). Tracked so an incoming message from the same
+// person can be appended live instead of only surfacing as a toast.
+let openChatTargetId = null;
+let openChatPanelRef = null;
+
+async function openOnlineChat(targetId) {
   if (onlineOverlay || compRunning) return; // don't interrupt a ceremony/comp
   const hg = onlineGame.houseguests.find((h) => h.id === targetId);
   if (!hg || onlineGame.evicted.includes(targetId)) return;
   const isHuman = !!(onlineGame.humanSeats && onlineGame.humanSeats[targetId]);
   world.freezeNpc(targetId, true);
   world.focusOn(targetId);
+  // Human-human chat has real shared history server-side (unlike an AI
+  // conversation, it can span multiple separate sessions on both ends) —
+  // fetch it so the panel doesn't open blank every time.
+  let thread = [];
+  if (isHuman) {
+    const myId = myEngineId();
+    const entries = await room.getChatThread(targetId);
+    thread = entries.map((e) => ({ who: e.from === myId ? 'you' : 'them', text: e.text }));
+  }
   const panel = openChatPanel({
     title: hg.name,
     subtitle: `${hg.job}${isHuman ? ' · 🧑 human' : ' · 🤖 AI'}${onlineGame.hoh === targetId ? ' · HoH 👑' : ''}${onlineGame.nominees?.includes(targetId) ? ' · Nominated 🎯' : ''}`,
     color: hg.color,
     voice: { key: targetId, gender: hg.gender },
-    thread: [],
+    thread,
     onSend: async (text) => {
       const { text: reply, note } = await room.sendChat(targetId, text);
       if (note) panel.addSystemMsg(note);
       return reply;
     },
-    onClose: () => { world.freezeNpc(targetId, false); world.clearFocus(); },
+    onClose: () => {
+      world.freezeNpc(targetId, false);
+      world.clearFocus();
+      if (openChatTargetId === targetId) { openChatTargetId = null; openChatPanelRef = null; }
+    },
   });
+  openChatTargetId = targetId;
+  openChatPanelRef = panel;
 }
 
 // ---- Online social tools (group chat, house meeting, alliances, diary) ----

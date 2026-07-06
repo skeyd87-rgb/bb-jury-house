@@ -60,6 +60,7 @@ export class Room {
     this.lastState = null;
     this.lastGame = null;
     this._chatWaiters = {}; // npcId -> resolve fn
+    this._threadWaiters = {}; // targetId -> resolve fn
     this._wasConnected = false;
     this._explicitDisconnect = false;
   }
@@ -92,6 +93,9 @@ export class Room {
         if (w) { delete this._chatWaiters[msg.npcId]; w({ text: msg.text, note: msg.note }); }
       } else if (msg.type === 'chatMsg') {
         this.onChatMsg && this.onChatMsg(msg.from, msg.fromName, msg.text);
+      } else if (msg.type === 'chatThread') {
+        const w = this._threadWaiters[msg.targetId];
+        if (w) { delete this._threadWaiters[msg.targetId]; w(msg.entries || []); }
       } else if (msg.type === 'groupStart') {
         this.onGroupStart && this.onGroupStart(msg);
       } else if (msg.type === 'groupMsg') {
@@ -136,6 +140,19 @@ export class Room {
       setTimeout(() => {
         if (this._chatWaiters[targetId]) { delete this._chatWaiters[targetId]; resolve({ text: '(no reply — try again)' }); }
       }, 30000);
+    });
+  }
+
+  // Shared human-human 1-on-1 history — fetched fresh each time a chat with
+  // a human is opened, so both sides see the same conversation regardless of
+  // who's had their panel open when.
+  getChatThread(targetId) {
+    return new Promise((resolve) => {
+      this._threadWaiters[targetId] = resolve;
+      this.send('getChatThread', { targetId });
+      setTimeout(() => {
+        if (this._threadWaiters[targetId]) { delete this._threadWaiters[targetId]; resolve([]); }
+      }, 8000);
     });
   }
 

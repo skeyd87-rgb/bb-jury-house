@@ -221,6 +221,10 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
             speakAs(r.text, r.name);
           }
         }
+      } else if (reply == null) {
+        // Human target: there's no reply yet (they'll answer in their own
+        // time) — don't fake a "them" bubble with a system confirmation text.
+        typing.remove();
       } else {
         typing.textContent = reply;
         speakAs(reply);
@@ -249,6 +253,13 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
   log.scrollTop = log.scrollHeight;
   return {
     addSystemMsg: (text) => { addMsg(log, 'sys', text); log.scrollTop = log.scrollHeight; },
+    // A message arrived from the other side while this panel is already
+    // open (online human-to-human chat) — append it live, no "typing" delay.
+    addTheirMsg: (text) => {
+      addMsg(log, 'them', text);
+      log.scrollTop = log.scrollHeight;
+      speakAs(text);
+    },
     // NPC speaks unprompted (e.g. they approached the player): shows a typing
     // indicator while getText resolves.
     themSpeak: async (getText) => {

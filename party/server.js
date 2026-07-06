@@ -769,26 +769,40 @@ export class Room extends Server {
     };
   }
 
+  // Human-human 1-on-1 history, kept SEPARATE from g.mpThreads (which is
+  // fixed to a single human's "you"/"them" perspective and feeds AI prompt
+  // building — ambiguous once both sides of a conversation are humans).
+  // Keyed by the unordered pair so either side's client sees the same log
+  // regardless of who opened it or which direction sent last.
+  humanThreadKey(a, b) {
+    return [a, b].sort().join(':');
+  }
+
   async handleChat(chatterId, targetId, text, connection) {
     const g = this.game;
     if (!g || !text) return;
     if (!activeIds(g).includes(targetId) || targetId === chatterId) return;
-    if (!g.mpThreads) g.mpThreads = {};
-    const key = chatterId + ':' + targetId;
-    const thread = g.mpThreads[key] || (g.mpThreads[key] = []);
-    thread.push({ who: 'you', text });
 
     // Human target: relay the message to them (they reply from their own chat).
     if (this.isHuman(targetId)) {
+      if (!g.mpHumanThreads) g.mpHumanThreads = {};
+      const hKey = this.humanThreadKey(chatterId, targetId);
+      const hThread = g.mpHumanThreads[hKey] || (g.mpHumanThreads[hKey] = []);
+      hThread.push({ from: chatterId, text });
+      if (hThread.length > 40) g.mpHumanThreads[hKey] = hThread.slice(-40);
       const payload = JSON.stringify({ type: 'chatMsg', from: chatterId, fromName: nameOf(g, chatterId), text });
       for (const c of this.getConnections()) {
         if (this.connToPlayer.get(c.id) === this.humanFor(targetId)) c.send(payload);
       }
-      connection.send(JSON.stringify({ type: 'chatReply', npcId: targetId, text: "(sent — they'll see it when they open your chat)", relayed: true }));
-      thread.push({ who: 'them', text: '(relayed)' });
+      connection.send(JSON.stringify({ type: 'chatReply', npcId: targetId, text: null, relayed: true }));
       await this.saveGame();
       return;
     }
+
+    if (!g.mpThreads) g.mpThreads = {};
+    const key = chatterId + ':' + targetId;
+    const thread = g.mpThreads[key] || (g.mpThreads[key] = []);
+    thread.push({ who: 'you', text });
 
     // AI target: Claude (if key) or the built-in engine, effects applied server-side.
     let result;
@@ -1172,6 +1186,15 @@ export class Room extends Server {
         const pid = this.connToPlayer.get(connection.id);
         const chatter = this.engineForPlayer(pid);
         if (chatter && msg.targetId) await this.handleChat(chatter, msg.targetId, String(msg.text || '').slice(0, 400), connection);
+        return;
+      }
+      case 'getChatThread': {
+        const pid = this.connToPlayer.get(connection.id);
+        const chatter = this.engineForPlayer(pid);
+        if (!chatter || !msg.targetId) return;
+        const g = this.game;
+        const hThread = (g?.mpHumanThreads && g.mpHumanThreads[this.humanThreadKey(chatter, msg.targetId)]) || [];
+        connection.send(JSON.stringify({ type: 'chatThread', targetId: msg.targetId, entries: hThread }));
         return;
       }
       case 'pos': {
