@@ -90,7 +90,10 @@ function myEngineId() {
 
 // Phase 2 Step 1: enter the shared house rendered from the server's game state.
 // The season loop (comps, ceremonies, chat) is wired in later steps.
+let onlineSeasonStarted = false;
 function startOnlineSeason(game) {
+  if (onlineSeasonStarted) { onlineGame = game; return; } // one-time world bootstrap only
+  onlineSeasonStarted = true;
   onlineGame = game;
   onlineMode = true;
   const meId = myEngineId();

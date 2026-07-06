@@ -204,6 +204,9 @@ export function showLobby(room, initialState, { onStart, onLeave }) {
   room.onState = (state) => {
     if (state.phase === 'playing') {
       wrap.remove();
+      room.onState = null; // one-shot: once we're in the game, later state
+      // broadcasts (someone else joining, etc.) must not re-trigger onStart —
+      // that was duplicating every houseguest into the 3D scene each time.
       onStart && onStart(state);
     } else {
       render(state);
