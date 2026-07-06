@@ -14,6 +14,7 @@ const PARTY_HOST =
     : 'bb-jury-house.skeyd87.workers.dev'); // deployed Cloudflare Worker
 
 const PID_KEY = 'bbjury.playerId';
+const TOKEN_KEY = 'bbjury.playerToken';
 
 export function getPlayerId() {
   let id = localStorage.getItem(PID_KEY);
@@ -22,6 +23,14 @@ export function getPlayerId() {
     localStorage.setItem(PID_KEY, id);
   }
   return id;
+}
+
+function getPlayerToken() {
+  return localStorage.getItem(TOKEN_KEY) || '';
+}
+
+function setPlayerToken(token) {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
 }
 
 const CODE_CHARS = 'ACDEFGHJKMNPQRSTUVWXYZ2345679'; // no ambiguous chars
@@ -89,21 +98,24 @@ export class Room {
     this.onPos = null; // (engineId, x, z, rotY) => {}
     this.onAiStatus = null; // (usedAi: bool) => {} — fires on any server response carrying an AI-vs-fallback flag
     this.onRoomClosed = null; // (reason: string) => {} — host force-ended the session for everyone
+    this.onTakeoverNotice = null; // (text: string) => {} — late takeover status/denial
     this.lastState = null;
     this.lastGame = null;
     this._chatWaiters = {}; // npcId -> resolve fn
     this._threadWaiters = {}; // targetId -> resolve fn
     this._wasConnected = false;
     this._explicitDisconnect = false;
+    this._authenticated = false;
   }
 
   connect(code, name) {
     this.code = code;
+    this._authenticated = false;
     this.socket = new PartySocket({ host: PARTY_HOST, party: 'room', room: code });
 
     this.socket.addEventListener('open', () => {
       this._wasConnected = true;
-      this.send('hello', { playerId: this.playerId, name });
+      this.send('hello', { playerId: this.playerId, token: getPlayerToken(), name });
       this.onOpen && this.onOpen();
     });
     this.socket.addEventListener('message', (e) => {
@@ -114,12 +126,20 @@ export class Room {
         return;
       }
       if (typeof msg.usedAi === 'boolean') this.onAiStatus && this.onAiStatus(msg.usedAi);
-      if (msg.type === 'state') {
+      if (msg.type === 'auth') {
+        this._authenticated = true;
+        if (msg.playerId === this.playerId) setPlayerToken(msg.token);
+      } else if (msg.type === 'authError') {
+        localStorage.removeItem(TOKEN_KEY);
+        this._explicitDisconnect = true;
+        this._authenticated = false;
+        this.socket && this.socket.close();
+      } else if (msg.type === 'state') {
         this.lastState = msg.state;
-        this.onState && this.onState(msg.state);
+        if (this._authenticated) this.onState && this.onState(msg.state);
       } else if (msg.type === 'game') {
         this.lastGame = msg.game;
-        this.onGame && this.onGame(msg.game);
+        if (this._authenticated) this.onGame && this.onGame(msg.game);
       } else if (msg.type === 'chatReply') {
         const w = this._chatWaiters[msg.npcId];
         if (w) { delete this._chatWaiters[msg.npcId]; w({ text: msg.text, note: msg.note }); }
@@ -147,6 +167,8 @@ export class Room {
       } else if (msg.type === 'roomClosed') {
         this._explicitDisconnect = true; // host ended it — don't try to reconnect
         this.onRoomClosed && this.onRoomClosed(msg.reason);
+      } else if (msg.type === 'takeoverNotice') {
+        this.onTakeoverNotice && this.onTakeoverNotice(msg.text);
       }
     });
     this.socket.addEventListener('close', () => {
@@ -216,12 +238,11 @@ export class Room {
   }
 
   isHost() {
-    return this.lastState && this.lastState.hostPlayerId === this.playerId;
+    return !!this.lastState?.isHost;
   }
 
   mySeatId() {
-    const p = this.lastState?.players?.[this.playerId];
-    return p ? p.seatId : null;
+    return this.lastState?.mySeatId || null;
   }
 
   disconnect() {

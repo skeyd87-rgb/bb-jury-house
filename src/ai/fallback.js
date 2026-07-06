@@ -15,6 +15,7 @@ const INTENTS = [
   { key: 'ask_info', rx: /\b(who (are|is|do)|what (do|are) you|any idea|heard anything|what'?s the plan|thoughts on)\b/i },
   { key: 'accuse', rx: /\b(you lied|liar|betrayed|you promised|threw me|snake|two.?faced|behind my back)\b/i },
   { key: 'compliment', rx: /\b(love you|great|awesome|trust you|appreciate|thank|good (game|job)|impressive)\b/i },
+  { key: 'strategy', rx: /\b(strategy|strategic|game plan|talk game|numbers|where'?s your head|what should|who should|votes?|nominations?|hoh|veto|jury)\b/i },
   { key: 'smalltalk', rx: /.*/ },
 ];
 
@@ -25,6 +26,13 @@ function detectTargetId(g, msg) {
     if (lower.includes(nameOf(g, id).toLowerCase())) return id;
   }
   return null;
+}
+
+function strategyLead(g, targetId) {
+  if (targetId) return `Gamewise, ${nameOf(g, targetId)} is the name we need to count votes around.`;
+  if (g.nominees?.length) return `Gamewise, this week is about the votes between ${g.nominees.map((id) => nameOf(g, id)).join(' and ')}.`;
+  if (g.hoh) return `Gamewise, ${nameOf(g, g.hoh)} has the power right now, so the smart move is managing that relationship.`;
+  return 'Gamewise, the numbers matter more than vibes right now.';
 }
 
 // Personality voices: short authored fragments keyed by npc id.
@@ -178,12 +186,21 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
       effects.summary = 'Player was warm/complimentary.';
       break;
     }
+    case 'strategy': {
+      bucket = targetId ? 'target' : 'ask_info';
+      effects.trustDelta = 1;
+      effects.targetDiscussed = targetId;
+      effects.secretShared = targetId ? `talked strategy around ${nameOf(g, targetId)}` : null;
+      effects.summary = targetId ? `Talked strategy around ${nameOf(g, targetId)}.` : 'Talked general strategy.';
+      break;
+    }
     default:
       bucket = 'smalltalk';
   }
 
   const lines = v[bucket] || v.smalltalk;
-  const reply = lines[Math.floor(Math.random() * lines.length)];
+  const baseReply = lines[Math.floor(Math.random() * lines.length)];
+  const reply = intent === 'strategy' ? `${strategyLead(g, targetId)} ${baseReply}` : baseReply;
   return { reply, effects };
 }
 

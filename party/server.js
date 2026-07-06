@@ -42,6 +42,7 @@ export class Room extends Server {
     this.game = null;
     this.turn = null; // current interactive turn (comp/nominate/vote/etc.)
     this.connToPlayer = new Map(); // connId -> playerId
+    this.playerTokens = {}; // playerId -> private reconnect token, never broadcast
   }
 
   async onStart() {
@@ -49,6 +50,7 @@ export class Room extends Server {
     this.game = (await this.ctx.storage.get('game')) || null;
     this.turn = (await this.ctx.storage.get('turn')) || null;
     this.apiKey = (await this.ctx.storage.get('apiKey')) || null; // host's key, never broadcast
+    this.playerTokens = (await this.ctx.storage.get('playerTokens')) || {};
   }
 
   // The host's own key if they gave one, else the operator's shared server
@@ -60,6 +62,17 @@ export class Room extends Server {
   async saveGame() {
     await this.ctx.storage.put('game', this.game);
     await this.ctx.storage.put('turn', this.turn);
+  }
+
+  async persistTokens() {
+    await this.ctx.storage.put('playerTokens', this.playerTokens);
+  }
+
+  makePlayerToken() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
   }
 
   // Is a houseguest human-controlled?
@@ -98,14 +111,54 @@ export class Room extends Server {
     return seatId === 'newcomer' ? PLAYER_ID : seatId;
   }
 
+  projectState(viewerPid = null) {
+    const s = this.state;
+    const seats = {};
+    for (const [id, seat] of Object.entries(s.seats || {})) {
+      seats[id] = {
+        id: seat.id,
+        name: seat.name,
+        job: seat.job,
+        color: seat.color,
+        fixed: seat.fixed,
+        connected: !!seat.connected,
+        occupantName: seat.occupantName,
+        occupied: !!seat.occupant,
+        mine: !!viewerPid && seat.occupant === viewerPid,
+      };
+    }
+    return {
+      code: s.code,
+      phase: s.phase,
+      settings: s.settings,
+      startedAt: s.startedAt,
+      aiPowered: s.aiPowered,
+      seats,
+      isHost: !!viewerPid && s.hostPlayerId === viewerPid,
+      mySeatId: viewerPid ? (s.players?.[viewerPid]?.seatId || null) : null,
+    };
+  }
+
+  projectTurn(viewerPid = null) {
+    if (!this.turn) return null;
+    const t = { ...this.turn };
+    if (Array.isArray(this.turn.waitingOn)) {
+      t.waitingOnCount = this.turn.waitingOn.length;
+      t.waitingOnMe = !!viewerPid && this.turn.waitingOn.includes(viewerPid);
+      t.waitingOn = t.waitingOnMe ? ['me'] : [];
+    }
+    return t;
+  }
+
   // Render-safe projection of the authoritative game (no hidden social/memory
   // state — those stay server-side and are revealed only as the game dictates).
   // viewerEngineId, if given, adds a personalized slice: only that viewer's OWN
   // alliances and OWN open promises (never anyone else's — see invariant in
   // CLAUDE.md about not leaking hidden social state).
-  projectGame(viewerEngineId = null) {
+  projectGame(viewerEngineId = null, viewerPid = null) {
     const g = this.game;
     if (!g) return null;
+    const humanSeats = Object.fromEntries(Object.keys(this.state.humanSeats || {}).map((id) => [id, true]));
     const base = {
       week: g.week,
       phase: g.phase,
@@ -115,8 +168,9 @@ export class Room extends Server {
       vetoUsed: g.vetoUsed,
       jury: g.jury,
       evicted: g.evicted,
-      humanSeats: this.state.humanSeats,
-      turn: this.turn || null,
+      humanSeats,
+      myEngineId: viewerEngineId || null,
+      turn: this.projectTurn(viewerPid),
       houseguests: g.houseguests.map((h) => ({
         id: h.id,
         name: h.name,
@@ -151,7 +205,7 @@ export class Room extends Server {
     for (const c of this.getConnections()) {
       const pid = this.connToPlayer.get(c.id);
       const engineId = pid ? this.engineForPlayer(pid) : null;
-      c.send(engineId ? JSON.stringify({ type: 'game', game: this.projectGame(engineId) }) : spectatorPayload);
+      c.send(engineId ? JSON.stringify({ type: 'game', game: this.projectGame(engineId, pid) }) : spectatorPayload);
     }
   }
 
@@ -1042,6 +1096,11 @@ export class Room extends Server {
     const engineId = this.seatToEngineId(seatId);
     if (!activeIds(g).includes(engineId)) return; // evicted/gone — nothing to take over
     if (this.isActiveHuman(engineId)) return; // someone's already actively playing them
+    const currentOwner = s.humanSeats?.[engineId] || null;
+    if (currentOwner && currentOwner !== pid) {
+      this.sendToPid(pid, { type: 'takeoverNotice', text: 'That seat already belongs to a disconnected player. They can rejoin with the same room code.' });
+      return;
+    }
     if (!s.humanSeats) s.humanSeats = {};
     s.humanSeats[engineId] = pid;
     if (!s.players[pid]) s.players[pid] = { name: 'Player', seatId: null, online: true };
@@ -1060,6 +1119,12 @@ export class Room extends Server {
     await this.saveGame();
     this.broadcastState();
     this.broadcastGame();
+    if (this.turn?.kind === 'comp' && this.turn.players?.includes(engineId) && this.turn.scores?.[engineId] != null) {
+      this.sendToPid(pid, {
+        type: 'takeoverNotice',
+        text: `AI already played this competition for ${nameOf(g, engineId)}. You'll control them after this result.`,
+      });
+    }
   }
 
   async persist() {
@@ -1067,12 +1132,15 @@ export class Room extends Server {
   }
 
   broadcastState() {
-    this.broadcast(JSON.stringify({ type: 'state', state: this.state }));
+    for (const c of this.getConnections()) {
+      const pid = this.connToPlayer.get(c.id) || null;
+      c.send(JSON.stringify({ type: 'state', state: this.projectState(pid) }));
+    }
   }
 
   onConnect(connection) {
     // Send current state immediately; seating happens on the client's `hello`.
-    connection.send(JSON.stringify({ type: 'state', state: this.state }));
+    connection.send(JSON.stringify({ type: 'state', state: this.projectState() }));
     const game = this.projectGame();
     if (game) connection.send(JSON.stringify({ type: 'game', game }));
   }
@@ -1090,6 +1158,18 @@ export class Room extends Server {
       case 'hello': {
         const pid = String(msg.playerId || '').slice(0, 64);
         if (!pid) return;
+        const providedToken = String(msg.token || '');
+        let expectedToken = this.playerTokens[pid];
+        if (expectedToken && providedToken !== expectedToken) {
+          connection.send(JSON.stringify({ type: 'authError', reason: 'bad_token' }));
+          try { connection.close(); } catch {}
+          return;
+        }
+        if (!expectedToken) {
+          expectedToken = this.makePlayerToken();
+          this.playerTokens[pid] = expectedToken;
+          await this.persistTokens();
+        }
         this.connToPlayer.set(connection.id, pid);
         if (!s.players[pid]) s.players[pid] = { name: msg.name || 'Player', seatId: null, online: true };
         s.players[pid].online = true;
@@ -1098,6 +1178,11 @@ export class Room extends Server {
         if (s.players[pid].seatId && s.seats[s.players[pid].seatId]) {
           s.seats[s.players[pid].seatId].connected = true;
         }
+        connection.send(JSON.stringify({ type: 'auth', playerId: pid, token: expectedToken }));
+        connection.send(JSON.stringify({ type: 'state', state: this.projectState(pid) }));
+        const engineId = this.engineForPlayer(pid);
+        const game = this.projectGame(engineId, pid);
+        if (game) connection.send(JSON.stringify({ type: 'game', game }));
         break;
       }
 
@@ -1338,6 +1423,7 @@ export class Room extends Server {
     this.game = null;
     this.turn = null;
     this.apiKey = null;
+    this.playerTokens = {};
     await this.ctx.storage.deleteAll();
     for (const c of this.getConnections()) {
       try { c.close(); } catch {}
@@ -1388,35 +1474,59 @@ export class Room extends Server {
 // exactly like before this existed. Since the page is public, a light global
 // rate gate (RateLimiter DO) protects the operator's key from abuse.
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'content-type',
-};
+const ALLOWED_API_ORIGINS = new Set([
+  'https://skeyd87-rgb.github.io',
+]);
 
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...CORS_HEADERS } });
+function allowedApiOrigin(request) {
+  const origin = request.headers.get('Origin');
+  if (!origin) return null;
+  if (ALLOWED_API_ORIGINS.has(origin)) return origin;
+  try {
+    const url = new URL(origin);
+    const isLocal = (url.hostname === 'localhost' || url.hostname === '127.0.0.1') && /^https?:$/.test(url.protocol);
+    return isLocal ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function corsHeaders(origin) {
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'content-type',
+    'Vary': 'Origin',
+  };
+}
+
+function jsonResponse(body, status = 200, origin = null) {
+  const headers = { 'content-type': 'application/json' };
+  if (origin) Object.assign(headers, corsHeaders(origin));
+  return new Response(JSON.stringify(body), { status, headers });
 }
 
 async function handleApiChat(request, env) {
-  if (request.method === 'OPTIONS') return new Response(null, { headers: CORS_HEADERS });
-  if (request.method !== 'POST') return jsonResponse({ error: 'method_not_allowed' }, 405);
-  if (!env.ANTHROPIC_API_KEY) return jsonResponse({ error: 'no_server_key' }, 503);
+  const origin = allowedApiOrigin(request);
+  if (!origin) return jsonResponse({ error: 'forbidden_origin' }, 403);
+  if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders(origin) });
+  if (request.method !== 'POST') return jsonResponse({ error: 'method_not_allowed' }, 405, origin);
+  if (!env.ANTHROPIC_API_KEY) return jsonResponse({ error: 'no_server_key' }, 503, origin);
 
   if (env.RATE_LIMITER) {
     const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName('global'));
     const gate = await (await stub.fetch('https://rate-limiter/check')).json();
-    if (!gate.allowed) return jsonResponse({ error: 'rate_limited' }, 429);
+    if (!gate.allowed) return jsonResponse({ error: 'rate_limited' }, 429, origin);
   }
 
   let body;
   try {
     body = await request.json();
   } catch {
-    return jsonResponse({ error: 'bad_request' }, 400);
+    return jsonResponse({ error: 'bad_request' }, 400, origin);
   }
   const { system, messages, maxTokens, temperature } = body || {};
-  if (!system || !Array.isArray(messages)) return jsonResponse({ error: 'bad_request' }, 400);
+  if (!system || !Array.isArray(messages)) return jsonResponse({ error: 'bad_request' }, 400, origin);
 
   let res;
   try {
@@ -1432,12 +1542,12 @@ async function handleApiChat(request, env) {
       }),
     });
   } catch {
-    return jsonResponse({ error: 'upstream_unreachable' }, 502);
+    return jsonResponse({ error: 'upstream_unreachable' }, 502, origin);
   }
-  if (!res.ok) return jsonResponse({ error: 'upstream', status: res.status }, 502);
+  if (!res.ok) return jsonResponse({ error: 'upstream', status: res.status }, 502, origin);
   const data = await res.json();
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-  return jsonResponse({ text });
+  return jsonResponse({ text }, 200, origin);
 }
 
 // Minimal global request counter — resets every 60s. Not per-user (there's no

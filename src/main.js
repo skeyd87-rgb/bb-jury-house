@@ -92,6 +92,7 @@ let onlineMode = false;
 
 // Which engine houseguest id does THIS player control?
 function myEngineId() {
+  if (onlineGame?.myEngineId) return onlineGame.myEngineId;
   const hs = onlineGame?.humanSeats || {};
   for (const [engineId, pid] of Object.entries(hs)) {
     if (pid === room?.playerId) return engineId;
@@ -149,6 +150,7 @@ function startOnlineSeason(game) {
   // The server reports whether each reply was actually AI-generated or the
   // offline fallback — feeds the same tiny indicator single-player uses.
   room.onAiStatus = (usedAi) => setAiStatus(usedAi);
+  room.onTakeoverNotice = (text) => showToast(text);
   handleOnlineTurn(game);
 }
 
@@ -400,7 +402,7 @@ function closeOnlineOverlay() {
 }
 
 function iAmHost() {
-  return onlineGame && room && onlineGame.humanSeats && room.isHost && room.isHost();
+  return onlineGame && room && room.isHost && room.isHost();
 }
 
 let turnTimerInterval = null;
@@ -576,6 +578,7 @@ function handleOnlineTurn(game) {
 function amIActing(game, t) {
   const myPid = room?.playerId;
   const myEngine = myEngineId();
+  if (typeof t.waitingOnMe === 'boolean') return t.waitingOnMe;
   if (t.waitingOn && t.waitingOn.includes(myPid)) return true;
   if (['nominate', 'veto_decision', 'replacement', 'final_cut'].includes(t.kind) && t.actor === myEngine) return true;
   return false;
@@ -593,7 +596,7 @@ function renderOnlineTurn(game, t) {
     const acts = [];
     if (host && isResultKind(t.kind)) acts.push({ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') });
     // Host can AI-cover players we're stuck waiting on.
-    if (host && (t.waitingOn && t.waitingOn.length)) acts.push({ label: '⏩ Skip waiting (AI decides)', style: 'primary', onClick: () => room.send('forceResolve') });
+    if (host && ((t.waitingOnCount || 0) > 0 || (t.waitingOn && t.waitingOn.length))) acts.push({ label: '⏩ Skip waiting (AI decides)', style: 'primary', onClick: () => room.send('forceResolve') });
     onlineOverlay.setActions(acts);
   };
 
@@ -895,7 +898,6 @@ window.__bb = {
   openDiary: () => openDiary(),
   // test helper: evict ids without ceremony, then jump to final 3
   ff: async (ids) => {
-    const { applyEviction } = await import('./game/season.js');
     for (const id of ids) {
       applyEviction(g, id, {});
       world.removeNpc(id);

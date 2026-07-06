@@ -2,7 +2,7 @@
 // host controls. Renders live from server state broadcasts.
 
 import { el } from './ui.js';
-import { Room, makeRoomCode, normalizeCode, getPlayerId, getRecentRooms, rememberRoom, forgetRoom } from '../net/room.js';
+import { Room, makeRoomCode, normalizeCode, getRecentRooms, rememberRoom, forgetRoom } from '../net/room.js';
 
 function colorHex(c) {
   return '#' + (c || 0xffffff).toString(16).padStart(6, '0');
@@ -114,10 +114,9 @@ export function showLobby(room, initialState, { onStart, onLeave }) {
   document.body.append(wrap);
 
   function render(state) {
-    const meId = getPlayerId();
-    const isHost = state.hostPlayerId === meId;
-    const mySeat = state.players[meId]?.seatId || null;
-    const seated = Object.values(state.seats).filter((s) => s.occupant);
+    const isHost = !!state.isHost;
+    const mySeat = state.mySeatId || null;
+    const seated = Object.values(state.seats).filter((s) => s.occupied);
 
     card.innerHTML = '';
     card.append(el('div', 'eye', '👁️'));
@@ -154,15 +153,16 @@ export function showLobby(room, initialState, { onStart, onLeave }) {
 
     const grid = el('div', 'seat-grid');
     for (const seat of Object.values(state.seats)) {
-      const mine = seat.occupant === meId;
-      const s = el('div', 'seat-card' + (seat.occupant ? ' taken' : '') + (mine ? ' mine' : ''));
+      const mine = !!seat.mine;
+      const occupied = !!seat.occupied;
+      const s = el('div', 'seat-card' + (occupied ? ' taken' : '') + (mine ? ' mine' : ''));
       const dot = el('span', 'dot', '');
       dot.style.background = colorHex(seat.color);
       const head = el('div', 'seat-head');
       head.append(dot, el('span', 'seat-name', seat.occupantName || seat.name));
       s.append(head);
-      s.append(el('div', 'seat-sub', seat.occupant ? (mine ? '⭐ You' : '🧑 Human') : '🤖 AI if unclaimed'));
-      if (!seat.occupant && !mySeat) {
+      s.append(el('div', 'seat-sub', occupied ? (mine ? '⭐ You' : '🧑 Human') : '🤖 AI if unclaimed'));
+      if (!occupied && !mySeat) {
         const claim = el('button', 'bb primary sm', 'Claim');
         claim.onclick = () => room.claimSeat(seat.id);
         s.append(claim);
