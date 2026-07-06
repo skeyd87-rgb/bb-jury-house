@@ -73,6 +73,20 @@ committed plan — pick items freely, any order.
   local `wrangler dev` instance.
 - Size: medium. Cost: free.
 
+### 6.9 — Organic voice chat with AI houseguests
+- **Problem:** dictation and TTS already exist (`src/audio/voice.js`) but are two separate manual
+  toggles — mic fills the text input, you still tap Send, and reply-speaking is a different toggle
+  you have to remember to turn on. It doesn't feel like a conversation.
+- **Fix:** a single "🎙️ Voice Chat" mode on the chat panel (1-on-1 only, not Diary — matches the
+  existing Diary TTS exemption) that auto-submits your dictated line the moment you stop talking,
+  forces reply speech on for that mode, and — once the AI's reply finishes speaking — automatically
+  starts listening again, so a back-and-forth runs hands-free like a real exchange. Requires
+  threading a per-utterance "done speaking" callback through `speak()`/the internal queue (currently
+  only tracks a global speaking flag, not per-call completion) and a continuous listen/submit/speak
+  loop in `openChatPanel`. iOS Safari has no Web Speech API dictation (`dictationSupported()` is
+  already `false` there) — those users keep the existing manual keyboard-mic + typed Send fallback.
+- Size: medium. Cost: free (browser APIs only).
+
 ---
 
 No suggested build order — these are independent of each other. 6.1 is trivial and worth doing
