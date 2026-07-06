@@ -2,7 +2,7 @@
 
 import { createScene } from './world/scene.js';
 import { WorldController } from './world/movement.js';
-import { createCharacter } from './world/characters.js';
+import { createCharacter, updateTagName } from './world/characters.js';
 import { PLAYER_ID } from './game/cast.js';
 import {
   newGame, loadGame, saveGame, clearSave,
@@ -389,6 +389,13 @@ function syncOnlineWorld(game) {
   // Remove evicted houseguests from the 3D house.
   for (const id of game.evicted) {
     if (world.npcs.has(id)) world.removeNpc(id);
+  }
+  // A rename (Take Over, or a claim-time rename broadcast late) doesn't
+  // retroactively repaint an already-built name tag — refresh any that
+  // drifted from the current houseguest name.
+  for (const hg of game.houseguests) {
+    const char = world.npcs.get(hg.id) || (world.player?.userData.id === hg.id ? world.player : null);
+    if (char) updateTagName(char, hg.name);
   }
   // HUD: week / phase / who's HoH & nominated.
   const meId = myEngineId();

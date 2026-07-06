@@ -124,6 +124,7 @@ export function createCharacter(hg) {
 
   // Name tag sprite
   const tag = makeTag(hg.name);
+  tag.userData = { name: hg.name };
   tag.position.y = headY + 0.75;
   g.add(tag);
 
@@ -217,6 +218,25 @@ function addHair(g, hg, headY, hairMat, skinMat) {
     bob.position.set(0, headY - 0.06, -0.02);
     bob.rotation.y = Math.PI;
   }
+}
+
+// Online: a houseguest's name can change after their mesh was already built
+// (mid-season Take Over + rename). The tag sprite bakes its text into a
+// canvas texture once, so redraw it with a fresh sprite instead of trying to
+// mutate the old canvas in place.
+export function updateTagName(char, newName) {
+  const old = char.userData.tag;
+  if (!old || old.userData?.name === newName) return;
+  const fresh = makeTag(newName);
+  fresh.userData = { name: newName };
+  fresh.position.copy(old.position);
+  fresh.visible = old.visible;
+  fresh.renderOrder = old.renderOrder;
+  char.remove(old);
+  old.material.map?.dispose();
+  old.material.dispose();
+  char.add(fresh);
+  char.userData.tag = fresh;
 }
 
 function makeTag(name) {
