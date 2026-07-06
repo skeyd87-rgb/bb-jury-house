@@ -103,7 +103,7 @@ Respond ONLY with a JSON object, no other text:
     "trustDelta": <-8 to 8, how this exchange changed your trust in the player>,
     "bondDelta": <-6 to 6, personal-liking change>,
     "threatDelta": <-5 to 8, did they just look more/less dangerous>,
-    "promiseMade": null or {"text": "<what the PLAYER just promised you, in plain words>", "kind": "safety"|"vote"|"final2"|"alliance"|"vote_evict"|"info", "targetId": null or "<only for vote_evict: id of who they promised to vote out>"},
+    "promiseMade": null or {"text": "<what the PLAYER just promised you, in plain words>", "kind": "safety"|"vote"|"final2"|"alliance"|"vote_evict"|"info", "targetId": null or "<only for vote_evict: id of who they promised to vote out>", "protectedIds": ["<only for safety promises: who the player promised not to nominate>"]},
     "allianceSignal": "none"|"propose"|"accept",
     "suspicionOfLie": <true if what they said contradicts what you know/heard>,
     "secretShared": null or "<sensitive info the player just confided, one line>",
@@ -113,7 +113,7 @@ Respond ONLY with a JSON object, no other text:
   }
 }
 Use allianceProposal (not just allianceSignal) when the player proposes a SPECIFIC alliance — especially one with multiple members or a name. Set accepted based on your genuine willingness, considering your trust in the player AND in every proposed member.
-Rules for effects: only record promiseMade if the player clearly committed to something. Promise kinds — "safety": they won't nominate you; "vote": they'll vote to KEEP you; "vote_evict": they'll vote OUT a third person (always set targetId); "alliance": an alliance / final-N loyalty pledge; "final2": a final-two deal; "info": they'll share information. Only set allianceSignal to "accept" if YOU are genuinely willing given your trust level and existing loyalties. suspicionOfLie only when there is a real contradiction with your memory above.`;
+Rules for effects: only record promiseMade if the player clearly committed to something. Promise kinds — "safety": they won't nominate someone; "vote": they'll vote to KEEP you; "vote_evict": they'll vote OUT a third person (always set targetId); "alliance": an alliance / final-N loyalty pledge; "final2": a final-two deal; "info": they'll share information. For safety promises, set protectedIds to the exact houseguest ids protected by the promise. If the player says "you are safe", protectedIds is your id. If they name other people ("Rae and Bev are safe"), protectedIds is those named ids, not everyone who heard it. Only set allianceSignal to "accept" if YOU are genuinely willing given your trust level and existing loyalties. suspicionOfLie only when there is a real contradiction with your memory above.`;
 
 export function buildChatSystemPrompt(g, npcId, viewerId = PLAYER_ID) {
   const c = castById(npcId);
@@ -280,10 +280,10 @@ export function buildGroupSystemPrompt(g, memberIds, chatterId = PLAYER_ID) {
 {
   "replies": [ {"id": "<member id>", "reply": "<their line>"} ],
   "effects": { "<member id>": {"trustDelta": <-8..8>, "bondDelta": <-6..6>, "threatDelta": <-5..8>, "suspicionOfLie": bool, "summary": "<one-line memory>"} },
-  "promiseMade": null or {"text": "<what the player promised, heard by ALL present>", "kind": "safety"|"vote"|"final2"|"alliance"|"vote_evict"|"info", "targetId": null or "<id>"},
+  "promiseMade": null or {"text": "<what the player promised, heard by ALL present>", "kind": "safety"|"vote"|"final2"|"alliance"|"vote_evict"|"info", "targetId": null or "<id>", "protectedIds": ["<only for safety promises: exact ids protected>"]},
   "allianceProposal": null or {"accepted": true|false, "name": "<name>", "decliners": ["<ids of present members who refuse>"]}
 }
-Only include effects entries for members whose opinion actually MOVED this exchange (omit unaffected members — they default to no change). Keep every summary under 12 words. allianceProposal only if the player clearly proposed an alliance to the group — each member decides from their own trust; accepted=true if at least the majority of them are in, list holdouts in decliners.`);
+Only include effects entries for members whose opinion actually MOVED this exchange (omit unaffected members — they default to no change). Keep every summary under 12 words. For group safety promises, protectedIds must name who is actually safe, not every listener. allianceProposal only if the player clearly proposed an alliance to the group — each member decides from their own trust; accepted=true if at least the majority of them are in, list holdouts in decliners.`);
   return lines.join('\n');
 }
 

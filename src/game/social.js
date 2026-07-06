@@ -44,19 +44,36 @@ export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYE
   }
 
   if (effects.promiseMade && effects.promiseMade.text) {
-    const p = {
-      id: 'p' + (g.promises.length + 1),
-      from: chatterId,
-      to: npcId,
-      text: String(effects.promiseMade.text).slice(0, 160),
-      kind: effects.promiseMade.kind || 'safety',
-      targetId: effects.promiseMade.targetId || null,
-      week: g.week,
-      status: 'open',
-    };
-    g.promises.push(p);
-    g.memory[npcId].promisesHeard.push(p.id);
-    logEvent(g, 'promise', `${chatterName} promised ${nameOf(g, npcId)}: "${p.text}"`, [npcId, chatterId]);
+    const text = String(effects.promiseMade.text).slice(0, 160);
+    const kind = effects.promiseMade.kind || 'safety';
+    const protectedIds = promiseRecipients(g, npcId, chatterId, text, effects.promiseMade);
+    for (const protectedId of protectedIds) {
+      let p = g.promises.find((existing) =>
+        existing.status === 'open' &&
+        existing.from === chatterId &&
+        existing.to === protectedId &&
+        existing.text === text &&
+        existing.kind === kind &&
+        existing.week === g.week
+      );
+      if (!p) {
+        p = {
+          id: 'p' + (g.promises.length + 1),
+          from: chatterId,
+          to: protectedId,
+          text,
+          kind,
+          targetId: effects.promiseMade.targetId || null,
+          week: g.week,
+          status: 'open',
+        };
+        g.promises.push(p);
+        logEvent(g, 'promise', `${chatterName} promised ${nameOf(g, protectedId)}: "${p.text}"`, [protectedId, chatterId]);
+      }
+      if (g.memory[npcId] && !g.memory[npcId].promisesHeard.includes(p.id)) {
+        g.memory[npcId].promisesHeard.push(p.id);
+      }
+    }
   }
 
   if (effects.allianceProposal && effects.allianceProposal.accepted) {
@@ -84,6 +101,30 @@ export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYE
       g.social[npcId][t].threat = clamp(g.social[npcId][t].threat + 4);
     }
   }
+}
+
+function promiseRecipients(g, npcId, chatterId, text, promiseMade) {
+  if (promiseMade.kind !== 'safety') return [npcId];
+  const ids = activeIds(g);
+  const explicit = Array.isArray(promiseMade.protectedIds)
+    ? promiseMade.protectedIds
+    : promiseMade.targetId
+    ? [promiseMade.targetId]
+    : [];
+  const fromPayload = explicit.filter((id) => ids.includes(id));
+  if (fromPayload.length) return [...new Set(fromPayload)];
+
+  const lower = text.toLowerCase();
+  const named = ids.filter((id) => {
+    if (id === chatterId) return false;
+    const name = nameOf(g, id).toLowerCase();
+    return name && new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(lower);
+  });
+  return named.length ? [...new Set(named)] : [npcId];
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function num(v, lo, hi) {

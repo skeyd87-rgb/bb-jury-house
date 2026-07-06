@@ -810,7 +810,12 @@ export class Room extends Server {
       bondDelta: e.bondDelta ?? 0,
       threatDelta: e.threatDelta ?? 0,
       promiseMade: e.promiseMade && e.promiseMade.text
-        ? { text: String(e.promiseMade.text), kind: KINDS.includes(e.promiseMade.kind) ? e.promiseMade.kind : 'safety', targetId: ids.includes(e.promiseMade.targetId) ? e.promiseMade.targetId : null }
+        ? {
+            text: String(e.promiseMade.text),
+            kind: KINDS.includes(e.promiseMade.kind) ? e.promiseMade.kind : 'safety',
+            targetId: ids.includes(e.promiseMade.targetId) ? e.promiseMade.targetId : null,
+            protectedIds: Array.isArray(e.promiseMade.protectedIds) ? e.promiseMade.protectedIds.filter((id) => ids.includes(id)) : [],
+          }
         : null,
       allianceSignal: SIGNALS.includes(e.allianceSignal) ? e.allianceSignal : 'none',
       suspicionOfLie: !!e.suspicionOfLie,

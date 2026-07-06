@@ -44,6 +44,9 @@ function sanitizeEffects(raw, npcIds) {
             text: String(e.promiseMade.text),
             kind: VALID_KINDS.includes(e.promiseMade.kind) ? e.promiseMade.kind : 'safety',
             targetId: npcIds.includes(e.promiseMade.targetId) ? e.promiseMade.targetId : null,
+            protectedIds: Array.isArray(e.promiseMade.protectedIds)
+              ? e.promiseMade.protectedIds.filter((id) => npcIds.includes(id))
+              : [],
           }
         : null,
     allianceSignal: VALID_SIGNALS.includes(e.allianceSignal) ? e.allianceSignal : 'none',
