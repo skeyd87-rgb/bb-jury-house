@@ -368,6 +368,14 @@ function takeOverFlowOnline(eligibleIds) {
     });
     const name = typed === '(no answer)' ? currentName : typed;
     room.claimLiveSeat(id === PLAYER_ID ? 'newcomer' : id, name);
+    // Claiming a seat mid-gate (week_ready/intro) doesn't change the turn
+    // itself, so the next game broadcast would otherwise look identical to
+    // handleOnlineTurn's dedup check and never re-render — leaving the
+    // world wide open (chat, roaming) even though HOH still hasn't been
+    // decided. Force the next broadcast through so the blocking splash
+    // reappears for this now-non-spectator player, minus the Take Over
+    // option they just used.
+    lastTurnSig = null;
   });
 }
 
@@ -622,6 +630,18 @@ function renderOnlineTurn(game, t) {
     onlineOverlay.setActions(acts);
   };
 
+  // A spectator (nobody's controlling them yet) shouldn't be stuck watching
+  // "Waiting for host…" behind a blocking splash — the whole point of the
+  // pre-HoH-comp gates is to give latecomers a window to actually claim a
+  // seat, not just observe one. Taking over doesn't touch chat/AI dialogue,
+  // so it's safe to allow even while everything else on screen is blocked.
+  const spectatorTakeOverAction = () => {
+    if (!isSpectator()) return [];
+    const eligible = onlineActiveIds(game).filter((id) => !(game.humanSeats && game.humanSeats[id]));
+    if (!eligible.length) return [];
+    return [{ label: '🎮 Take Over a Houseguest', style: 'gold', onClick: () => takeOverFlowOnline(eligible) }];
+  };
+
   switch (t.kind) {
     case 'week_ready':
       onlineOverlay = cinematic({
@@ -629,12 +649,16 @@ function renderOnlineTurn(game, t) {
         title: t.week === 1 ? 'The House Is Ready' : 'New Week',
         bodyHtml: `<p class="muted">${t.week === 1 ? "Confirm everyone's connected before the HoH comp locks the field in." : 'Everyone ready for the new week?'}</p>${roomRosterHtml(game)}`,
       });
-      onlineOverlay.setActions(host ? [{ label: '▶ Start the Week', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      onlineOverlay.setActions(host
+        ? [{ label: '▶ Start the Week', style: 'gold', onClick: () => room.send('advanceTurn') }]
+        : [...spectatorTakeOverAction(), { label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
     case 'intro':
       onlineOverlay = cinematic({ kicker: `Week ${t.week}`, title: t.week === 1 ? 'Welcome to the Jury Phase' : 'A New Week', bodyHtml: `<p>${t.message}</p>` });
-      onlineOverlay.setActions(host ? [{ label: 'Play HoH Comp ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      onlineOverlay.setActions(host
+        ? [{ label: 'Play HoH Comp ▶', style: 'gold', onClick: () => room.send('advanceTurn') }]
+        : [...spectatorTakeOverAction(), { label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
     case 'comp': {
