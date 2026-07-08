@@ -95,6 +95,8 @@ export class Room {
     this.onGroupWhisper = null; // (from, fromName, text) => {}
     this.onAllianceResult = null; // (payload) => {}
     this.onAllianceLeft = null; // (payload) => {}
+    this.onAllianceInvite = null; // (payload) => {} — a human founder invited YOU into an alliance
+    this.onAllianceInviteSent = null; // (payload) => {} — your invites went out, waiting on humans
     this.onPos = null; // (engineId, x, z, rotY) => {}
     this.onAiStatus = null; // (usedAi: bool) => {} — fires on any server response carrying an AI-vs-fallback flag
     this.onRoomClosed = null; // (reason: string) => {} — host force-ended the session for everyone
@@ -160,6 +162,10 @@ export class Room {
         this.onAllianceResult && this.onAllianceResult(msg);
       } else if (msg.type === 'allianceLeft') {
         this.onAllianceLeft && this.onAllianceLeft(msg);
+      } else if (msg.type === 'allianceInvite') {
+        this.onAllianceInvite && this.onAllianceInvite(msg);
+      } else if (msg.type === 'allianceInviteSent') {
+        this.onAllianceInviteSent && this.onAllianceInviteSent(msg);
       } else if (msg.type === 'diaryReply') {
         if (this._diaryWaiter) { const w = this._diaryWaiter; this._diaryWaiter = null; w(msg.text); }
       } else if (msg.type === 'pos') {
@@ -213,6 +219,7 @@ export class Room {
   startGroup(memberIds, isHouseMeeting) { this.send('startGroup', { memberIds, isHouseMeeting }); }
   sendGroupMsg(groupId, text) { this.send('groupMsg', { groupId, text }); }
   formAlliance(memberIds, name) { this.send('formAlliance', { memberIds, name }); }
+  respondAllianceInvite(inviteId, accept) { this.send('allianceInviteResponse', { inviteId, accept }); }
   leaveAllianceOnline(allianceId) { this.send('leaveAlliance', { allianceId }); }
 
   sendDiary(text) {

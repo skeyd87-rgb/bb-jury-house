@@ -230,16 +230,27 @@ function wireOnlineSocialHandlers() {
     showToast(`🤫 <b>${fromName}</b> whispers: "${text.slice(0, 100)}"`);
   };
   room.onAllianceResult = (msg) => {
-    let bodyHtml = '';
+    // A human invitee's response can land seconds to a minute after the
+    // founder sent the invites (whatever they're doing by then) — this must
+    // be non-blocking, never a cinematic, or it collides with/gets stuck
+    // behind whatever overlay is already up (the same onlineOverlay-gating
+    // bug class fixed earlier for Take Over).
+    const bits = [];
     if (msg.accepted.length) {
-      bodyHtml += `<p>✅ In: <b>${msg.accepted.map((a) => a.name).join(', ')}</b></p>`;
-      bodyHtml += msg.alliance
-        ? (msg.alliance.existed ? `<p class="muted">You already had this exact group — deepened, not duplicated.</p>` : `<p><b>"${msg.alliance.name}"</b> is official.</p>`)
-        : '';
+      bits.push(`✅ In: <b>${msg.accepted.map((a) => a.name).join(', ')}</b>`);
+      if (msg.alliance) bits.push(msg.alliance.existed ? 'already had this exact group' : `<b>"${msg.alliance.name}"</b> is official`);
     }
-    for (const d of msg.declined) bodyHtml += `<p>❌ <b>${d.name}</b> passed — ${d.reason}.</p>`;
-    if (!msg.accepted.length) bodyHtml += `<p class="muted">Nobody committed. Build more trust first.</p>`;
-    cinematicWait({ kicker: 'Alliance Invites', title: msg.accepted.length ? 'The word comes back...' : 'Crickets.', bodyHtml, continueLabel: 'OK' });
+    for (const d of msg.declined) bits.push(`❌ <b>${d.name}</b> passed`);
+    showToast(`🤝 ${bits.length ? bits.join(' · ') : 'Nobody committed to the alliance.'}`);
+  };
+  room.onAllianceInvite = (msg) => {
+    showToast(`🤝 <b>${msg.fromName}</b> wants you in "${msg.name}"${msg.memberNames.length ? ` with ${msg.memberNames.join(', ')}` : ''}.`, [
+      { label: 'Accept', style: 'gold', onClick: () => room.respondAllianceInvite(msg.inviteId, true) },
+      { label: 'Decline', style: '', onClick: () => room.respondAllianceInvite(msg.inviteId, false) },
+    ]);
+  };
+  room.onAllianceInviteSent = (msg) => {
+    showToast(`🤝 Invite sent to <b>${msg.invitedNames.join(', ')}</b> for "${msg.name}" — waiting to hear back…`);
   };
   room.onAllianceLeft = (msg) => {
     cinematicWait({

@@ -43,6 +43,10 @@ export class Room extends Server {
     this.turn = null; // current interactive turn (comp/nominate/vote/etc.)
     this.connToPlayer = new Map(); // connId -> playerId
     this.playerTokens = {}; // playerId -> private reconnect token, never broadcast
+    // In-memory only (not persisted): outstanding "Form Alliance" invites
+    // waiting on a real human response. inviteId -> { founder, name, aiAccepts,
+    // aiDeclines, pendingHumans: Set<engineId>, responses: Map<engineId,bool>, timer }
+    this.pendingAllianceInvites = new Map();
   }
 
   async onStart() {
@@ -1025,9 +1029,12 @@ export class Room extends Server {
   }
 
   // Dedicated "Form Alliance" button flow: invite a specific list of members.
-  // Online simplification: human invitees are auto-included (a real synchronous
-  // accept/decline turn for humans is out of scope for this pass) while AI
-  // invitees decide via allianceWillingness, exactly as single-player does.
+  // AI invitees decide immediately via allianceWillingness (as single-player
+  // does); human invitees who are actually online get a real invite prompt
+  // and the alliance isn't finalized until every one of them has answered
+  // (or an absent one is covered — see isActiveHuman). A disconnected human
+  // seat is treated like an AI for this purpose, same as comps/votes already
+  // do, so the invite can't hang forever on someone who isn't there.
   async handleFormAlliance(pid, memberIds, name) {
     const g = this.game;
     if (!g) return;
@@ -1035,12 +1042,69 @@ export class Room extends Server {
     if (!founder) return;
     const picked = activeIds(g).filter((id) => id !== founder && memberIds.includes(id));
     if (!picked.length) return;
-    const accepts = [], declines = [];
+    const aiAccepts = [], aiDeclines = [], pendingHumans = [];
     for (const id of picked) {
-      if (this.isHuman(id)) { accepts.push({ id, reason: 'in' }); continue; }
+      if (this.isActiveHuman(id)) { pendingHumans.push(id); continue; }
       const w = allianceWillingness(g, id, picked.filter((x) => x !== id), founder);
-      (w.willing ? accepts : declines).push({ id, reason: w.reason });
+      (w.willing ? aiAccepts : aiDeclines).push({ id, reason: w.reason });
     }
+    if (!pendingHumans.length) {
+      this.finalizeAllianceInvite(founder, name, aiAccepts, aiDeclines, [], pid);
+      return;
+    }
+    const inviteId = 'ai' + Math.random().toString(36).slice(2, 10);
+    const timer = setTimeout(() => this.resolveAllianceInvite(inviteId), 60000);
+    this.pendingAllianceInvites.set(inviteId, {
+      pid, founder, name, aiAccepts, aiDeclines,
+      pendingHumans: new Set(pendingHumans), responses: new Map(), timer,
+    });
+    const memberNames = [nameOf(g, founder), ...picked.map((id) => nameOf(g, id))];
+    for (const humanId of pendingHumans) {
+      this.sendToEngine(humanId, {
+        type: 'allianceInvite', inviteId, from: founder, fromName: nameOf(g, founder),
+        name, memberNames: memberNames.filter((n) => n !== nameOf(g, humanId)),
+      });
+    }
+    this.sendToPid(pid, {
+      type: 'allianceInviteSent', name,
+      invitedNames: pendingHumans.map((id) => nameOf(g, id)),
+    });
+  }
+
+  async handleAllianceInviteResponse(pid, inviteId, accept) {
+    const invite = this.pendingAllianceInvites.get(inviteId);
+    if (!invite) return; // already resolved/timed out, or unknown
+    const engineId = this.engineForPlayer(pid);
+    if (!engineId || !invite.pendingHumans.has(engineId)) return;
+    invite.pendingHumans.delete(engineId);
+    invite.responses.set(engineId, !!accept);
+    if (invite.pendingHumans.size === 0) await this.resolveAllianceInvite(inviteId);
+  }
+
+  async resolveAllianceInvite(inviteId) {
+    const invite = this.pendingAllianceInvites.get(inviteId);
+    if (!invite) return;
+    clearTimeout(invite.timer);
+    this.pendingAllianceInvites.delete(inviteId);
+    const g = this.game;
+    if (!g) return;
+    const humanAccepts = [], humanDeclines = [];
+    for (const id of invite.responses.keys()) {
+      if (invite.responses.get(id)) humanAccepts.push({ id, reason: 'in' });
+      else humanDeclines.push({ id, reason: 'passed' });
+    }
+    // Anyone who never got a chance to answer (timeout, or disconnected mid-invite)
+    // is a silent decline, not a forced yes.
+    for (const id of invite.pendingHumans) humanDeclines.push({ id, reason: "didn't respond" });
+    await this.finalizeAllianceInvite(
+      invite.founder, invite.name, [...invite.aiAccepts, ...humanAccepts], [...invite.aiDeclines, ...humanDeclines],
+      humanAccepts.map((a) => a.id), invite.pid
+    );
+  }
+
+  async finalizeAllianceInvite(founder, name, accepts, declines, notifyJoinIds, pid) {
+    const g = this.game;
+    if (!g) return;
     let result = null;
     if (accepts.length) {
       result = formOfficialAlliance(g, accepts[0].id, name, accepts.slice(1).map((a) => a.id), founder);
@@ -1053,10 +1117,8 @@ export class Room extends Server {
       declined: declines.map((d) => ({ id: d.id, name: nameOf(g, d.id), reason: d.reason })),
       alliance: result ? { id: result.alliance.id, name: result.alliance.name, existed: result.existed } : null,
     });
-    for (const a of accepts) {
-      if (a.id !== accepts[0].id && this.isHuman(a.id) && result) {
-        this.sendToEngine(a.id, { type: 'groupSystem', groupId: null, text: `🤝 You joined "${result.alliance.name}" with ${nameOf(g, founder)}.` });
-      }
+    for (const id of notifyJoinIds) {
+      if (result) this.sendToEngine(id, { type: 'groupSystem', groupId: null, text: `🤝 You joined "${result.alliance.name}" with ${nameOf(g, founder)}.` });
     }
     await this.saveGame();
     this.broadcastGame();
@@ -1376,6 +1438,11 @@ export class Room extends Server {
       case 'formAlliance': {
         const pid = this.connToPlayer.get(connection.id);
         if (pid) await this.handleFormAlliance(pid, msg.memberIds || [], msg.name ? String(msg.name).slice(0, 40) : null);
+        return;
+      }
+      case 'allianceInviteResponse': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleAllianceInviteResponse(pid, msg.inviteId, !!msg.accept);
         return;
       }
       case 'leaveAlliance': {
