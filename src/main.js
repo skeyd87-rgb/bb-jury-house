@@ -1395,12 +1395,22 @@ async function advance() {
   setMoodForPhase();
 }
 
-// Entry into a new week: just settles the HUD on the persistent
-// "▶ Start the Week" button (see advanceLabels in ui.js) — no splash yet, so
-// there's a real beat to notice the house/HUD before committing to the week.
+// Entry into a new week: a blocking splash gate before the "Welcome"/new-week
+// splash, mirroring the online week_ready turn. Must be a real cinematic (not
+// just the persistent HUD button) — cinematics are full-screen overlays that
+// cover the whole DOM, including the 3D world and HUD buttons underneath, so
+// this is what actually keeps the house non-interactive until HOH exists.
+// Skipping the cinematic here once let the world stay fully clickable before
+// HOH was decided, so NPCs got asked about an HOH that didn't exist yet.
 function weekIntro() {
   refresh();
   setMoodForPhase();
+  cinematicWait({
+    kicker: `Week ${g.week}`,
+    title: g.week === 1 ? 'The House Is Ready' : 'New Week',
+    bodyHtml: `<p class="muted">${g.week === 1 ? 'Nine houseguests are moving in.' : 'Everyone ready for the new week?'}</p>`,
+    continueLabel: '▶ Start the Week',
+  }).then(() => advance());
 }
 
 // Fires once "▶ Start the Week" is clicked: the "Welcome"/new-week splash,
