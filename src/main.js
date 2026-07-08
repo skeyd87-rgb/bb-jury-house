@@ -560,6 +560,27 @@ function nm(game, id) {
   return game.houseguests.find((h) => h.id === id)?.name || id;
 }
 
+// Live roster for the week_ready gate — reuses the same seat/connection data
+// the pre-season lobby shows, so the host can visually confirm who's
+// actually connected before locking the field in for the HoH comp.
+function roomRosterHtml(game) {
+  const seats = room?.lastState?.seats || {};
+  const rows = game.houseguests
+    .filter((h) => !game.evicted.includes(h.id))
+    .map((h) => {
+      const seatId = h.id === PLAYER_ID ? 'newcomer' : h.id;
+      const seat = seats[seatId];
+      const isHuman = !!(game.humanSeats && game.humanSeats[h.id]);
+      const connected = !!seat?.connected;
+      const status = isHuman ? (connected ? '🧑 Connected' : '🧑 Disconnected') : '🤖 AI';
+      return `<div class="wr-row${isHuman && !connected ? ' offline' : ''}">` +
+        `<span class="dot" style="background:#${h.color.toString(16).padStart(6, '0')}"></span>` +
+        `<span class="wr-name">${h.name}</span><span class="wr-status">${status}</span></div>`;
+    })
+    .join('');
+  return `<div class="week-ready-roster">${rows}</div>`;
+}
+
 function handleOnlineTurn(game) {
   onlineGame = game;
   if (!game || game.phase === 'lobby') return;
@@ -606,7 +627,7 @@ function renderOnlineTurn(game, t) {
       onlineOverlay = cinematic({
         kicker: `Week ${t.week}`,
         title: t.week === 1 ? 'The House Is Ready' : 'New Week',
-        bodyHtml: `<p class="muted">${t.week === 1 ? "Make sure everyone who's playing has claimed a seat before the HoH comp locks the field in." : 'Everyone ready for the new week?'}</p>`,
+        bodyHtml: `<p class="muted">${t.week === 1 ? "Confirm everyone's connected before the HoH comp locks the field in." : 'Everyone ready for the new week?'}</p>${roomRosterHtml(game)}`,
       });
       onlineOverlay.setActions(host ? [{ label: '▶ Start the Week', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;

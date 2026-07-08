@@ -301,6 +301,21 @@ button.bb:disabled { opacity: 0.45; cursor: default; transform: none; }
 ::-webkit-scrollbar-thumb { background: #333a58; border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
+/* Roster shown on the online "Start the Week" splash — same idea as the
+   pre-season lobby's seat grid, so the host can actually see who's connected
+   before locking the field in, not just take it on faith. */
+.week-ready-roster { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; text-align: left; max-height: 40vh; overflow-y: auto; }
+.wr-row {
+  display: flex; align-items: center; gap: 8px;
+  background: #171b30; border: 1px solid var(--panel-border); border-radius: 10px;
+  padding: 7px 12px; font-size: 13.5px;
+}
+.wr-row .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.wr-row .wr-name { flex: 1; }
+.wr-row .wr-status { font-size: 12px; color: var(--muted); }
+.wr-row.offline { border-color: rgba(239, 68, 68, 0.5); }
+.wr-row.offline .wr-status { color: var(--danger); }
+
 /* ---------- Multiplayer lobby ---------- */
 .lobby-card { max-width: 620px; }
 .lobby-code { font-size: 15px; letter-spacing: 2px; margin-bottom: 4px; }
