@@ -107,6 +107,18 @@ export function showMultiplayerEntry({ onEnter, onBack }) {
 
 // The live lobby. Re-renders on every server state push.
 export function showLobby(room, initialState, { onStart, onLeave }) {
+  // A player can connect (or reconnect) after the season has already
+  // started — e.g. a friend joining mid-week. The seat-claim grid below only
+  // makes sense pre-season (claimSeat is server-rejected once phase !==
+  // 'lobby'), so route straight into the game instead of showing a lobby
+  // screen whose "Claim" buttons silently do nothing. Once there, they land
+  // as a spectator with "Take Over a Houseguest" (claimLiveSeat), the actual
+  // mid-season claim path.
+  if (initialState.phase === 'playing') {
+    onStart && onStart(initialState);
+    return;
+  }
+
   const wrap = el('div', 'title-screen');
   wrap.id = 'lobby-screen';
   const card = el('div', 'title-card lobby-card');
