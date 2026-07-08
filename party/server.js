@@ -242,7 +242,16 @@ export class Room extends Server {
   }
 
   async beginSeason() {
-    await this.enterWeekIntro();
+    await this.enterWeekReady();
+  }
+
+  // A quiet checkpoint before the week's info splash — gives the host a
+  // moment to confirm who's actually connected (mainly: everyone who wants
+  // to play claimed a seat) before the HoH comp locks in participants.
+  async enterWeekReady() {
+    const g = this.game;
+    g.phase = 'week_intro';
+    await this.setTurn({ kind: 'week_ready', week: g.week });
   }
 
   async enterWeekIntro() {
@@ -451,7 +460,7 @@ export class Room extends Server {
     g.nominees = [];
     g.vetoHolder = null;
     g.vetoUsed = null;
-    await this.enterWeekIntro();
+    await this.enterWeekReady();
   }
 
   async enterFinal3() {
@@ -645,6 +654,7 @@ export class Room extends Server {
     const t = this.turn;
     if (!t) return;
     switch (t.kind) {
+      case 'week_ready': return this.enterWeekIntro();
       case 'intro': return this.enterHohComp();
       case 'comp_result':
         if (t.comp === 'hoh') return this.enterSocial('nominations', 'Work the house before nominations.');

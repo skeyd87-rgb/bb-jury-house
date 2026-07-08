@@ -545,7 +545,7 @@ function isSpectator() {
 function phaseLabelOnline(game) {
   const k = game.turn?.kind;
   const map = {
-    intro: 'New Week', comp: game.turn?.comp === 'hoh' ? 'HoH Competition' : game.turn?.comp === 'veto' ? 'Veto Competition' : 'Final HoH',
+    week_ready: 'New Week', intro: 'New Week', comp: game.turn?.comp === 'hoh' ? 'HoH Competition' : game.turn?.comp === 'veto' ? 'Veto Competition' : 'Final HoH',
     comp_result: 'Results', nominate: 'Nominations', noms_result: 'Nominations',
     veto_decision: 'Veto Ceremony', veto_result: 'Veto Ceremony', replacement: 'Replacement',
     vote: 'Live Eviction', eviction_result: 'Eviction', final3_intro: 'Final 3',
@@ -602,6 +602,15 @@ function renderOnlineTurn(game, t) {
   };
 
   switch (t.kind) {
+    case 'week_ready':
+      onlineOverlay = cinematic({
+        kicker: `Week ${t.week}`,
+        title: t.week === 1 ? 'The House Is Ready' : 'New Week',
+        bodyHtml: `<p class="muted">${t.week === 1 ? "Make sure everyone who's playing has claimed a seat before the HoH comp locks the field in." : 'Everyone ready for the new week?'}</p>`,
+      });
+      onlineOverlay.setActions(host ? [{ label: '▶ Start the Week', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      break;
+
     case 'intro':
       onlineOverlay = cinematic({ kicker: `Week ${t.week}`, title: t.week === 1 ? 'Welcome to the Jury Phase' : 'A New Week', bodyHtml: `<p>${t.message}</p>` });
       onlineOverlay.setActions(host ? [{ label: 'Play HoH Comp ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
@@ -1371,7 +1380,7 @@ async function advance() {
   clearToast();
   g.pendingApproach = null;
   try {
-    if (g.phase === 'week_intro') await runHohComp();
+    if (g.phase === 'week_intro') await runWeekIntroSplash();
     else if (g.phase === 'social_hoh') await runNominations();
     else if (g.phase === 'social_veto') await runVetoComp();
     else if (g.phase === 'veto_lobby') await runVetoCeremony();
@@ -1386,10 +1395,18 @@ async function advance() {
   setMoodForPhase();
 }
 
+// Entry into a new week: just settles the HUD on the persistent
+// "▶ Start the Week" button (see advanceLabels in ui.js) — no splash yet, so
+// there's a real beat to notice the house/HUD before committing to the week.
 function weekIntro() {
   refresh();
   setMoodForPhase();
-  cinematicWait({
+}
+
+// Fires once "▶ Start the Week" is clicked: the "Welcome"/new-week splash,
+// then straight into the HoH comp.
+async function runWeekIntroSplash() {
+  await cinematicWait({
     kicker: `Week ${g.week}`,
     title: g.week === 1 ? 'Welcome to the Jury Phase' : 'A New Week Begins',
     bodyHtml:
@@ -1397,7 +1414,8 @@ function weekIntro() {
         ? `<p>Nine houseguests remain. From this point on, everyone evicted joins the <b>jury</b> — and the jury decides who wins the $750,000.</p><p class="muted">Talk to people. Make deals. Every conversation is remembered.</p>`
         : `<p>${activeIds(g).length} houseguests remain. The house resets — new HoH, new targets, old grudges.</p>`,
     continueLabel: 'Play HoH Comp',
-  }).then(() => advance());
+  });
+  await runHohComp();
 }
 
 // ---------- HoH comp ----------
