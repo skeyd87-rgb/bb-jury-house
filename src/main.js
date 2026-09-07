@@ -2017,7 +2017,7 @@ async function runFinale() {
         bodyHtml: `<p><b>${nameOf(g, f1)}:</b> "${f1Answer}"</p><p><b>${nameOf(g, f2)}:</b> "${f2Answer}"</p>`,
         continueLabel: lastJuror ? 'The Jury Votes' : 'Next Juror',
       });
-      qaByJuror[j] = { f1Answer, f2Answer };
+      qaByJuror[j] = { questionForF1: question, questionForF2: question, f1Answer, f2Answer };
       saveGame(g);
       continue;
     }
@@ -2068,7 +2068,7 @@ async function runFinale() {
     }
     stopSpeaking();
     if (f2 !== PLAYER_ID) speak(f2Answer, f2);
-    qaByJuror[j] = { f1Answer, f2Answer };
+    qaByJuror[j] = { questionForF1: q.questionForF1, questionForF2: q.questionForF2, f1Answer, f2Answer };
     saveGame(g);
   }
   stopSpeaking();

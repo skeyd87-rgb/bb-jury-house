@@ -66,7 +66,6 @@ export function newGame(playerName) {
 function initMemory(ids) {
   const mem = {};
   for (const id of ids) {
-    if (id === PLAYER_ID) continue;
     mem[id] = {
       grudges: [], // { againstId, reason, week, severity 1-3 }
       betrayalsWitnessed: [], // { byId, victimId, what, week }

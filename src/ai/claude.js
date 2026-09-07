@@ -19,6 +19,7 @@ export async function askClaude({ system, messages, maxTokens = 700, temperature
   // back to the built-in offline engine, same as always.
   const res = await fetch(`${getServerHost()}/api/chat`, {
     method: 'POST',
+    signal: AbortSignal.timeout(20000),
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ system, messages, maxTokens, temperature }),
   }).catch(() => null);
@@ -111,7 +112,7 @@ export function repairTruncatedJson(s) {
 // Retry wrapper: one retry on transient failure, then throw.
 export async function askClaudeJson(opts) {
   let lastErr;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < (opts.retry === false ? 1 : 2); attempt++) {
     try {
       const text = await askClaude(opts);
       const json = extractJson(text);

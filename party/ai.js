@@ -11,20 +11,26 @@ import {
 import {
   fallbackChat, fallbackJurorQuestion, fallbackJurorVote, fallbackGroupChat, fallbackDiary,
 } from '../src/ai/fallback.js';
+import { validateNarrative } from '../src/ai/grounding.js';
 import { extractJson } from '../src/ai/claude.js';
 
 const MODEL = 'claude-sonnet-5';
 
-async function callClaude(apiKey, system, messages, maxTokens = 600) {
+async function callClaude(apiKey, system, messages, maxTokens = 600, temperature = 1.0) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
+    signal: AbortSignal.timeout(20000),
     headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, temperature: 1.0, system, messages }),
+    // Sonnet 5 rejects non-default sampling settings. Short game dialogue
+    // reserves its bounded output budget for the reply rather than thinking.
+    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, thinking: { type: 'disabled' }, system, messages }),
   });
   if (!res.ok) throw new Error('claude ' + res.status);
   const data = await res.json();
   return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
 }
+
+const auditor = (key) => async ({system, messages, maxTokens, temperature}) => extractJson(await callClaude(key, system, messages, maxTokens, temperature));
 
 // g: full engine game; npcId: houseguest being spoken to; chatterId: the human
 // engine id; thread: prior [{who:'you'|'them', text}] for this pair.
@@ -39,6 +45,7 @@ export async function serverNpcChat(g, npcId, playerMsg, chatterId, thread, apiK
       g.threads[npcId] = saved;
       const text = await callClaude(apiKey, system, messages, 900);
       const json = extractJson(text);
+      await validateNarrative(g, npcId, chatterId, json, auditor(apiKey), { utterance: playerMsg });
       if (json && json.reply) return { reply: String(json.reply).slice(0, 600), effects: json.effects || {}, usedAi: true };
     } catch (err) {
       // fall through to the built-in engine
@@ -55,6 +62,7 @@ export async function serverJurorQuestion(g, jurorId, finalists, apiKey) {
         { role: 'user', content: 'Ask your questions now.' },
       ], 600);
       const json = extractJson(text);
+      await validateNarrative(g, jurorId, finalists, json, auditor(apiKey), { citations: ['evidenceForF1', 'evidenceForF2'] });
       if (json && json.questionForF1 && json.questionForF2) return { ...json, usedAi: true };
     } catch (err) {
       // fall through to the built-in engine
@@ -71,6 +79,7 @@ export async function serverOpponentAnswer(g, opponentId, jurorId, question, api
         { role: 'user', content: 'Answer the juror now.' },
       ], 300);
       const json = extractJson(text);
+      await validateNarrative(g, opponentId, jurorId, json, auditor(apiKey), { utterance: question });
       if (json && json.reply) return { reply: String(json.reply).slice(0, 500), usedAi: true };
     } catch (err) {
       // fall through
@@ -87,6 +96,7 @@ export async function serverJurorVote(g, jurorId, finalists, qa, apiKey) {
         { role: 'user', content: 'Cast your vote now.' },
       ], 600);
       const json = extractJson(text);
+      await validateNarrative(g, jurorId, finalists, json, auditor(apiKey), { qa, citations: ['evidenceIds'] });
       if (json && json.vote && finalists.includes(json.vote)) {
         return { vote: json.vote, reasoning: String(json.reasoning || '').slice(0, 300), usedAi: true };
       }
@@ -118,6 +128,7 @@ export async function serverGroupChat(g, aiMemberIds, chatterId, playerMsg, hist
         Math.min(3000, 700 + aiMemberIds.length * 300)
       );
       const json = extractJson(text);
+      await validateNarrative(g, aiMemberIds, chatterId, json, auditor(apiKey), { utterance: playerMsg });
       if (json && Array.isArray(json.replies)) return { ...json, usedAi: true };
     } catch (err) {
       // fall through to the built-in engine

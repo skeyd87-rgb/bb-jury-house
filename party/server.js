@@ -1,3 +1,4 @@
+import { rememberExchange } from '../src/game/knowledge.js';
 // Cloudflare Durable Object room server (partyserver) — the authoritative
 // multiplayer game. Phase 1: lobby (seats, claim/release, host, start).
 // One Durable Object instance = one room = one season.
@@ -502,6 +503,7 @@ export class Room extends Server {
   async doFinalCut(finalHoh, cut) {
     const g = this.game;
     if (g.memory[cut]) g.memory[cut].grudges.push({ againstId: finalHoh, reason: 'cut me at the Final 3', week: g.week, severity: 3 });
+    logEvent(g, 'final_cut', `${nameOf(g, finalHoh)} evicted ${nameOf(g, cut)} at the Final 3.`, [finalHoh, cut]);
     applyEviction(g, cut, {});
     await this.setTurn({ kind: 'final_cut_result', finalHoh, finalHohName: nameOf(g, finalHoh), cut, cutName: nameOf(g, cut) });
   }
@@ -598,7 +600,7 @@ export class Room extends Server {
         waitingOn: [this.humanFor(juror)],
       });
     } else {
-      const qa = { f1Answer: t.answers[finalists[0]], f2Answer: t.answers[finalists[1]] };
+      const qa = { questionForF1: t.questions?.[t.finalists[0]], questionForF2: t.questions?.[t.finalists[1]], f1Answer: t.answers[finalists[0]], f2Answer: t.answers[finalists[1]] };
       const v = await serverJurorVote(g, juror, finalists, qa, this.effectiveApiKey);
       await this.recordJurorVote(juror, finalists, v.vote, v.reasoning);
     }
@@ -740,7 +742,7 @@ export class Room extends Server {
         return this.resolveJurorAnswer();
       }
       case 'jury_vote': {
-        const qa = { f1Answer: t.answers[t.finalists[0]], f2Answer: t.answers[t.finalists[1]] };
+        const qa = { questionForF1: t.questions?.[t.finalists[0]], questionForF2: t.questions?.[t.finalists[1]], f1Answer: t.answers[t.finalists[0]], f2Answer: t.answers[t.finalists[1]] };
         const v = await serverJurorVote(g, t.juror, t.finalists, qa, this.effectiveApiKey);
         return this.recordJurorVote(t.juror, t.finalists, v.vote, v.reasoning);
       }
@@ -875,23 +877,20 @@ export class Room extends Server {
     if (!g.mpThreads) g.mpThreads = {};
     const key = chatterId + ':' + targetId;
     const thread = g.mpThreads[key] || (g.mpThreads[key] = []);
-    thread.push({ who: 'you', text });
+    thread.push({ who: 'you', text, week: g.week, phase: g.phase });
 
     // AI target: Claude (if key) or the built-in engine, effects applied server-side.
     let result;
     try {
-      result = await serverNpcChat(g, targetId, text, chatterId, thread, this.effectiveApiKey);
+      result = await serverNpcChat(g, targetId, text, chatterId, thread.slice(0, -1), this.effectiveApiKey);
     } catch {
       result = { ...fallbackChat(g, targetId, text, chatterId), usedAi: false };
     }
     const reply = String(result.reply || '…').slice(0, 600);
     const fx = this.sanitizeChatEffects(result.effects);
     applyChatEffects(g, targetId, text, fx, chatterId);
-    if (fx.summary) {
-      g.memory[targetId].convoSummaries.push({ withId: chatterId, week: g.week, summary: fx.summary });
-      g.memory[targetId].convoSummaries = g.memory[targetId].convoSummaries.slice(-20);
-    }
-    thread.push({ who: 'them', text: reply });
+    rememberExchange(g, targetId, chatterId, text);
+    thread.push({ who: 'them', text: reply, week: g.week, phase: g.phase });
     if (thread.length > 24) g.mpThreads[key] = thread.slice(-24);
     await this.saveGame();
     this.broadcastGame(); // in case effects touched alliances/promises (personalized panels)
@@ -1004,10 +1003,7 @@ export class Room extends Server {
       fx.allianceSignal = 'none';
       fx.allianceProposal = null; // proposals are resolved once below, not per member
       applyChatEffects(g, id, text, fx, senderId);
-      if (fx.summary) {
-        g.memory[id].convoSummaries.push({ withId: senderId, week: g.week, summary: `(group) ${fx.summary}` });
-        g.memory[id].convoSummaries = g.memory[id].convoSummaries.slice(-20);
-      }
+      rememberExchange(g, id, senderId, text);
     }
     if (result.promiseMade) {
       for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupSystem', groupId, text: `📋 Everyone here heard that promise: "${result.promiseMade.text}"` });
@@ -1607,20 +1603,23 @@ async function handleApiChat(request, env) {
   } catch {
     return jsonResponse({ error: 'bad_request' }, 400, origin);
   }
-  const { system, messages, maxTokens, temperature } = body || {};
+  const { system, messages, maxTokens } = body || {};
   if (!system || !Array.isArray(messages)) return jsonResponse({ error: 'bad_request' }, 400, origin);
+  // Never silently cut away late-season evidence or the output/grounding rules.
+  if (String(system).length > 120000 || JSON.stringify(messages).length > 240000) return jsonResponse({ error: 'context_too_large' }, 413, origin);
 
   let res;
   try {
     res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
+      signal: AbortSignal.timeout(20000),
       headers: { 'content-type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: Math.min(Number(maxTokens) || 700, 1200),
-        temperature: temperature ?? 1.0,
-        system: String(system).slice(0, 20000),
-        messages: messages.slice(0, 24),
+        max_tokens: Math.min(Math.max(Number(maxTokens) || 700, 1), 3000),
+        thinking: { type: 'disabled' },
+        system: String(system),
+        messages: messages.slice(-24),
       }),
     });
   } catch {

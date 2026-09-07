@@ -111,6 +111,8 @@ async function setupLobbyWithTwoHumans(prefix = 'BB-L') {
 async function setupStartedRoom(prefix = 'BB-S') {
   const room = await setupLobbyWithTwoHumans(prefix);
   send(room.host, { type: 'startSeason', clientTime: Date.now() });
+  await waitTurn(room.host, 'week_ready');
+  send(room.host, { type: 'advanceTurn' });
   await waitTurn(room.host, 'intro');
   return room;
 }
@@ -201,6 +203,8 @@ async function testLateCompTakeoverGetsNotice() {
   send(host, { type: 'claimSeat', seatId: 'newcomer' });
   await delay(200);
   send(host, { type: 'startSeason', clientTime: Date.now() });
+  await waitTurn(host, 'week_ready');
+  send(host, { type: 'advanceTurn' });
   await waitTurn(host, 'intro');
   send(host, { type: 'advanceTurn' });
   const comp = await waitTurn(host, 'comp');

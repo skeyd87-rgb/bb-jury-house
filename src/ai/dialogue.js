@@ -3,6 +3,8 @@
 // it, and maintains threads/summaries.
 
 import { askClaudeJson } from './claude.js';
+import { validateNarrative } from './grounding.js';
+import { rememberExchange } from '../game/knowledge.js';
 import { setAiStatus } from './status.js';
 import {
   buildChatSystemPrompt,
@@ -76,6 +78,7 @@ export async function npcChat(g, npcId, playerMsg) {
       messages: buildThreadMessages(g, npcId, playerMsg),
       maxTokens: 900,
     });
+    await validateNarrative(g, npcId, PLAYER_ID, result, askClaudeJson, { utterance: playerMsg });
     setAiStatus(true);
   } catch (err) {
     setAiStatus(false);
@@ -87,16 +90,13 @@ export async function npcChat(g, npcId, playerMsg) {
 
   // Record thread
   if (!g.threads[npcId]) g.threads[npcId] = [];
-  g.threads[npcId].push({ who: 'you', text: playerMsg });
-  g.threads[npcId].push({ who: 'them', text: reply });
+  g.threads[npcId].push({ who: 'you', text: playerMsg, week: g.week, phase: g.phase });
+  g.threads[npcId].push({ who: 'them', text: reply, week: g.week, phase: g.phase });
   g.threads[npcId] = g.threads[npcId].slice(-24);
 
   // Apply effects + memory summary
   applyChatEffects(g, npcId, playerMsg, effects);
-  if (effects.summary) {
-    g.memory[npcId].convoSummaries.push({ withId: PLAYER_ID, week: g.week, summary: effects.summary });
-    g.memory[npcId].convoSummaries = g.memory[npcId].convoSummaries.slice(-20);
-  }
+  rememberExchange(g, npcId, PLAYER_ID, playerMsg);
   g.chatTurnsThisPhase++;
 
   return { reply, effects };
@@ -111,13 +111,14 @@ export async function npcOpener(g, npcId, reason) {
       messages: [{ role: 'user', content: '(The player turns to you as you walk over.)' }],
       maxTokens: 400,
     });
+    await validateNarrative(g, npcId, PLAYER_ID, r, askClaudeJson);
     if (r.reply) { reply = String(r.reply).slice(0, 500); setAiStatus(true); }
   } catch (err) {
     setAiStatus(false);
   }
   if (!reply) reply = fallbackOpener(g, npcId, reason);
   if (!g.threads[npcId]) g.threads[npcId] = [];
-  g.threads[npcId].push({ who: 'them', text: reply });
+  g.threads[npcId].push({ who: 'them', text: reply, week: g.week, phase: g.phase });
   g.threads[npcId] = g.threads[npcId].slice(-24);
   return reply;
 }
@@ -138,8 +139,9 @@ export async function groupChat(g, memberIds, playerMsg, history) {
       // Scale with group size so big house meetings never truncate mid-JSON.
       maxTokens: Math.min(3000, 700 + memberIds.length * 300),
     });
+    await validateNarrative(g, memberIds, PLAYER_ID, result, askClaudeJson, { utterance: playerMsg });
   } catch (err) {
-    // fall through
+    result = null;
   }
   if (!result || !Array.isArray(result.replies)) {
     setAiStatus(false);
@@ -168,10 +170,7 @@ export async function groupChat(g, memberIds, playerMsg, history) {
     effects.allianceSignal = 'none';
     effects.allianceProposal = null; // handled once below
     applyChatEffects(g, id, playerMsg, effects);
-    if (effects.summary) {
-      g.memory[id].convoSummaries.push({ withId: PLAYER_ID, week: g.week, summary: `(group) ${effects.summary}` });
-      g.memory[id].convoSummaries = g.memory[id].convoSummaries.slice(-20);
-    }
+    rememberExchange(g, id, PLAYER_ID, playerMsg);
   }
 
   const proposal =
@@ -205,7 +204,7 @@ export async function postGameAnalysis(g, stats) {
 }
 
 export async function diaryChat(g, playerMsg) {
-  g.diary.push({ who: 'you', text: playerMsg });
+  g.diary.push({ who: 'you', text: playerMsg, week: g.week, phase: g.phase });
   let result;
   try {
     const msgs = g.diary.slice(-10).map((m) => ({
@@ -219,7 +218,7 @@ export async function diaryChat(g, playerMsg) {
     result = fallbackDiary(g);
   }
   const reply = String(result.reply || '...').slice(0, 400);
-  g.diary.push({ who: 'them', text: reply });
+  g.diary.push({ who: 'them', text: reply, week: g.week, phase: g.phase });
   g.diary = g.diary.slice(-30);
   return reply;
 }
@@ -231,6 +230,7 @@ export async function npcSpeech(g, npcId, kind, extra = {}) {
       messages: [{ role: 'user', content: 'Deliver it now.' }],
       maxTokens: 250,
     });
+    await validateNarrative(g, npcId, PLAYER_ID, r, askClaudeJson, { authorizedAction: { kind, ...extra } });
     if (r.reply) { setAiStatus(true); return String(r.reply).slice(0, 400); }
   } catch (err) {
     setAiStatus(false);
@@ -245,6 +245,7 @@ export async function jurorQuestion(g, jurorId, finalists) {
       messages: [{ role: 'user', content: 'Ask your questions now.' }],
       maxTokens: 600,
     });
+    await validateNarrative(g, jurorId, finalists, r, askClaudeJson, { citations: ['evidenceForF1', 'evidenceForF2'] });
     if (r.questionForF1 && r.questionForF2) { setAiStatus(true); return r; }
   } catch (err) {
     setAiStatus(false);
@@ -259,6 +260,7 @@ export async function opponentJuryAnswer(g, opponentId, jurorId, question) {
       messages: [{ role: 'user', content: 'Answer the juror now.' }],
       maxTokens: 300,
     });
+    await validateNarrative(g, opponentId, jurorId, r, askClaudeJson, { utterance: question });
     if (r.reply) { setAiStatus(true); return String(r.reply).slice(0, 500); }
   } catch (err) {
     setAiStatus(false);
@@ -274,6 +276,7 @@ export async function jurorVote(g, jurorId, finalists, qa) {
       maxTokens: 600,
       temperature: 1.0,
     });
+    await validateNarrative(g, jurorId, finalists, r, askClaudeJson, { qa, citations: ['evidenceIds'] });
     if (r.vote && finalists.includes(r.vote)) {
       setAiStatus(true);
       return { vote: r.vote, reasoning: String(r.reasoning || '').slice(0, 300) };

@@ -16,6 +16,7 @@ import {
   logEvent,
 } from './state.js';
 import { personality, recordBetrayalIfAny, markKeptPromises, simulateHouseLife } from './social.js';
+import { captureKnowledge } from './knowledge.js';
 
 export const PHASES = [
   'week_intro',
@@ -328,8 +329,9 @@ export function applyEviction(g, evicted, votes) {
 
   g.evicted.push(evicted);
   g.jury.push(evicted);
+  logEvent(g, 'eviction', `${nameOf(g, evicted)} was evicted and joins the jury.`, [evicted]);
   // Freeze jury memory: what this juror carries to the end
-  if (evicted !== PLAYER_ID) snapshotJuryNotes(g, evicted, votes);
+  snapshotJuryNotes(g, evicted, votes);
   // Retire open promises to/from the evicted. Leaving the house dissolves a
   // deal — it is VOID, not broken (jurors only resent promises actually
   // violated). Alliance pledges you never turned on count as honored.
@@ -338,16 +340,16 @@ export function applyEviction(g, evicted, votes) {
     if (p.kind === 'final2') continue; // jurors remember final-two deals
     p.status = p.kind === 'alliance' ? 'kept' : 'void';
   }
-  logEvent(g, 'eviction', `${nameOf(g, evicted)} was evicted and joins the jury.`, [evicted]);
   g.nominees = [];
   g.vetoHolder = null;
   g.vetoUsed = null;
 }
 
 function snapshotJuryNotes(g, jurorId, votes) {
-  const mem = g.memory[jurorId];
+  const mem = g.memory[jurorId] ||= { grudges: [], betrayalsWitnessed: [], promisesHeard: [], gossipHeard: [], convoSummaries: [], juryNotes: [] };
+  mem.juryRecord = captureKnowledge(g, jurorId);
   const notes = [];
-  const r = rel(g, jurorId, PLAYER_ID);
+  const r = rel(g, jurorId, PLAYER_ID) || { trust: 50, bond: 50, threat: 30 };
   notes.push(`Final feelings toward the player when evicted: trust ${r.trust}, bond ${r.bond}, respect-for-threat ${r.threat}.`);
   for (const gr of mem.grudges) notes.push(`Grudge vs ${nameOf(g, gr.againstId)} (wk ${gr.week}): ${gr.reason}.`);
   for (const b of mem.betrayalsWitnessed.slice(-6)) notes.push(`Saw: ${b.what} (wk ${b.week}).`);
@@ -356,8 +358,7 @@ function snapshotJuryNotes(g, jurorId, votes) {
   const keptToMe = g.promises.filter((p) => p.status === 'kept' && p.to === jurorId);
   for (const p of keptToMe) notes.push(`${nameOf(g, p.from)} kept a promise: "${p.text}".`);
   for (const s of mem.convoSummaries.slice(-6)) notes.push(`(wk ${s.week}) with ${nameOf(g, s.withId)}: ${s.summary}`);
-  const whoVotedMeOut = Object.entries(votes).filter(([, t]) => t === jurorId).map(([v]) => nameOf(g, v));
-  if (whoVotedMeOut.length) notes.push(`Voted to evict me: ${whoVotedMeOut.join(', ')}.`);
+  notes.push('Individual eviction ballots are secret; the outcome does not establish who cast each vote.');
   mem.juryNotes = notes.slice(0, 18);
 }
 

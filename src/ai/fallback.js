@@ -3,6 +3,7 @@
 // templates. Produces the same { reply, effects } shape as Claude.
 
 import { castById, PLAYER_ID } from '../game/cast.js';
+import { knowledgeFor, evidenceFor } from '../game/knowledge.js';
 import { rel, nameOf, activeIds } from '../game/state.js';
 
 const INTENTS = [
@@ -18,6 +19,8 @@ const INTENTS = [
   { key: 'strategy', rx: /\b(strategy|strategic|game plan|talk game|numbers|where'?s your head|what should|who should|votes?|nominations?|hoh|veto|jury)\b/i },
   { key: 'smalltalk', rx: /.*/ },
 ];
+
+const deniesCommitment = text => /\bI\s+(?:never|did not|didn't|haven't|have not|don't|do not|can't|cannot|won't|will not)\s+(?:\w+\s+){0,3}(?:promise|promised|agree|agreed|commit|committed|work together|join)\b/i.test(text);
 
 function detectTargetId(g, msg) {
   const lower = msg.toLowerCase();
@@ -35,80 +38,13 @@ function strategyLead(g, targetId) {
   return 'Gamewise, the numbers matter more than vibes right now.';
 }
 
-// Personality voices: short authored fragments keyed by npc id.
-const VOICE = {
-  marcus: {
-    alliance: ["I've been thinking the same thing. Quietly, though — let's keep this between us.", "You and me? I could see that going far. Let's not tell a soul."],
-    target: ["Interesting. Walk me through it — who benefits if they go?", "I hear you. Timing matters more than the target, though."],
-    accuse: ["Hey — slow down. Tell me exactly what you heard, because that's not the whole story.", "I get why it looks that way. Let me explain what actually happened."],
-    smalltalk: ["How are you holding up, really? This house wears on people.", "You know what I miss? Grading papers. Never thought I'd say that."],
-    ask_info: ["Between us? Watch the quiet ones this week.", "I'll tell you what I know, but you didn't hear it from me."],
-    deny: ["I'd be careful who you say that to. Not everyone in here is as understanding as I am."],
-  },
-  rae: {
-    alliance: ["You want to roll with me? I don't break my word. Ever. Don't you break yours.", "I'm a soldier. You're either with me a hundred percent or not at all."],
-    target: ["If they've been coming after us, I'll handle it in the comp. That's how I do things — face to face.", "I don't like sneaky moves. If we take a shot, we own it."],
-    accuse: ["Whoa. WHOA. I have never gone back on my word in this game. Watch yourself.", "Say that again? Because I ride for my people, and everyone knows it."],
-    smalltalk: ["Been up since five doing laps in the yard. Gotta stay ready.", "I miss my dogs, man. Three of 'em. They'd love this backyard."],
-    ask_info: ["I keep my head down and my word clean. But I've seen some shady stuff this week.", "All I know is I'm winning that comp. You can build a plan around that."],
-    deny: ["That's not loyalty, and I don't do disloyal. We're done talking about it."],
-  },
-  zoe: {
-    alliance: ["Okay okay okay — but like a REAL alliance? Because I've been burned before and this is literally week whatever of jury and— yes. Yes, I'm in.", "This is such a good move for both of us. Statistically. I've thought about it a lot."],
-    target: ["Oh my god, this is a backdoor setup, isn't it? I've seen this exact episode. Okay, tell me everything.", "If we do this we have to count votes FIRST. People always forget to count votes."],
-    accuse: ["Wait, what? No no no, who told you that? Because people are twisting things and I'm freaking out.", "I literally have never said that. Okay I maybe said part of that. Context matters!"],
-    smalltalk: ["Do you ever just lie awake doing eviction math? Just me? Cool cool cool.", "I've wanted to play this game since I was twelve. Even the paranoia. ESPECIALLY the paranoia."],
-    ask_info: ["So I made a chart in my head. Want the chart? You want the chart.", "People are lying to you. Not me though. Probably not me."],
-    deny: ["I can't be part of that, it's WAY too early for that move. Ask me next week."],
-  },
-  flynn: {
-    alliance: ["Babe. BABE. This is so official. Consider it iconic — you and me, secret power couple of the season.", "Yes! Okay, we need a name. Everything real has a name."],
-    target: ["Ooooh, messy. I love it. Tell me everything and I'll tell you... some things.", "Honestly? They'd do it to you first. I'm just saying what everyone's thinking."],
-    accuse: ["Excuse me?? I am the most loyal person in this house, ask literally anyone I haven't voted out.", "Okay, that got twisted SO badly. Come here, let me give you the real tea."],
-    smalltalk: ["I'm putting on a talent show Thursday whether this house likes it or not.", "If I have to eat slop one more week I'm unionizing this house."],
-    ask_info: ["The walls have ears, darling, and I AM the walls. What do you want to know?", "I hear everything. The question is what you'll do for me."],
-    deny: ["Mmm, I love that for you, but I'm going to stay out of this one. Publicly, anyway."],
-  },
-  gus: {
-    alliance: ["Well, I'll tell ya — I don't make many deals, but you've been straight with me. I can shake on that.", "Folks underestimate a handshake these days. Mine still means somethin'."],
-    target: ["I don't go huntin' first, friend. But if they come at me or mine, that's different.", "Careful now. Plans like that have a way of comin' back around."],
-    accuse: ["Now hold on. I've been called a lot of things, but a liar ain't one of 'em. Not once in fifty-two years.", "If somebody told you that, they're sellin' you somethin'."],
-    smalltalk: ["Mornin'. Fed the fish out back — don't tell production.", "I miss my porch. And my grandkids. Mostly the grandkids."],
-    ask_info: ["I sit quiet and I listen. And I'll tell ya, some folks in here talk out both sides of their mouth.", "Keep your eye on the ones doin' all the huggin'."],
-    deny: ["That don't sit right with me. I'd rather lose honest than win crooked."],
-  },
-  tessa: {
-    alliance: ["Oh! Um, yeah, I mean — I'm kind of just voting with the house? But I like you. So... okay, quietly?", "As long as it doesn't put a target on me. You know how I feel about targets."],
-    target: ["I don't really do targets... but if that's where the house is going, I'm not going to fight it.", "Can we not tell anyone I was part of this conversation? Like, at all?"],
-    accuse: ["What? I literally never take sides. That's like my whole thing.", "Whoever said that is trying to start something. I don't start things. Ever."],
-    smalltalk: ["I organized the whole bathroom shelf today. It was honestly the best part of my week.", "Is it weird that I kind of like laundry day here?"],
-    ask_info: ["People forget I'm in the room. I hear a lot of stuff.", "I'm not saying anything... but maybe don't trust everything Flynn tells you."],
-    deny: ["That sounds like drama, and I am allergic to drama. I'm going to go fold towels."],
-  },
-  nash: {
-    alliance: ["An alliance? With ME? Bold. Terrible decision. I'm in.", "Sure. But I'm telling you right now, if it gets boring, I'm flipping something just to feel alive."],
-    target: ["Finally, someone with a pulse. Yes. Let's light it up. Who's the victim?", "You know what I like about you? You just SAY it. Everyone else whispers."],
-    accuse: ["Yeah, probably. I say a lot of stuff. What'd I say this time?", "Hey — at least I lie to your face. That's basically honesty."],
-    smalltalk: ["I taught Gus a card trick. He hustled me twenty minutes later. Legend.", "This house needs a fight or a party. I'm flexible on which."],
-    ask_info: ["Everyone's lying to you. Including me, probably. Isn't it great?", "Marcus is running this whole house and nobody wants to say it. There. Free of charge."],
-    deny: ["Nah, that bores me. Come back with something spicier."],
-  },
-  bev: {
-    alliance: ["Sweetheart, you don't ask Bev for an alliance. You earn one. Lucky for you — you're earning it. Come here, hug it out.", "I protect my people like a mama gator. Just don't ever cross me. I mean it, cher."],
-    target: ["Mmm. I've had my eye on that one since week one. Snakes don't change their skin, they just shed it.", "If we do this, we do it LOUD. I don't do sneaky. Sneaky is for cowards."],
-    accuse: ["Oh no no NO. You march yourself back here and say that to my face again, I dare you.", "Forty-eight years I've run a business on my name. My NAME. Don't you dare."],
-    smalltalk: ["I'm making gumbo tonight and if Nash touches the pot before it's done, so help me.", "You eating enough, baby? You look thin. Sit. Eat."],
-    ask_info: ["Honey, I see EVERYTHING from that kitchen. You want the menu or the gossip?", "That Flynn's been in three different rooms telling three different stories today. Count on it."],
-    deny: ["No ma'am. That's ugly business and Bev doesn't do ugly business. Ask me something nice."],
-  },
-};
-
 export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
+  if (deniesCommitment(playerMsg)) return { reply: "I hear you. Let's be precise about what was actually agreed. I'm not treating that as a new commitment.", effects: { trustDelta: 0, bondDelta: 0, threatDelta: 0, suspicionOfLie: false } };
   const intent = INTENTS.find((i) => i.rx.test(playerMsg)).key;
   const targetId = detectTargetId(g, playerMsg);
   const r = rel(g, npcId, chatterId);
   const c = castById(npcId);
-  const v = VOICE[npcId];
+
 
   let bucket = 'smalltalk';
   let effects = {
@@ -117,6 +53,12 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
     targetDiscussed: null, summary: `Casual chat about the house.`,
   };
 
+  // Factual questions/corrections must not be mistaken for attacks or new promises.
+  if (!intent.startsWith('promise') && intent !== 'alliance' && /\b(veto|actually|remember|wrong|never promised|didn.t happen)\b/i.test(playerMsg)) {
+    const requestedWeek = Number(playerMsg.match(/week\s+(\d+)/i)?.[1]) || g.week;
+    const records = evidenceFor(g, npcId).filter(f => f.week === requestedWeek && ( /veto/i.test(playerMsg) ? f.kind.startsWith('veto') || f.kind === 'replacement' : f.kind !== 'rumor'));
+    return { reply: records.length ? records.map(f => f.text).join(' ') + ' What part of that decision do you want to talk through?' : "I don't have a verified record of that. I shouldn't fill in the gaps. What are you referring to?", effects: { trustDelta: 0, bondDelta: 0, threatDelta: 0, suspicionOfLie: false } };
+  }
   switch (intent) {
     case 'alliance': {
       const willing = r.trust >= 55;
@@ -174,8 +116,8 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
     }
     case 'accuse': {
       bucket = 'accuse';
-      effects.trustDelta = -3;
-      effects.bondDelta = -2;
+      effects.trustDelta = 0;
+      effects.bondDelta = 0;
       effects.summary = 'Player confronted/accused them.';
       break;
     }
@@ -198,7 +140,15 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
       bucket = 'smalltalk';
   }
 
-  const lines = v[bucket] || v.smalltalk;
+  const answers = {
+    alliance: r.trust >= 55 ? ["I'm open to working together. Let's be clear about what we're agreeing to.", "I can see a reason to cooperate. What do you need from me?"] : ["I've heard your commitment. I need to think about where that leaves me."],
+    deny: ["I can't commit to that right now. I need to protect my own position.", "I'm not convinced yet. What's the risk for me?"],
+    accuse: ["Tell me exactly which decision you mean. I want to get the facts straight before we argue about it."],
+    target: ["Walk me through who benefits and what happens if the plan fails.", "What would we need to make that work, and who would we lose along the way?"],
+    ask_info: ["What are you trying to work out? I can give you my read, but I won't pretend a rumor is a fact.", "Let's compare what we actually know. Where's your head at?"],
+    smalltalk: ["How are you holding up? We can take a minute away from game talk.", "What do you want to talk about? I'm listening."],
+  };
+  const lines = answers[bucket] || answers.smalltalk;
   const baseReply = lines[Math.floor(Math.random() * lines.length)];
   const reply = intent === 'strategy' ? `${strategyLead(g, targetId)} ${baseReply}` : baseReply;
   return { reply, effects };
@@ -248,6 +198,15 @@ const OPENER_LINES = {
 };
 
 export function fallbackOpener(g, npcId, reason) {
+  if (['beg_veto', 'lobby_veto'].includes(reason) && (g.vetoUsed || g.vetoHolder !== PLAYER_ID || !['social_veto', 'veto_lobby', 'veto_ceremony'].includes(g.phase))) reason = 'hangout';
+  if (reason === 'campaign' && !g.nominees.includes(npcId)) reason = 'hangout';
+  if (reason === 'confront') {
+    const evidence = evidenceFor(g, npcId).filter(f => f.actorId === PLAYER_ID && (f.targetIds.includes(npcId) || f.kind === 'veto_used')).at(-1);
+    if (evidence) return `Can we talk about week ${evidence.week}? ${evidence.text} I want to understand your thinking.`;
+    const rumor = knowledgeFor(g, npcId).rumors.at(-1);
+    if (rumor) return `I heard something from ${rumor.sourceName}, but I can't verify it. Can we compare notes before I jump to conclusions?`;
+    return "I feel uneasy about where we stand. Can we talk it through?";
+  }
   const lines = OPENER_LINES[reason] || OPENER_LINES.hangout;
   return lines[Math.floor(Math.random() * lines.length)];
 }
@@ -273,7 +232,7 @@ export function fallbackGroupChat(g, memberIds, playerMsg, chatterId = PLAYER_ID
   }
   // Alliance pitch to the group?
   let allianceProposal = null;
-  if (/\b(alliance|work together|team up|final ?\d|ride together)\b/i.test(playerMsg)) {
+  if (!deniesCommitment(playerMsg) && /\b(alliance|work together|team up|final ?\d|ride together)\b/i.test(playerMsg)) {
     const decliners = memberIds.filter((id) => rel(g, id, chatterId).trust < 50);
     allianceProposal = { accepted: decliners.length <= memberIds.length / 2, name: null, decliners };
   }
@@ -333,65 +292,49 @@ function jurorPersonality(jurorId) {
 }
 
 export function fallbackJurorQuestion(g, jurorId, finalists) {
-  const bitter = jurorPersonality(jurorId).bitterness > 55;
-  const mem = g.memory[jurorId];
-  // Ground the question in this juror's real history with each finalist.
-  const qFor = (fid, generic) => {
-    const broken = g.promises.find((p) => p.status === 'broken' && p.from === fid && p.to === jurorId);
-    if (broken) return `In week ${broken.week} you promised me ${broken.text ? `"${broken.text}"` : 'your loyalty'} — and then you went back on it. Why should my vote reward that?`;
-    const grudge = mem?.grudges.find((x) => x.againstId === fid);
-    if (grudge) return `I still remember week ${grudge.week}, when you ${grudge.reason}. Explain to me why that was a game move and not just who you are.`;
-    const kept = g.promises.find((p) => p.status === 'kept' && p.from === fid && p.to === jurorId);
-    if (kept) return `You actually kept your word to me${kept.text ? ` about "${kept.text}"` : ''}. Was that strategy, or would you have honored it even if it cost you the game?`;
-    return generic;
+  const k = knowledgeFor(g, jurorId);
+  const refs = {};
+  const question = (fid, index) => {
+    const evidence = evidenceFor(g, jurorId);
+    const personal = evidence.filter(e => e.actorId === fid && e.targetIds.includes(jurorId) && !['rumor', 'statement'].includes(e.kind));
+    const record = personal.find(e => e.kind === 'promise' && e.status === 'broken') || personal.at(-1) || evidence.filter(e => e.actorId === fid && !['rumor', 'statement'].includes(e.kind)).at(-1);
+    refs[index] = record ? [record.id] : [];
+    if (record) return `In week ${record.week}: ${record.text} What were you trying to achieve, and why should that earn my vote?`;
+    const rumor = k.rumors.find(r => r.aboutId === fid);
+    if (rumor) {
+      refs[index] = [rumor.id];
+      return `I heard this from ${rumor.sourceName}: ${JSON.stringify(rumor.text)}. I don't know whether it's true. What is your response?`;
+    }
+    return `Which decision best demonstrates why you deserve my vote? Explain what you did and why it mattered.`;
   };
-  const [f1, f2] = finalists;
-  return {
-    questionForF1: qFor(f1, bitter
-      ? `You looked me in the eye and made promises. Why should my vote reward the way you played me?`
-      : `What was the single best move of your game, and why does it beat everything ${nameOf(g, f2)} did?`),
-    questionForF2: qFor(f2, bitter
-      ? `Everyone says you played a "quiet game." Convince me that wasn't just hiding.`
-      : `What move are you most proud of, and who did it hurt?`),
-    toneNote: bitter ? 'bitter' : 'respectful',
-  };
+  const questionForF1 = question(finalists[0], 0), questionForF2 = question(finalists[1], 1);
+  return { questionForF1, questionForF2, evidenceForF1: refs[0], evidenceForF2: refs[1], toneNote: jurorPersonality(jurorId).bitterness > 55 ? 'hurt' : 'respectful' };
 }
 
 export function fallbackJurorVote(g, jurorId, finalists, qa) {
+  const k = knowledgeFor(g, jurorId);
   const [f1, f2] = finalists;
-  const r1 = rel(g, jurorId, f1);
-  const r2 = rel(g, jurorId, f2);
   const bitterness = jurorPersonality(jurorId).bitterness;
-  // bond + trust + (respect for threat if not bitter) + answer length heuristic
-  const score = (r, ans) =>
-    r.bond * 0.4 + r.trust * 0.4 + (bitterness < 50 ? r.threat * 0.3 : -r.threat * 0.1) +
-    Math.min(10, (ans || '').length / 30);
-  const s1 = score(r1, qa.f1Answer) + Math.random() * 12;
-  const s2 = score(r2, qa.f2Answer) + Math.random() * 12;
-  const vote = s1 >= s2 ? f1 : f2;
-  const loser = vote === f1 ? f2 : f1;
-
-  // Build a SPECIFIC reason from this juror's real history instead of a stub.
-  const mem = g.memory[jurorId];
-  const reasons = [];
-  const brokenByLoser = g.promises.find((p) => p.status === 'broken' && p.from === loser && p.to === jurorId);
-  if (brokenByLoser) reasons.push(`${nameOf(g, loser)} broke their word to me — "${brokenByLoser.text}" — and I don't reward that`);
-  const keptByWinner = g.promises.find((p) => p.status === 'kept' && p.from === vote && p.to === jurorId);
-  if (keptByWinner) reasons.push(`${nameOf(g, vote)} kept their promise to me${keptByWinner.text ? ` (${keptByWinner.text})` : ''}, and that means something`);
-  const grudgeVsLoser = mem?.grudges.find((x) => x.againstId === loser);
-  if (grudgeVsLoser) reasons.push(`I haven't forgotten that ${nameOf(g, loser)} ${grudgeVsLoser.reason} in week ${grudgeVsLoser.week}`);
-  const compWins = (g.compHistory || []).filter((c) => c.winner === vote).length;
-  if (compWins >= 2) reasons.push(`${nameOf(g, vote)} won ${compWins} competitions — they earned their seat`);
-  if (r1 !== r2 && Math.max(r1.bond, r2.bond) === (vote === f1 ? r1 : r2).bond && (vote === f1 ? r1 : r2).bond > 60) {
-    reasons.push(`${nameOf(g, vote)} was genuine with me all season`);
-  }
-  const detail = reasons.length
-    ? reasons.slice(0, 2).join('. ') + '.'
-    : `${nameOf(g, vote)} ran the stronger game from where I sat, and nothing ${nameOf(g, loser)} said tonight changed that.`;
-
+  const feelings = id => k.feelings[id] || { trust: 50, bond: 50, threat: 30 };
+  // A bounded relevance/ownership heuristic, never an answer-length reward.
+  const quality = (answer, id, question) => {
+    const text = String(answer || '').toLowerCase();
+    if (!text.trim()) return 0;
+    const relevant = evidenceFor(g, jurorId).filter(e => e.actorId === id && !['rumor', 'statement'].includes(e.kind));
+    const words = `${question || ''} ${relevant.map(e => e.text).join(' ')}`.toLowerCase().match(/\b[a-z]{5,}\b/g) || [];
+    const overlap = [...new Set(words)].filter(w => text.includes(w)).length;
+    return Math.min(6, overlap * 1.5) + (/\b(because|chose|risk|cost|protect|mistake|regret)\b/.test(text) ? 2 : 0);
+  };
+  const q1 = quality(qa.f1Answer, f1, qa.questionForF1), q2 = quality(qa.f2Answer, f2, qa.questionForF2);
+  const score = (id, q) => {
+    const r = feelings(id);
+    return r.bond * .35 + r.trust * .35 + (bitterness < 50 ? r.threat * .2 : -r.threat * .05) + q * 3 + Math.random() * 12;
+  };
+  const vote = score(f1, q1) >= score(f2, q2) ? f1 : f2;
+  const record = evidenceFor(g, jurorId).filter(e => e.actorId === vote && !['rumor', 'statement'].includes(e.kind)).at(-1);
   return {
     vote,
-    reasoning: `My vote is for ${nameOf(g, vote)}. ${detail}`,
-    answerQuality: { [f1]: Math.round(Math.min(10, s1 / 12)), [f2]: Math.round(Math.min(10, s2 / 12)) },
+    reasoning: record ? `My vote is for ${nameOf(g, vote)}. In week ${record.week}, ${record.text} I weighed that decision, our relationship and the explanation tonight.` : `My vote is for ${nameOf(g, vote)}. I weighed our relationship at my eviction and how they explained their choices tonight.`,
+    answerQuality: { [f1]: q1, [f2]: q2 }, evidenceIds: record ? [record.id] : [],
   };
 }
