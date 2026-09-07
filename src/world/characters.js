@@ -22,7 +22,7 @@ export function createCharacter(hg) {
   const g = new THREE.Group();
   const b = hg.build || { height: 1, width: 1 };
   const H = b.height, W = b.width;
-  const shirtMat = std(hg.color);
+  const shirtMat = std(new THREE.Color(hg.color).lerp(new THREE.Color(0x8f998c), 0.24));
   const pantsColor = hg.id === 'you' ? 0x33415c : darken(hg.color, 0.35);
   const pantsMat = std(pantsColor);
   const skinMat = std(hg.skin, { roughness: 0.55 });
@@ -244,18 +244,21 @@ function makeTag(name) {
   canvas.width = 256;
   canvas.height = 72;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = 'rgba(10,12,24,0.72)';
-  roundRect(ctx, 4, 4, 248, 64, 18);
+  ctx.fillStyle = 'rgba(16,30,30,0.90)';
+  roundRect(ctx, 4, 4, 248, 64, 10);
   ctx.fill();
-  ctx.font = 'bold 38px system-ui, sans-serif';
+  ctx.strokeStyle = 'rgba(220,198,146,0.45)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.font = '500 32px Segoe UI, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#fff';
-  ctx.fillText(name, 128, 38);
+  ctx.fillStyle = '#f3f0e7';
+  ctx.fillText(name, 128, 37, 228);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
-  sprite.scale.set(1.55, 0.44, 1);
+  sprite.scale.set(1.4, 0.394, 1);
   sprite.renderOrder = 10;
   return sprite;
 }

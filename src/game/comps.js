@@ -138,7 +138,8 @@ function countComp(root) {
       items.sort(() => Math.random() - 0.5);
       for (const emoji of items) {
         const it = el('div', '', emoji);
-        it.style.cssText = `position:absolute;font-size:${22 + Math.random() * 12}px;left:${3 + Math.random() * 90}%;top:${3 + Math.random() * 85}%;transform:rotate(${(Math.random() - 0.5) * 60}deg);user-select:none`;
+        const px = Math.random(), py = Math.random();
+        it.style.cssText = `position:absolute;font-size:${22 + Math.random() * 12}px;left:calc(${px * 100}% - ${px * 56}px + 8px);top:calc(${py * 100}% - ${py * 56}px + 8px);transform:rotate(${(Math.random() - 0.5) * 60}deg);user-select:none`;
         field.append(it);
       }
       const lookTime = 3400 - round * 500; // less time each round
@@ -206,8 +207,9 @@ function reactionComp(root) {
       if (!running) return;
       const bad = Math.random() < 0.3;
       const t = el('div', 'reaction-target' + (bad ? ' bad' : ''), bad ? '✕' : '🔑');
-      t.style.left = 5 + Math.random() * 85 + '%';
-      t.style.top = 5 + Math.random() * 80 + '%';
+      const px = Math.random(), py = Math.random();
+      t.style.left = `calc(${px * 100}% - ${px * 78}px + 8px)`;
+      t.style.top = `calc(${py * 100}% - ${py * 78}px + 8px)`;
       field.append(t);
       const ttl = setTimeout(() => {
         if (!bad) misses++;

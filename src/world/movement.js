@@ -155,9 +155,9 @@ export class WorldController {
     this.keys = {};
     this.moveQueue = null; // player waypoint queue
     this.npcState = new Map(); // id -> { queue, pauseUntil, frozen, approachPlayer, repathAt, stuckTime }
-    this.camAngle = Math.PI * 0.0;
-    this.camDist = 14;
-    this.camHeight = 10.5;
+    this.camAngle = -0.38;
+    this.camDist = 20;
+    this.camHeight = 16;
     this.focusNpcId = null; // chat close-up target
     this.raycaster = new THREE.Raycaster();
     this.clock = new THREE.Clock();
@@ -166,9 +166,11 @@ export class WorldController {
 
     window.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (this.uiBlocked()) return;
       this.keys[e.code] = true;
     });
     window.addEventListener('keyup', (e) => (this.keys[e.code] = false));
+    window.addEventListener('blur', () => { this.keys = {}; this._pointers.clear(); });
 
     // Pointer handling supports mouse AND touch:
     //  tap/click       -> move / talk (handleClick)
@@ -180,6 +182,7 @@ export class WorldController {
     canvas.style.touchAction = 'none'; // stop iOS scroll/zoom hijacking the canvas
 
     canvas.addEventListener('pointerdown', (e) => {
+      if (this.uiBlocked()) return;
       this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY });
       this._dragging = false;
       if (this._pointers.size === 2) {
@@ -190,6 +193,7 @@ export class WorldController {
     });
 
     canvas.addEventListener('pointermove', (e) => {
+      if (this.uiBlocked()) return;
       const p = this._pointers.get(e.pointerId);
       if (!p) return;
       const dx = e.clientX - p.x;
@@ -231,7 +235,11 @@ export class WorldController {
       if (this._pointers.size === 0) this._dragging = false;
     });
 
-    canvas.addEventListener('wheel', (e) => this.zoomBy(e.deltaY * 0.02), { passive: true });
+    canvas.addEventListener('wheel', (e) => { if (!this.uiBlocked()) this.zoomBy(e.deltaY * 0.02); }, { passive: true });
+  }
+
+  uiBlocked() {
+    return this.inputLocked || !!document.querySelector('.cinematic, .title-screen, .chat-panel, .dock-menu[open]');
   }
 
   zoomBy(delta) {
@@ -269,7 +277,7 @@ export class WorldController {
   }
 
   handleClick(e) {
-    if (this.inputLocked) return;
+    if (this.uiBlocked()) return;
     const rect = this.canvas.getBoundingClientRect();
     const ndc = new THREE.Vector2(
       ((e.clientX - rect.left) / rect.width) * 2 - 1,
@@ -385,7 +393,8 @@ export class WorldController {
 
     // --- Player movement
     let moving = false;
-    if (this.player && !this.inputLocked) {
+    if (this.uiBlocked()) this.keys = {};
+    if (this.player && !this.uiBlocked()) {
       const dir = new THREE.Vector3();
       const fwd = new THREE.Vector3(Math.sin(this.camAngle + Math.PI), 0, Math.cos(this.camAngle + Math.PI));
       const right = new THREE.Vector3(-fwd.z, 0, fwd.x);

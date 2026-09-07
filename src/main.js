@@ -63,6 +63,13 @@ const world = new WorldController(scene, camera, canvas);
 let g = null; // game state
 let busy = false; // an overlay/ceremony is running
 let approachTimer = null;
+let animationStarted = false;
+
+function startAnimation() {
+  if (animationStarted) return;
+  animationStarted = true;
+  animate();
+}
 
 function showTitle() {
   titleScreen({
@@ -129,7 +136,7 @@ function startOnlineSeason(game) {
     world.addNpc(createCharacter(hg), rooms[i++ % rooms.length]);
   }
   world.onNpcClick = me ? (id) => openOnlineChat(id) : () => {};
-  animate();
+  startAnimation();
   renderOnlineHud();
   // Drive the interactive season from server turn broadcasts.
   room.onGame = (g) => handleOnlineTurn(g);
@@ -495,6 +502,14 @@ function syncOnlineWorld(game) {
   const btns = el('div', 'hud-buttons online-persistent-buttons');
   btns.style.left = 'auto';
   btns.style.right = 'calc(12px + var(--safe-right))';
+  const socialMenu = el('details', 'dock-menu');
+  socialMenu.append(el('summary', '', 'Social game'));
+  const socialActions = el('div', 'dock-popover');
+  socialMenu.append(socialActions);
+  const roomMenu = el('details', 'dock-menu');
+  roomMenu.append(el('summary', '', 'Room'));
+  const roomActions = el('div', 'dock-popover');
+  roomMenu.append(roomActions);
   if (isSpectator()) {
     const eligible = onlineActiveIds(game).filter((id) => !(game.humanSeats && game.humanSeats[id]));
     if (eligible.length) {
@@ -505,18 +520,19 @@ function syncOnlineWorld(game) {
       btns.append(el('div', 'hud-hint', '👀 Spectating'));
     }
   } else if (meId) {
-    const dr = el('button', 'bb', '🎥 Diary Room');
+    const dr = el('button', 'bb', 'Diary Room');
     dr.onclick = () => openDiaryOnline();
     btns.append(dr);
     const ga = el('button', 'bb', '🤝 Form Alliance');
     ga.onclick = () => formAllianceFlowOnline();
-    btns.append(ga);
+    socialActions.append(ga);
     const gc = el('button', 'bb', '💬 Group Talk');
     gc.onclick = () => groupChatFlowOnline();
-    btns.append(gc);
+    socialActions.append(gc);
     const hm = el('button', 'bb', '📢 House Meeting');
     hm.onclick = () => groupChatFlowOnline(onlineActiveIds(game).filter((id) => id !== meId));
-    btns.append(hm);
+    socialActions.append(hm);
+    btns.append(socialMenu);
   }
   const leave = el('button', 'bb', '🚪 Leave');
   leave.onclick = () => {
@@ -534,11 +550,18 @@ function syncOnlineWorld(game) {
       { label: 'Stay', style: 'primary', onClick: () => c.close() },
     ]);
   };
-  btns.append(leave);
+  roomActions.append(leave);
   if (iAmHost()) {
     const end = el('button', 'bb danger', '🛑 End Session');
     end.onclick = () => endSessionFlowOnline();
-    btns.append(end);
+    roomActions.append(end);
+  }
+  btns.append(roomMenu);
+  for (const menu of [socialMenu, roomMenu]) {
+    menu.addEventListener('toggle', () => {
+      if (menu.open) for (const other of [socialMenu, roomMenu]) if (other !== menu) other.open = false;
+    });
+    menu.addEventListener('click', (event) => { if (event.target.closest('button')) menu.open = false; });
   }
   h.append(btns);
 }
@@ -991,7 +1014,7 @@ function startWorld() {
     world.addNpc(createCharacter(hg), rooms[i % rooms.length]);
   });
   world.onNpcClick = (id) => openNpcChat(id);
-  animate();
+  startAnimation();
   scheduleApproaches();
 }
 
@@ -1000,7 +1023,13 @@ let lastPosSent = null;
 function animate() {
   requestAnimationFrame(animate);
   resize();
-  world.update();
+  if (document.getElementById('title-screen') && !world.player) {
+    // The real house is the title backdrop, so the first screen previews the game.
+    camera.position.set(-24, 30, 39);
+    camera.lookAt(2, 0, 1);
+  } else {
+    world.update();
+  }
   updateFx(world.clock.elapsedTime);
   renderer.render(scene, camera);
 
@@ -2208,3 +2237,6 @@ function finalistName(id) {
 function finalistVoteName(id) {
   return id === PLAYER_ID ? 'YOU' : nameOf(g, id);
 }
+
+// Start one render loop for both the title backdrop and the active season.
+startAnimation();

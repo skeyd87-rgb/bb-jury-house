@@ -1,13 +1,13 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  --panel: rgba(13, 15, 28, 0.92);
-  --panel-border: rgba(255, 255, 255, 0.12);
-  --gold: #f5c542;
-  --accent: #7c5cff;
+  --panel: rgba(18, 28, 29, 0.94);
+  --panel-border: rgba(219, 222, 201, 0.18);
+  --gold: #ddbd7e;
+  --accent: #81b5ac;
   --danger: #ef4444;
-  --text: #eceef8;
-  --muted: #9aa0b8;
+  --text: #f3f0e7;
+  --muted: #b1bbb7;
   /* Notch / status-bar safe areas (0 on desktop). Used to inset HUD chrome
      so nothing renders under the iPhone status bar or Dynamic Island. */
   --safe-top: env(safe-area-inset-top, 0px);
@@ -385,3 +385,145 @@ button.bb.sm { padding: 5px 10px; font-size: 12px; margin-top: auto; }
   .lobby-ctrl { flex-direction: column; gap: 8px; }
   .lobby-ctrl select { margin-left: 0; margin-top: 4px; }
 }
+
+/* House edition: quiet broadcast graphics, warm brass, architectural typography. */
+body { font-family: 'Aptos', 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
+button, input, textarea, select { font-family: inherit; }
+button.bb, .dock-menu > summary { min-height: 44px; background: #243434; border-radius: 7px; font-weight: 600; letter-spacing: .01em; box-shadow: inset 0 1px 0 #ffffff08; }
+button.bb:hover { background: #314645; border-color: #b5c5b0; }
+button.bb.primary { background: #345e59; border-color: #679089; }
+button.bb.gold { background: linear-gradient(120deg, #e8cf9b, #caaa6c); border-color: #e5cc97; color: #242820; }
+button.bb.danger { background: #763e3a; border-color: #bd756b; }
+button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus-visible, .pick-card:focus-visible { outline: 2px solid var(--gold); outline-offset: 4px; }
+button.bb:disabled { cursor: not-allowed; }
+.live-dot { display: inline-block; width: 6px; height: 6px; background: #a9c9a8; border-radius: 50%; margin-right: 8px; box-shadow: 0 0 8px #b4d4af50; vertical-align: 1px; }
+.season-title { background: linear-gradient(90deg, #101b1dfc 0%, #101b1df2 26%, #101b1dae 44%, #101b1d0a 73%), linear-gradient(0deg, #0b151ee8, transparent 30%); justify-content: flex-start; padding: 60px clamp(28px, 6vw, 100px); overflow-y: auto; }
+.season-title .title-card { text-align: left; width: 540px; max-width: 100%; padding: 0; }
+.brand-line { display: flex; align-items: center; gap: 14px; font-size: 10px; letter-spacing: 2.4px; color: #d7ded7; margin-bottom: clamp(24px, 6vh, 64px); }
+.brand-eye { display: inline-block; width: 32px; height: 19px; border: 1.5px solid var(--gold); border-radius: 70% 15%; transform: rotate(34deg); position: relative; flex: 0 0 auto; }
+.brand-eye::after { content: ''; position: absolute; width: 9px; height: 9px; border: 2px solid var(--gold); border-radius: 50%; left: 10px; top: 3px; }
+.title-eyebrow { color: var(--gold); font-size: 12px; letter-spacing: 2px; margin-bottom: 14px; }
+.season-title .title-card h1 { font-family: 'Bahnschrift', 'Arial Narrow', sans-serif; font-size: clamp(66px, 8vw, 112px); line-height: .91; letter-spacing: -3px; font-weight: 700; margin: 0 0 24px -4px; }
+.season-title .title-card h1 span { color: var(--text); }
+.season-title .title-card h1 i { color: var(--gold); font-style: normal; }
+.season-title .tag { line-height: 1.7; max-width: 350px; font-size: 15px; color: #c0ccc7; margin-bottom: 30px; }
+.name-label { display: block; font-size: 10px; font-weight: 600; letter-spacing: 2px; color: var(--gold); margin-bottom: 9px; }
+.season-title .title-card input { max-width: 370px; display: block; text-align: left; background: #ffffff06; border: 1px solid #c4ccb433; border-radius: 6px; padding: 14px 16px; margin-bottom: 0; }
+.season-title .cine-actions { justify-content: flex-start; margin-top: 12px; }
+.season-title .cine-actions .bb { min-height: 48px; padding: 12px 20px; }
+.title-scene-caption { position: absolute; right: 6vw; bottom: 124px; font-size: 10px; letter-spacing: 1.6px; display: flex; align-items: center; color: #e6e9df; }
+.caption-rule { height: 1px; width: 30px; background: #bec7b85e; margin: 0 15px; }
+.title-footer { position: absolute; bottom: 28px; left: 6vw; right: 6vw; display: flex; justify-content: space-between; color: #a9b5b1; font-size: 10px; letter-spacing: 1.5px; padding-top: 20px; border-top: 1px solid #bec7b826; }
+.title-screen:not(.season-title) { background: radial-gradient(ellipse at 65% 20%, #30433f, #0f1b1d 70%); overflow-y: auto; padding: 28px 12px; }
+.title-screen:not(.season-title) .title-card { margin: auto; }
+.hud-top { top: calc(24px + var(--safe-top)); left: calc(24px + var(--safe-left)); transform: none; text-align: left; padding: 15px 20px; border-radius: 9px; min-width: 235px; border-top: 2px solid var(--gold); box-shadow: 0 8px 32px #0004; backdrop-filter: blur(12px); }
+.hud-top .week { font-size: 10px; letter-spacing: 1.7px; margin-bottom: 7px; }
+.hud-top .phase { font-size: 21px; font-weight: 600; letter-spacing: -.4px; }
+.hud-top .sub { margin-top: 5px; }
+.hud-status { top: calc(142px + var(--safe-top)); left: calc(24px + var(--safe-left)); max-width: 260px; padding: 11px 16px; border-radius: 8px; font-size: 12px; box-shadow: 0 6px 24px #0003; }
+.house-intel { width: 235px; }
+.house-intel summary { cursor: pointer; font-size: 11px; letter-spacing: 1.4px; text-transform: uppercase; color: #d7ddce; }
+.house-intel[open] summary { padding-bottom: 12px; margin-bottom: 10px; border-bottom: 1px solid var(--panel-border); }
+.house-intel .hud-line { line-height: 1.7; }
+.hud-buttons:not(.online-persistent-buttons) { bottom: calc(25px + var(--safe-bottom)); left: calc(24px + var(--safe-left)); max-width: calc(100vw - 48px); background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 7px; gap: 6px; box-shadow: 0 10px 30px #0005; }
+.dock-menu { position: relative; }
+.dock-menu > summary { cursor: pointer; padding: 12px 16px; font-size: 13px; list-style: none; border: 1px solid var(--panel-border); color: var(--text); }
+.dock-menu > summary::-webkit-details-marker { display: none; }
+.dock-menu > summary::after { content: '⌃'; margin-left: 12px; color: var(--gold); }
+.dock-menu[open] > summary { background: #36514b; border-color: var(--accent); }
+.dock-popover { position: absolute; bottom: calc(100% + 14px); left: 0; width: 210px; padding: 8px; background: #142526fa; border: 1px solid var(--panel-border); border-radius: 10px; box-shadow: 0 12px 36px #0007; display: grid; gap: 6px; }
+.dock-popover .bb { text-align: left; background: transparent; }
+.hud-hint { bottom: calc(103px + var(--safe-bottom)); left: calc(28px + var(--safe-left)); transform: none; border: 0; border-radius: 5px; padding: 7px 9px; background: #112020d9; font-size: 11px; color: #d0d8cc; }
+.hud-hint kbd { font: inherit; font-weight: 600; color: #e9d4a7; }
+.hud-hint span { padding: 0 8px; opacity: .5; }
+.online-persistent-buttons { padding: 8px; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; }
+.online-social-bar { border-radius: 9px; padding: 12px 16px; }
+.toast { top: calc(26px + var(--safe-top)); max-width: min(580px, 55vw); left: auto; right: 24px; transform: none; border-color: #bea77388; border-radius: 9px; animation: fadeIn .25s ease; }
+.chat-panel { right: calc(24px + var(--safe-right)); top: calc(24px + var(--safe-top)); bottom: calc(24px + var(--safe-bottom)); width: min(410px, 38vw); border-radius: 12px; background: #132021f5; backdrop-filter: blur(18px); }
+.chat-head { padding: 20px; gap: 12px; }
+.chat-avatar { width: 44px; height: 48px; border-radius: 9px; display: grid; place-items: center; font-family: Georgia, serif; font-size: 25px; color: white; text-shadow: 0 1px 4px #0008; }
+.chat-head .who { font-size: 19px; font-weight: 600; }
+.chat-head .role { font-size: 11px; line-height: 1.5; margin-top: 4px; }
+.chat-head .close { padding: 6px 10px; min-width: 36px; }
+.chat-log { padding: 20px; gap: 16px; }
+.msg { padding: 13px 15px; font-size: 14px; line-height: 1.6; border-radius: 10px; }
+.msg.you { background: #3c625b; border: 1px solid #70998a40; }
+.msg.them { background: #243335; border: 1px solid #ffffff08; }
+.msg.sys { font-size: 11px; }
+.chat-input { padding: 14px; gap: 6px; }
+.chat-input input { min-width: 0; background: #0d181a; border-radius: 7px; }
+.cinematic { background: radial-gradient(ellipse at 50% 35%, #163632bf, #071111ed); backdrop-filter: blur(8px); }
+.cine-card { background: linear-gradient(150deg, #263b38, #101d20 75%); border-radius: 14px; border-top: 2px solid #cfb77b; padding: 38px 42px; box-shadow: 0 28px 100px #0009; }
+.cine-card h1 { font-size: 10px; letter-spacing: 3px; margin-bottom: 20px; }
+.cine-card h2 { font-family: 'Bahnschrift', 'Segoe UI', sans-serif; font-size: 32px; font-weight: 500; letter-spacing: -.6px; }
+.cine-card p { color: #d7dfd5; }
+.cine-card .quote { background: #e0c28609; border-left: 2px solid #cfb77b; color: #e3cd9e; border-radius: 0 6px 6px 0; padding: 15px 20px; }
+.help-steps { text-align: left; margin: 25px 0; }
+.help-steps b { display: block; color: var(--gold); font-size: 12px; margin-bottom: 5px; }
+.help-steps p { font-size: 13px; padding-bottom: 12px; }
+.pick-card { background: #263836; border-width: 1px; border-radius: 9px; padding: 18px; color: var(--text); }
+.pick-card.selected { background: #4a4935; }
+.comp-box { background: linear-gradient(155deg, #263c39, #101c1e); border-radius: 12px; border-color: #c4ac79; }
+.comp-box h2 { font-size: 16px; letter-spacing: 3px; }
+.timing-track, .reaction-field { background: #0b1b1f; }
+.stats-cell, .seat-card, .wr-row { background: #1b2b2b; }
+.seat-card.taken { background: #2c413c; }
+#hud:has(.dock-menu[open]) .hud-hint { visibility: hidden; }
+@media (max-width: 1000px) {
+  .hud-hint { font-size: 10px; }
+  .title-scene-caption { display: none; }
+  .chat-panel { width: 370px; }
+}
+@media (max-width: 760px), (max-height: 500px) {
+  .season-title { padding: max(28px, var(--safe-top)) 25px 65px; background: linear-gradient(90deg, #101b1df5, #101b1dcb), linear-gradient(0deg, #101b1d, transparent); }
+  .season-title .title-card { margin: auto 0; }
+  .brand-line { font-size: 8px; letter-spacing: 1.4px; margin-bottom: 30px; }
+  .season-title .title-card h1 { font-size: 72px; }
+  .season-title .tag { font-size: 13px; margin-bottom: 23px; }
+  .title-footer { left: 25px; right: 25px; bottom: 18px; font-size: 8px; }
+  .title-footer span:last-child { display: none; }
+  .hud-top { top: calc(12px + var(--safe-top)); left: calc(12px + var(--safe-left)); min-width: 0; max-width: 62vw; padding: 11px 14px; }
+  .hud-top .week { font-size: 9px; letter-spacing: 1px; margin-bottom: 4px; }
+  .hud-top .phase { font-size: 17px; }
+  .hud-status { top: calc(112px + var(--safe-top)); left: calc(12px + var(--safe-left)); max-width: 55vw; width: auto; font-size: 11px; padding: 10px 12px; }
+  .house-intel summary { font-size: 10px; }
+  .hud-buttons:not(.online-persistent-buttons) { bottom: calc(12px + var(--safe-bottom)); left: calc(12px + var(--safe-left)); max-width: calc(100vw - 24px); gap: 5px; padding: 6px; }
+  .hud-buttons:not(.online-persistent-buttons) > .gold { flex: 1 0 100%; }
+  .dock-menu > summary { padding: 12px; font-size: 12px; }
+  .dock-menu > summary::after { margin-left: 6px; }
+  .dock-menu:last-child .dock-popover { left: auto; right: 0; }
+  .hud-hint { display: none; }
+  .toast { top: calc(12px + var(--safe-top)); right: 12px; max-width: 92vw; width: 92vw; z-index: 6; }
+  .chat-panel { left: calc(8px + var(--safe-left)); right: calc(8px + var(--safe-right)); width: auto; top: auto; bottom: calc(8px + var(--safe-bottom)); height: 65dvh; max-height: calc(100dvh - 100px - var(--safe-top) - var(--safe-bottom)); z-index: 7; }
+  .chat-head { padding: 12px; }
+  .chat-head .who { font-size: 17px; }
+  .chat-log { padding: 12px; }
+  .chat-input { padding: 10px; }
+  .chat-input input { font-size: 16px; }
+  .cine-card { padding: 26px 20px; }
+  .cine-card h2 { font-size: 26px; }
+  .online-persistent-buttons { max-width: 44vw; gap: 5px; }
+}
+@media (max-height: 650px) {
+  .season-title { align-items: flex-start; }
+  .season-title .title-card { margin: 0; }
+  .season-title .brand-line { margin-bottom: 20px; }
+  .season-title .title-card h1 { font-size: 58px; }
+  .season-title .tag { margin-bottom: 15px; }
+  .title-footer { position: static; margin-top: 30px; }
+  .season-title { flex-direction: column; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+.online-persistent-buttons .dock-popover { left: auto; right: 0; }
+.dock-menu:not([open]) > .dock-popover { display: none; }
+#overlay-root:has(> .comp-box) { background: #091919ad; backdrop-filter: blur(7px); pointer-events: auto; }
+.chat-head > div:has(.who) { min-width: 0; }
+.chat-head .who { overflow-wrap: anywhere; }
+@media (max-width: 760px) { .online-persistent-buttons > .bb, .online-persistent-buttons > .dock-menu { width: 100%; } }
+.chat-starter { margin: auto 0; padding: 24px 8px; }
+.chat-starter > span { color: var(--gold); font-size: 9px; letter-spacing: 2px; }
+.chat-starter h3 { font-family: 'Bahnschrift', 'Segoe UI', sans-serif; font-size: 26px; font-weight: 500; letter-spacing: -.4px; margin: 15px 0 12px; }
+.chat-starter p { color: var(--muted); font-size: 13px; line-height: 1.8; }
+body:has(.chat-panel) .hud-hint { display: none; }

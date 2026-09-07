@@ -9,6 +9,25 @@ import { isVoiceOn, setVoiceOn, voiceSupported, speak, stopSpeaking, dictationSu
 const hud = () => document.getElementById('hud');
 const overlayRoot = () => document.getElementById('overlay-root');
 
+// Keep keyboard navigation inside the active overlay, away from the playfield.
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !document.querySelector('.cinematic')) {
+    closeChatPanel();
+    document.querySelectorAll('.dock-menu[open], .house-intel[open]').forEach((menu) => { menu.open = false; });
+  }
+  if (event.key !== 'Tab') return;
+  const surface = [...document.querySelectorAll('.cinematic')].at(-1) || document.querySelector('.chat-panel') || document.querySelector('.title-screen');
+  if (!surface) return;
+  const nodes = [...surface.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea, select, summary, [tabindex="0"]')].filter((node) => node.getClientRects().length);
+  const first = nodes[0], last = nodes.at(-1);
+  if (!first) return;
+  if (event.shiftKey && (document.activeElement === first || !surface.contains(document.activeElement))) {
+    event.preventDefault(); last.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !surface.contains(document.activeElement))) {
+    event.preventDefault(); first.focus();
+  }
+});
+
 export function el(tag, cls, html) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -33,7 +52,7 @@ export function renderHud(g, handlers) {
   h.innerHTML = '';
 
   const top = el('div', 'hud-top');
-  top.append(el('div', 'week', `Week ${g.week} — ${activeIds(g).length} left`));
+  top.append(el('div', 'week', `<span class="live-dot"></span> Week ${String(g.week).padStart(2, '0')} · ${activeIds(g).length} houseguests`));
   top.append(el('div', 'phase', phaseLabel(g.phase)));
   const sub = [];
   if (g.hoh) sub.push(`HoH: ${nameOf(g, g.hoh)}`);
@@ -41,7 +60,8 @@ export function renderHud(g, handlers) {
   if (sub.length) top.append(el('div', 'sub', sub.join(' · ')));
   h.append(top);
 
-  const st = el('div', 'hud-status');
+  const st = el('details', 'hud-status house-intel');
+  st.append(el('summary', '', 'House intel'));
   if (g.nominees.length) st.append(htmlLine(`<span class="nom">On the block:</span> ${g.nominees.map((n) => nameOf(g, n)).join(' & ')}`));
   if (g.jury.length) st.append(htmlLine(`<b>Jury (${g.jury.length}):</b> ${g.jury.map((j) => nameOf(g, j)).join(', ')}`));
   const als = g.alliances.filter((a) => !a.dead && a.members.includes(PLAYER_ID));
@@ -51,10 +71,18 @@ export function renderHud(g, handlers) {
     if (x) x.onclick = () => handlers.onLeaveAlliance && handlers.onLeaveAlliance(a.id);
     st.append(line);
   }
-  if (!st.childNodes.length) st.innerHTML = '<span style="color:var(--muted)">No alliances yet. Go talk to people.</span>';
+  if (st.childNodes.length === 1) st.append(el('div', 'hud-line', 'No alliances yet. Start a conversation.'));
   h.append(st);
 
   const btns = el('div', 'hud-buttons');
+  const social = el('details', 'dock-menu');
+  social.append(el('summary', '', 'Social game'));
+  const socialActions = el('div', 'dock-popover');
+  social.append(socialActions);
+  const settings = el('details', 'dock-menu');
+  settings.append(el('summary', '', 'Menu'));
+  const menuActions = el('div', 'dock-popover');
+  settings.append(menuActions);
   const advanceLabels = {
     week_intro: '▶ Start the Week',
     social_hoh: '▶ Nomination Ceremony',
@@ -68,23 +96,24 @@ export function renderHud(g, handlers) {
     b.onclick = handlers.onAdvance;
     btns.append(b);
   }
-  const dr = el('button', 'bb', '🎥 Diary Room');
+  const dr = el('button', 'bb', 'Diary Room');
   dr.onclick = handlers.onDiary;
   btns.append(dr);
   if (['week_intro', 'social_hoh', 'social_veto', 'veto_lobby', 'renom_watch', 'campaigning'].includes(g.phase)) {
-    const ga = el('button', 'bb', '🤝 Form Alliance');
+    const ga = el('button', 'bb', 'Form Alliance');
     ga.onclick = handlers.onFormAlliance;
-    btns.append(ga);
-    const gc = el('button', 'bb', '💬 Group Talk');
+    socialActions.append(ga);
+    const gc = el('button', 'bb', 'Group Talk');
     gc.onclick = handlers.onGroupChat;
-    btns.append(gc);
-    const hm = el('button', 'bb', '📢 House Meeting');
+    socialActions.append(gc);
+    const hm = el('button', 'bb', 'House Meeting');
     hm.onclick = handlers.onHouseMeeting;
-    btns.append(hm);
+    socialActions.append(hm);
+    btns.append(social);
   }
   const music = el('button', 'bb', g.settings.musicOn ? '🔊 Music' : '🔇 Music');
   music.onclick = handlers.onToggleMusic;
-  btns.append(music);
+  menuActions.append(music);
   if (voiceSupported()) {
     const vb = el('button', 'bb', isVoiceOn() ? '🗣️ Voice On' : '🤐 Voice Off');
     vb.title = 'Houseguests speak their replies aloud';
@@ -92,11 +121,24 @@ export function renderHud(g, handlers) {
       setVoiceOn(!isVoiceOn());
       vb.textContent = isVoiceOn() ? '🗣️ Voice On' : '🤐 Voice Off';
     };
-    btns.append(vb);
+    menuActions.append(vb);
   }
   const exit = el('button', 'bb', '🚪 Exit');
   exit.onclick = handlers.onExit;
-  btns.append(exit);
+  menuActions.append(exit);
+  const help = el('button', 'bb', 'How to play');
+  help.onclick = () => {
+    const c = cinematic({ kicker: 'Your social game', title: 'Every conversation counts.', bodyHtml: '<div class="help-steps"><p><b>01 · Build relationships</b>Click a houseguest to approach and talk. Make deals, share information, or listen.</p><p><b>02 · Fight for safety</b>Win HoH to nominate. Win the veto to change the block. Use the gold action when you are ready to advance.</p><p><b>03 · Remember the jury</b>Evicted houseguests decide the winner. Your promises and betrayals follow you to the finale.</p></div><p class="muted">Move: WASD or click · Camera: drag or Q/E · Zoom: scroll or pinch<br>Diary Room conversations are private and never affect the game.</p>' });
+    c.setActions([{ label: 'Back to the house', onClick: () => c.close() }]);
+  };
+  menuActions.prepend(help);
+  btns.append(settings);
+  for (const menu of [social, settings]) {
+    menu.addEventListener('toggle', () => {
+      if (menu.open) for (const other of [social, settings]) if (other !== menu) other.open = false;
+    });
+    menu.addEventListener('click', (e) => { if (e.target.closest('button')) menu.open = false; });
+  }
   h.append(btns);
 
   const isTouch = matchMedia('(pointer: coarse)').matches;
@@ -105,7 +147,7 @@ export function renderHud(g, handlers) {
     'hud-hint',
     isTouch
       ? '<b>Tap</b> to move · <b>tap someone</b> to talk · <b>drag</b> to rotate · <b>pinch</b> to zoom'
-      : '<b>WASD</b>/click to move · walk up to someone and <b>click them</b> to talk · <b>drag</b>/<b>Q E</b> rotate · scroll to zoom'
+      : '<kbd>W A S D</kbd> move <span>·</span> Click a houseguest to talk <span>·</span> Drag to orbit'
   );
   h.append(hint);
 }
@@ -147,6 +189,7 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
 
   const head = el('div', 'chat-head' + (isDiary ? ' diary' : ''));
   const av = el('div', 'chat-avatar');
+  av.textContent = isDiary ? 'DR' : title.slice(0, 1);
   av.style.background = isDiary ? 'radial-gradient(circle at 35% 30%, #ff8f8f, #7a1515)' : `radial-gradient(circle at 35% 30%, #fff3, ${colorHex(color)})`;
   head.append(av);
   const names = el('div');
@@ -168,6 +211,7 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
   // programmatic closeChatPanel() from a phase advance / new conversation).
   panel._onClose = () => { stopSpeaking(); onClose && onClose(); };
   const x = el('button', 'bb close', '✕');
+  x.setAttribute('aria-label', 'Close conversation');
   x.onclick = () => closeChatPanel();
   head.append(x);
   panel.append(head);
@@ -175,9 +219,15 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
   const log = el('div', 'chat-log');
   panel.append(log);
   for (const m of thread || []) addMsg(log, m.who, m.text);
+  if (!thread?.length) {
+    log.append(el('div', 'chat-starter', isDiary
+      ? '<span>BEHIND CLOSED DOORS</span><h3>Your side of the story.</h3><p>Think out loud. Celebrate a move. Vent about the house. This conversation stays with you.</p>'
+      : '<span>THE SOCIAL GAME</span><h3>Start a conversation.</h3><p>Check in, compare notes, or make your case. Trust is built one conversation at a time.</p>'));
+  }
 
   const inputRow = el('div', 'chat-input');
   const input = el('input');
+  input.setAttribute('aria-label', 'Your message');
   input.placeholder = isDiary ? 'Tell the Diary Room everything...' : 'Say something...';
   input.maxLength = 300;
   // Dictation mic (Chrome/Edge/Android; iOS users: use the keyboard's 🎤)
@@ -349,6 +399,7 @@ export function openLiveGroupPanel({ title, subtitle, color, onSend, onClose }) 
 }
 
 function addMsg(log, who, text) {
+  if (who !== 'sys') log.querySelector('.chat-starter')?.remove();
   const m = el('div', 'msg ' + who, '');
   m.textContent = text;
   log.append(m);
@@ -375,7 +426,11 @@ export function closeChatPanel() {
 // ---------- Cinematic overlays ----------
 
 export function cinematic({ kicker, title, bodyHtml, quote, actions, cardCls }) {
+  const previousFocus = document.activeElement;
   const wrap = el('div', 'cinematic');
+  wrap.setAttribute('role', 'dialog');
+  wrap.setAttribute('aria-modal', 'true');
+  wrap.setAttribute('aria-label', title || kicker || 'Season event');
   const card = el('div', 'cine-card' + (cardCls ? ' ' + cardCls : ''));
   if (kicker) card.append(el('h1', '', kicker));
   if (title) card.append(el('h2', '', title));
@@ -404,6 +459,7 @@ export function cinematic({ kicker, title, bodyHtml, quote, actions, cardCls }) 
     },
     close() {
       wrap.remove();
+      if (previousFocus?.isConnected) previousFocus.focus();
     },
   };
 }
@@ -430,7 +486,9 @@ export function pickHouseguests(g, { kicker, title, bodyHtml, ids, count, confir
 
     for (const id of ids) {
       const hg = g.houseguests.find((h) => h.id === id);
-      const card = el('div', 'pick-card');
+      const card = el('button', 'pick-card');
+      card.type = 'button';
+      card.setAttribute('aria-pressed', 'false');
       card.append(el('span', 'dot', ''));
       card.querySelector('.dot').style.background = colorHex(hg.color);
       card.append(el('div', 'nm', hg.name));
@@ -445,6 +503,7 @@ export function pickHouseguests(g, { kicker, title, bodyHtml, ids, count, confir
           card.classList.add('selected');
         }
         confirm.disabled = selected.size < min || selected.size > max;
+        card.setAttribute('aria-pressed', String(selected.has(id)));
       };
       grid.append(card);
     }
@@ -508,23 +567,26 @@ export function confetti() {
 // ---------- Title screen ----------
 
 export function titleScreen({ hasSave, onNew, onContinue, archivedStats, onShowStats, onOnline }) {
-  const wrap = el('div', 'title-screen');
+  const wrap = el('div', 'title-screen season-title');
   wrap.id = 'title-screen';
   const card = el('div', 'title-card');
-  card.append(el('div', 'eye', '👁️'));
-  card.append(el('h1', '', 'BIG <span>BROTHER</span>'));
-  card.append(el('div', 'tag', 'JURY HOUSE — 9 remain. Every word matters.'));
+  card.append(el('div', 'brand-line', '<span class="brand-eye" aria-hidden="true"></span> BIG BROTHER · A SOCIAL STRATEGY GAME'));
+  card.append(el('div', 'title-eyebrow', 'The doors are open.'));
+  card.append(el('h1', '', 'JURY<br><span>HOUSE</span><i>.</i>'));
+  card.append(el('div', 'tag', 'Nine houseguests. One winner.<br>Make them trust you. Give them a reason to vote for you.'));
+  const label = el('label', 'name-label', 'YOUR HOUSEGUEST');
+  label.htmlFor = 'houseguest-name';
+  card.append(label);
 
   const nameInput = el('input');
+  nameInput.id = 'houseguest-name';
   nameInput.placeholder = 'Your houseguest name';
   nameInput.maxLength = 16;
   nameInput.value = 'Sam';
   card.append(nameInput);
 
-  card.append(el('div', 'keynote', 'Houseguests are played by Claude — real conversations, real memory, real jury speeches. If AI is ever unreachable, a built-in dialogue engine steps in.'));
-
   const row = el('div', 'cine-actions');
-  const start = el('button', 'bb gold', '● New Season');
+  const start = el('button', 'bb gold', 'Enter the house →');
   start.onclick = () => {
     wrap.remove();
     onNew(nameInput.value.trim() || 'Sam');
@@ -546,11 +608,13 @@ export function titleScreen({ hasSave, onNew, onContinue, archivedStats, onShowS
   card.append(row);
   if (onOnline) {
     const onlineRow = el('div', 'cine-actions');
-    const ob = el('button', 'bb primary', '🌐 Play Online with Friends');
+    const ob = el('button', 'bb', 'Play with friends ↗');
     ob.onclick = () => { wrap.remove(); onOnline(); };
     onlineRow.append(ob);
     card.append(onlineRow);
   }
   wrap.append(card);
+  wrap.append(el('div', 'title-scene-caption', '<span class="live-dot"></span> THE HOUSE <span class="caption-rule"></span> Where loyalty gets complicated.'));
+  wrap.append(el('div', 'title-footer', '<span>ALLIANCES. BETRAYALS. CONSEQUENCES.</span><span>Single player + online multiplayer</span>'));
   document.body.append(wrap);
 }
