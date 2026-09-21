@@ -30,6 +30,16 @@ import { setMood, sting, setMusicEnabled, stopMusic } from './audio/music.js';
 import { speak, stopSpeaking, isVoiceOn, setVoiceOn, voiceSupported } from './audio/voice.js';
 import { buildSeasonStats, archiveSeason, loadArchivedSeason, showStatsPage } from './ui/stats.js';
 
+// ---------- Build watermark ----------
+// Vite replaces these at config-evaluation time (see vite.config.js), so the
+// stamp tells you whether the page you are looking at came from the current
+// code or from a stale cache.
+const versionMark = document.getElementById('version-mark');
+if (versionMark) {
+  versionMark.textContent = `v${__APP_VERSION__} · ${__BUILD_STAMP__}`;
+  versionMark.title = `BB Jury House v${__APP_VERSION__} — built ${__BUILD_STAMP__}`;
+}
+
 // ---------- AI status indicator (tiny, unobtrusive) ----------
 // A small dot fixed outside the HUD so frequent HUD rebuilds never wipe it.
 const aiDot = document.createElement('div');

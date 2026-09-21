@@ -4,3 +4,8 @@ dist/
 *.local
 .wrangler/
 .dev.vars
+
+# Local dev scratch
+output/
+.playwright-mcp/
+.playwright-cli/

@@ -26,7 +26,13 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 - `src/ai/claude.js` — direct-from-browser Claude API (`claude-sonnet-5`), key in localStorage `bbjury.apikey`
 - `src/ai/prompts.js` — system prompts incl. the JSON effects contract; `src/ai/fallback.js` — offline engine (same output shape) used when no key / API fails
 - `src/main.js` — director: boots world, runs ceremonies/finale, wires UI↔engine↔AI. `window.__bb` is a debug hook (`.g`, `.openChat(id)`, `.ff([ids])` fast-forward)
-- `src/world/` — Three.js house/characters/controls; `src/ui/ui.js` — all DOM panels; `src/audio/music.js` — synthesized adaptive score
+- `src/world/scene.js` (house) + `src/world/movement.js` (controls, NPC wander, camera); `src/ui/ui.js` — all DOM panels; `src/audio/music.js` — synthesized adaptive score
+- **Houseguest visuals** are fully procedural — the project ships no models or textures:
+  - `src/world/anatomy.js` — geometry. `loft()` builds a body part from a stack of control rings (elliptical, optionally superelliptical) resampled through a Catmull-Rom spline; `headGeometry()` sculpts a sphere into a skull (brow ridge, orbits, nasal bridge, cheekbones, jaw taper, chin, lips); `RIG` holds the anthropometric landmark heights everything is measured against.
+  - `src/world/appearance.js` — canvas-painted skin/face maps, irises, fabric weave + normal maps, the hair-strand card texture, and the per-houseguest wardrobe table. Everything is cached by key, so eight cotton shirts share one texture.
+  - `src/world/hair.js` — an opaque scalp shell cut to a real hairline plus alpha-tested strand cards swept along the skull and released into gravity; also builds eyebrows.
+  - `src/world/characters.js` — assembly + the two-bone rig, and the animation (walk cycle, breathing, blinking, idle drift, hair lag).
+- Version watermark: `vite.config.js` injects `__APP_VERSION__` (package.json) and `__BUILD_STAMP__` (config-eval time — server start in dev, build time in prod); `src/main.js` paints them into `#version-mark`. Bump `package.json` version for anything a reviewer should be able to tell apart at a glance.
 
 ## Invariants to preserve
 
@@ -41,3 +47,14 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 - NPCs must never endlessly follow the player: `world.releaseAllFollowers()` is called at every conversation/phase boundary; proactive approaches auto-expire (~22s).
 - Alliances: form via button or organic chat (`formOfficialAlliance`), leave via `leaveAlliance` (soft betrayal), and decay if untended (`decayAlliances` in `simulateHouseLife`, driven by `al.lastActive`).
 - Group chat is public (all present hear/remember); `/whisper <name>` is private but the rest notice. 1-on-1s can be overheard by physically-near NPCs (`applyEavesdrop` + `world.nearbyListeners`).
+
+## Character-mesh rules (learned the hard way)
+
+- **Garment shells are cut from the flat ring profile, which knows nothing about the body's sculpt.** Any shell covering a sculpted volume must get the same displacement — `bustBump` / `gluteBump` in `characters.js`. Add a new body bump, add it to the garments over it, or the body walks through the cloth.
+- **Joints: the lower segment must be slightly wider than the upper one at the pivot**, so the upper segment's end cap is always buried. Each upper segment also runs a rounded nose ~10% past the pivot; straight it hides inside the lower segment, bent it is the surface that fills the outside of the joint. Bridge spheres do *not* work — at the same radius they intersect the limb and light as a separate bead.
+- **Weld normals after any vertex work.** `finish()` averages normals across co-located vertices; both lofts and spheres duplicate a column at the UV seam, and unwelded that seam lights as a bright hairline down every limb.
+- **Check winding when hand-building an index buffer.** The scalp shell and the eye surround were both inside-out and silently invisible (backface-culled), which looked like "the feature never got built". `loft()` reads its ring direction off the geometry because a torso is authored bottom-up while a limb hangs top-down, and the winding depends on which — every limb was inside-out for a while. An inverted closed surface keeps its silhouette, so it does not look obviously broken: it just lights flat and shows a hole at every joint where the far wall gets drawn instead of the near one. To check: average `normal · radial` over a mesh; it should be strongly positive.
+- **Limb rotation signs.** Positive `rotation.x` swings a limb toward −Z, which is *backward* for a character facing +Z. Correct for a knee (heel goes back), wrong for an elbow — flexion brings the hand forward, so elbows need negative values. The same sign trap caught finger curl.
+- **Arms have to clear the hips**, which on a wide build are broader than the shoulder joints. The rest angle is solved per character (`armRest`), not authored, or hands end up buried in the trousers.
+- Necklines are made by *compressing* the shell's top band toward its lower edge, never by translating it: a translation slides the top ring past the ones beneath it (spikes) and drags the small neck-radius edge inside the chest.
+- The torso loft grows its own neck and ends above the jaw, where the head hides its cap. A separate neck cylinder leaves the torso's flat top cap in the open under the chin.
