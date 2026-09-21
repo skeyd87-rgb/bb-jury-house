@@ -38,15 +38,23 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; color: var(--text); }
 /* Build watermark, pinned to the top-right corner. Deliberately faint: it is
    there so a version can be read off a screenshot, not to be part of the HUD.
    Lives outside #hud so HUD rebuilds never wipe it. */
+/* Legibility beats subtlety here — the point is to read the build off a phone
+   screenshot. Contrast comes from an rgba text colour over a faint chip, not
+   from `opacity` (which fades the chip too) and not from a blurred text-shadow
+   (which smears glyphs this small). */
 #version-mark {
-  position: fixed; top: calc(4px + var(--safe-top)); right: calc(8px + var(--safe-right));
-  font: 500 10px/1.3 ui-monospace, "Cascadia Mono", Consolas, monospace;
-  letter-spacing: 0.6px; color: var(--text); opacity: 0.26;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  position: fixed; top: calc(5px + var(--safe-top)); right: calc(8px + var(--safe-right));
+  font: 600 11px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0.2px;
+  color: rgba(243, 240, 231, 0.72);
+  background: rgba(8, 12, 20, 0.5);
+  border: 1px solid rgba(243, 240, 231, 0.12);
+  border-radius: 6px; padding: 3px 7px;
+  -webkit-font-smoothing: antialiased;
   z-index: 6; pointer-events: none; user-select: none;
 }
 @media (max-width: 720px) {
-  #version-mark { font-size: 9px; opacity: 0.22; }
+  #version-mark { font-size: 11px; padding: 3px 6px; }
 }
 
 /* Room code, pinned top-right during online play — a quiet reminder of what
@@ -507,7 +515,15 @@ button.bb:disabled { cursor: not-allowed; }
   .dock-menu > summary::after { margin-left: 6px; }
   .dock-menu:last-child .dock-popover { left: auto; right: 0; }
   .hud-hint { display: none; }
-  .toast { top: calc(12px + var(--safe-top)); right: 12px; max-width: 92vw; width: 92vw; z-index: 6; }
+  /* A phone has no room to put the toast beside the HUD, so it takes the top
+     row outright and the week/phase panel and House Intel slide under it.
+     --toast-h is measured in showToast(): the banner wraps at these widths,
+     so its height is not a constant we can hard-code. Sitting a little below
+     the very top also keeps the build watermark readable behind it. */
+  .toast { top: calc(30px + var(--safe-top)); right: 12px; max-width: 92vw; width: 92vw; z-index: 6; }
+  .hud-top, .hud-status { transition: transform 0.22s ease; }
+  body.toast-open .hud-top,
+  body.toast-open .hud-status { transform: translateY(calc(var(--toast-h, 0px) + 26px)); }
   .chat-panel { left: calc(8px + var(--safe-left)); right: calc(8px + var(--safe-right)); width: auto; top: auto; bottom: calc(8px + var(--safe-bottom)); height: 65dvh; max-height: calc(100dvh - 100px - var(--safe-top) - var(--safe-bottom)); z-index: 7; }
   .chat-head { padding: 12px; }
   .chat-head .who { font-size: 17px; }

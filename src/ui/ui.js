@@ -166,11 +166,18 @@ export function showToast(html, actions = []) {
     t.append(b);
   }
   hud().append(t);
+  // On a phone the toast owns the top row and the HUD cluster slides under it
+  // (see .toast-open in style.css). Its height varies — the text wraps and the
+  // buttons rewrap at narrow widths — so measure it rather than guessing.
+  document.body.classList.add('toast-open');
+  document.documentElement.style.setProperty('--toast-h', `${t.offsetHeight}px`);
   return t;
 }
 
 export function clearToast() {
   document.getElementById('toast')?.remove();
+  document.body.classList.remove('toast-open');
+  document.documentElement.style.removeProperty('--toast-h');
 }
 
 // ---------- Chat panel ----------
