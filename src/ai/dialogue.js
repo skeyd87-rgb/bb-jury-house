@@ -31,6 +31,10 @@ import {
 import { applyChatEffects } from '../game/social.js';
 import { PLAYER_ID } from '../game/cast.js';
 
+// A refused reply is not an outage. validateNarrative tags its rejections, so
+// the indicator can show "audit refused this line" rather than "AI is down".
+const aiFailed = (err) => setAiStatus(err?.grounded ? 'grounded' : 'offline');
+
 const VALID_KINDS = ['safety', 'vote', 'final2', 'alliance', 'vote_evict', 'info'];
 const VALID_SIGNALS = ['none', 'propose', 'accept'];
 
@@ -81,7 +85,7 @@ export async function npcChat(g, npcId, playerMsg) {
     await validateNarrative(g, npcId, PLAYER_ID, result, askClaudeJson, { utterance: playerMsg });
     setAiStatus(true);
   } catch (err) {
-    setAiStatus(false);
+    aiFailed(err);
     result = fallbackChat(g, npcId, playerMsg);
   }
 
@@ -114,7 +118,7 @@ export async function npcOpener(g, npcId, reason) {
     await validateNarrative(g, npcId, PLAYER_ID, r, askClaudeJson);
     if (r.reply) { reply = String(r.reply).slice(0, 500); setAiStatus(true); }
   } catch (err) {
-    setAiStatus(false);
+    aiFailed(err);
   }
   if (!reply) reply = fallbackOpener(g, npcId, reason);
   if (!g.threads[npcId]) g.threads[npcId] = [];
@@ -126,6 +130,7 @@ export async function npcOpener(g, npcId, reason) {
 // Group conversation: one call, several voices, effects for everyone present.
 export async function groupChat(g, memberIds, playerMsg, history) {
   let result = null;
+  let failure = null;
   try {
     const msgs = history.slice(-14).map((m) => ({
       role: m.who === 'you' ? 'user' : 'assistant',
@@ -141,10 +146,11 @@ export async function groupChat(g, memberIds, playerMsg, history) {
     });
     await validateNarrative(g, memberIds, PLAYER_ID, result, askClaudeJson, { utterance: playerMsg });
   } catch (err) {
+    failure = err;
     result = null;
   }
   if (!result || !Array.isArray(result.replies)) {
-    setAiStatus(false);
+    aiFailed(failure);
     result = fallbackGroupChat(g, memberIds, playerMsg);
   } else {
     setAiStatus(true);
@@ -198,7 +204,7 @@ export async function postGameAnalysis(g, stats) {
     });
     if (r.analysis) { setAiStatus(true); return String(r.analysis).slice(0, 3000); }
   } catch (err) {
-    setAiStatus(false);
+    aiFailed(err);
   }
   return fallbackAnalysis(stats);
 }
@@ -214,7 +220,7 @@ export async function diaryChat(g, playerMsg) {
     result = await askClaudeJson({ system: buildDiarySystemPrompt(g), messages: msgs, maxTokens: 300 });
     setAiStatus(true);
   } catch (err) {
-    setAiStatus(false);
+    aiFailed(err);
     result = fallbackDiary(g);
   }
   const reply = String(result.reply || '...').slice(0, 400);
@@ -233,7 +239,7 @@ export async function npcSpeech(g, npcId, kind, extra = {}) {
     await validateNarrative(g, npcId, PLAYER_ID, r, askClaudeJson, { authorizedAction: { kind, ...extra } });
     if (r.reply) { setAiStatus(true); return String(r.reply).slice(0, 400); }
   } catch (err) {
-    setAiStatus(false);
+    aiFailed(err);
   }
   return fallbackSpeech(g, npcId, kind, extra).reply;
 }
@@ -248,7 +254,7 @@ export async function jurorQuestion(g, jurorId, finalists) {
     await validateNarrative(g, jurorId, finalists, r, askClaudeJson, { citations: ['evidenceForF1', 'evidenceForF2'] });
     if (r.questionForF1 && r.questionForF2) { setAiStatus(true); return r; }
   } catch (err) {
-    setAiStatus(false);
+    aiFailed(err);
   }
   return fallbackJurorQuestion(g, jurorId, finalists);
 }
@@ -263,7 +269,7 @@ export async function opponentJuryAnswer(g, opponentId, jurorId, question) {
     await validateNarrative(g, opponentId, jurorId, r, askClaudeJson, { utterance: question });
     if (r.reply) { setAiStatus(true); return String(r.reply).slice(0, 500); }
   } catch (err) {
-    setAiStatus(false);
+    aiFailed(err);
   }
   return "I played my heart out, I owned my choices, and I'm asking for your respect, not your forgiveness.";
 }
@@ -282,7 +288,7 @@ export async function jurorVote(g, jurorId, finalists, qa) {
       return { vote: r.vote, reasoning: String(r.reasoning || '').slice(0, 300) };
     }
   } catch (err) {
-    setAiStatus(false);
+    aiFailed(err);
   }
   const fb = fallbackJurorVote(g, jurorId, finalists, qa);
   return { vote: fb.vote, reasoning: fb.reasoning };

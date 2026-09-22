@@ -32,7 +32,10 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
   - `src/world/appearance.js` — canvas-painted skin/face maps, irises, fabric weave + normal maps, the hair-strand card texture, and the per-houseguest wardrobe table. Everything is cached by key, so eight cotton shirts share one texture.
   - `src/world/hair.js` — an opaque scalp shell cut to a real hairline plus alpha-tested strand cards swept along the skull and released into gravity; also builds eyebrows.
   - `src/world/characters.js` — assembly + the two-bone rig, and the animation (walk cycle, breathing, blinking, idle drift, hair lag).
-- Version watermark: `vite.config.js` injects `__APP_VERSION__` (package.json) and `__BUILD_STAMP__` (config-eval time — server start in dev, build time in prod); `src/main.js` paints them into `#version-mark`. Bump `package.json` version for anything a reviewer should be able to tell apart at a glance.
+- Status chip (top right, `#version-mark`): a colour-coded AI dot plus the build stamp. `vite.config.js` injects `__APP_VERSION__` (package.json) and `__BUILD_STAMP__` (config-eval time — server start in dev, build time in prod). Bump `package.json` version for anything a reviewer should be able to tell apart at a glance.
+- **AI status has three failure-relevant states**, not two (`src/ai/status.js`): `ai` green, `grounded` amber — the model answered but `validateNarrative` refused the reply, so the offline engine wrote the line — and `offline` grey, genuinely unreachable. Collapsing `grounded` into `offline` sends you hunting a network fault that isn't there. `grounding.js` tags its rejections with `err.grounded`; transport failures raised by the audit call itself stay untagged.
+- `/api/chat` rate limiting is **per-IP (60/min) plus a global backstop (400/min)**. Remember each houseguest line costs *two* calls — the reply and its factual audit — so a limit of N/min is only N/2 replies. A single global bucket meant one busy conversation locked out everyone.
+- A dropped connection or timeout is a `TransportError` (retried once), **not** `NoKeyError`. `NoKeyError` means the server secret is unset and is deliberately never retried; conflating the two made every transient blip permanent. 429 is surfaced with its code and not retried — an immediate retry only deepens the queue.
 
 ## Invariants to preserve
 

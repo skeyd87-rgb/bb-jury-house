@@ -1592,9 +1592,18 @@ async function handleApiChat(request, env) {
   if (!env.ANTHROPIC_API_KEY) return jsonResponse({ error: 'no_server_key' }, 503, origin);
 
   if (env.RATE_LIMITER) {
-    const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName('global'));
-    const gate = await (await stub.fetch('https://rate-limiter/check')).json();
-    if (!gate.allowed) return jsonResponse({ error: 'rate_limited' }, 429, origin);
+    // Per-player first, then a global backstop for the shared key. A single
+    // global bucket meant one busy conversation could lock out everyone: each
+    // houseguest line costs two calls (the reply plus its factual audit), so
+    // 30/min globally was only ~15 replies a minute for the whole game.
+    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+    for (const [name, limit] of [[`ip:${ip}`, 60], ['global', 400]]) {
+      const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(name));
+      const gate = await (await stub.fetch(`https://rate-limiter/check?limit=${limit}`)).json();
+      if (!gate.allowed) {
+        return jsonResponse({ error: 'rate_limited', scope: name === 'global' ? 'global' : 'player' }, 429, origin);
+      }
+    }
   }
 
   let body;
@@ -1631,22 +1640,23 @@ async function handleApiChat(request, env) {
   return jsonResponse({ text }, 200, origin);
 }
 
-// Minimal global request counter — resets every 60s. Not per-user (there's no
-// auth), just enough to stop the shared key from being hammered.
+// Fixed-window request counter, resets every 60s. One instance per bucket name
+// (per-IP and a global backstop), with the ceiling passed in by the caller.
 export class RateLimiter {
   constructor(state) {
     this.state = state;
     this.count = 0;
     this.windowStart = 0;
   }
-  async fetch() {
+  async fetch(request) {
+    const limit = Number(new URL(request.url).searchParams.get('limit')) || 30;
     const now = Date.now();
     if (now - this.windowStart > 60000) {
       this.windowStart = now;
       this.count = 0;
     }
     this.count++;
-    return new Response(JSON.stringify({ allowed: this.count <= 30 }), { headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ allowed: this.count <= limit }), { headers: { 'content-type': 'application/json' } });
   }
 }
 

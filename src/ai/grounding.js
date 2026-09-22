@@ -9,6 +9,16 @@ Public event records override all past dialogue. Private rumors may be discussed
 Jurors know only their eviction records plus the supplied questions/answers as claims. They cannot use later house events or current social state as knowledge. A finalist may correct an inaccurate question. Reject reasoning that treats an unsupported accusation as established guilt. A lack of records permits open questions, not invented history.
 Only return valid=true when all factual claims and effects have support. The requested ceremony action, if present, is authorized by the engine but does not authorize inventing earlier events.`;
 
+// A rejected candidate is not an outage: the model answered and the record
+// disagreed. Tag those so the status indicator can distinguish "AI unreachable"
+// from "AI answered, audit refused it". Transport failures raised by the audit
+// call itself stay untagged and still read as offline.
+function rejected(reason) {
+  const err = new Error(reason);
+  err.grounded = true;
+  return err;
+}
+
 // Narrow deterministic backstop for the reported first-person veto ownership bug.
 // Broader language and implicit claims still go through the independent semantic review.
 export function assertVetoOwnership(g, speakerId, text) {
@@ -20,23 +30,23 @@ export function assertVetoOwnership(g, speakerId, text) {
     if (!won && !used) continue;
     const week = Number(clause.match(/week\s+(\d+)/i)?.[1]) || k.week;
     const active = !g.evicted.includes(speakerId) && week === g.week;
-    if (won && !(active && g.vetoHolder === speakerId) && !k.publicFacts.some(f => f.kind === 'veto_win' && f.week === week && f.actorId === speakerId)) throw new Error('Incorrect veto winner');
-    if (used && !(active && g.vetoUsed?.holderId === speakerId) && !k.publicFacts.some(f => f.kind === 'veto_used' && f.week === week && f.actorId === speakerId)) throw new Error('Incorrect veto user');
+    if (won && !(active && g.vetoHolder === speakerId) && !k.publicFacts.some(f => f.kind === 'veto_win' && f.week === week && f.actorId === speakerId)) throw rejected('Incorrect veto winner');
+    if (used && !(active && g.vetoUsed?.holderId === speakerId) && !k.publicFacts.some(f => f.kind === 'veto_used' && f.week === week && f.actorId === speakerId)) throw rejected('Incorrect veto user');
   }
 }
 
 export async function validateNarrative(g, speakerIds, listenerId, candidate, ask, options = {}) {
-  if (!candidate || typeof candidate !== 'object') throw new Error('Missing dialogue');
+  if (!candidate || typeof candidate !== 'object') throw rejected('Missing dialogue');
   const ids = Array.isArray(speakerIds) ? speakerIds : [speakerIds];
   if (candidate.reply && ids.length === 1 && !options.authorizedAction) assertVetoOwnership(g, ids[0], candidate.reply);
   for (const reply of candidate.replies || []) {
-    if (!ids.includes(reply.id)) throw new Error('Unknown speaker');
+    if (!ids.includes(reply.id)) throw rejected('Unknown speaker');
     assertVetoOwnership(g, reply.id, reply.reply);
   }
   if (options.citations) {
     const allowed = new Set(evidenceFor(g, ids[0]).map(e => e.id));
     for (const field of options.citations) {
-      if (!Array.isArray(candidate[field]) || candidate[field].some(id => !allowed.has(id))) throw new Error('Invalid evidence reference');
+      if (!Array.isArray(candidate[field]) || candidate[field].some(id => !allowed.has(id))) throw rejected('Invalid evidence reference');
     }
   }
   const records = ids.map(speakerId => ({ speakerId, knowledge: knowledgeFor(g, speakerId) }));
@@ -51,6 +61,6 @@ export async function validateNarrative(g, speakerIds, listenerId, candidate, as
     candidate,
   };
   const audit = await ask({ system: AUDIT_RULE, messages: [{ role: 'user', content: JSON.stringify(payload) }], maxTokens: 220, temperature: 0, retry: false });
-  if (audit?.valid !== true) throw new Error('Dialogue does not match the session record');
+  if (audit?.valid !== true) throw rejected('Dialogue does not match the session record');
   return candidate;
 }

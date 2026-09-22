@@ -23,17 +23,20 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; color: var(--text); }
 #hud, #overlay-root { position: absolute; inset: 0; pointer-events: none; }
 #hud > *, #overlay-root > * { pointer-events: auto; }
 
-/* Tiny, out-of-the-way indicator: is Claude actually answering, or has the
-   offline dialogue engine taken over? Deliberately unobtrusive — a dot, not
-   a banner. Lives outside #hud so HUD rebuilds never wipe it. */
+/* AI state, as a dot inside the build chip below. Green: Claude is answering.
+   Amber: Claude answered but the factual audit refused the reply, so the
+   built-in writer produced the line — that is the grounding system working,
+   not an outage, and the two used to be indistinguishable. Grey: unreachable.
+   The dark ring keeps every state readable against the rendered scene. */
 #ai-status-dot {
-  position: fixed; top: calc(5px + var(--safe-top)); left: calc(5px + var(--safe-left));
-  width: 7px; height: 7px; border-radius: 50%;
-  background: rgba(255, 255, 255, 0.15);
-  z-index: 5; pointer-events: auto; transition: background-color 0.6s ease;
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: rgba(243, 240, 231, 0.32);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  transition: background-color 0.5s ease, box-shadow 0.5s ease;
 }
-#ai-status-dot.ai-on { background: #4ade80; box-shadow: 0 0 4px rgba(74, 222, 128, 0.6); }
-#ai-status-dot.ai-off { background: #6b7280; }
+#ai-status-dot.dot-ai { background: #4ade80; box-shadow: 0 0 5px rgba(74, 222, 128, 0.75), 0 0 0 1px rgba(0, 0, 0, 0.5); }
+#ai-status-dot.dot-grounded { background: #e0a23c; box-shadow: 0 0 5px rgba(224, 162, 60, 0.7), 0 0 0 1px rgba(0, 0, 0, 0.5); }
+#ai-status-dot.dot-offline { background: #6b7280; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5); }
 
 /* Build watermark, pinned to the top-right corner. Deliberately faint: it is
    there so a version can be read off a screenshot, not to be part of the HUD.
@@ -50,6 +53,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; color: var(--text); }
   background: rgba(8, 12, 20, 0.5);
   border: 1px solid rgba(243, 240, 231, 0.12);
   border-radius: 6px; padding: 3px 7px;
+  display: flex; align-items: center; gap: 6px;
   -webkit-font-smoothing: antialiased;
   z-index: 6; pointer-events: none; user-select: none;
 }

@@ -17,18 +17,34 @@ function getServerHost() {
 export async function askClaude({ system, messages, maxTokens = 700, temperature = 1.0 }) {
   // If the operator hasn't set the server secret yet, this 503s and we fall
   // back to the built-in offline engine, same as always.
-  const res = await fetch(`${getServerHost()}/api/chat`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(20000),
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ system, messages, maxTokens, temperature }),
-  }).catch(() => null);
-  if (!res) throw new NoKeyError();
+  let res;
+  try {
+    res = await fetch(`${getServerHost()}/api/chat`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(20000),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ system, messages, maxTokens, temperature }),
+    });
+  } catch (e) {
+    // A timeout or dropped connection is transient. Reporting it as NoKeyError
+    // (as this used to) told askClaudeJson the failure was permanent, so it
+    // skipped the retry that exists for exactly this case.
+    throw new TransportError(e?.name === 'TimeoutError' ? 'AI request timed out' : 'AI request failed');
+  }
   if (res.status === 503) throw new NoKeyError();
-  if (!res.ok) throw new Error(`Server AI ${res.status}`);
+  if (!res.ok) {
+    const info = await res.json().catch(() => ({}));
+    const err = new Error(`Server AI ${res.status}${info.error ? ` (${info.error})` : ''}`);
+    err.status = res.status;
+    err.code = info.error || null;
+    throw err;
+  }
   const data = await res.json();
   return data.text || '';
 }
+
+// Transient: worth one retry.
+export class TransportError extends Error {}
 
 export class NoKeyError extends Error {
   constructor() {
@@ -119,7 +135,9 @@ export async function askClaudeJson(opts) {
       if (json) return json;
       lastErr = new Error('Model reply had no parseable JSON');
     } catch (e) {
-      if (e.noKey) throw e;
+      // No key is permanent; a 429 means the minute's budget is gone and an
+      // immediate retry would only make the queue worse.
+      if (e.noKey || e.status === 429) throw e;
       lastErr = e;
       await new Promise((r) => setTimeout(r, 800));
     }

@@ -20,7 +20,7 @@ import {
   npcChat, diaryChat, npcSpeech, jurorQuestion, opponentJuryAnswer, jurorVote, npcOpener,
   groupChat, postGameAnalysis,
 } from './ai/dialogue.js';
-import { onAiStatusChange, setAiStatus } from './ai/status.js';
+import { onAiStatusChange, getAiStatus, setAiStatus } from './ai/status.js';
 import {
   el, renderHud, showToast, clearToast, openChatPanel, closeChatPanel,
   cinematic, cinematicWait, pickHouseguests, cinematicTextInput, confetti, titleScreen,
@@ -30,27 +30,33 @@ import { setMood, sting, setMusicEnabled, stopMusic } from './audio/music.js';
 import { speak, stopSpeaking, isVoiceOn, setVoiceOn, voiceSupported } from './audio/voice.js';
 import { buildSeasonStats, archiveSeason, loadArchivedSeason, showStatsPage } from './ui/stats.js';
 
-// ---------- Build watermark ----------
-// Vite replaces these at config-evaluation time (see vite.config.js), so the
-// stamp tells you whether the page you are looking at came from the current
-// code or from a stale cache.
+// ---------- Status chip: AI state + build stamp ----------
+// One chip in the top-right corner rather than two specks in opposite ones:
+// a colour-coded dot plus the build stamp. Vite replaces the version/stamp at
+// config-evaluation time (see vite.config.js), so a stale stamp means the page
+// came from cache rather than from the code on disk. Lives outside #hud so the
+// frequent HUD rebuilds never wipe it.
+const AI_STATUS_TEXT = {
+  ai: 'Claude is answering',
+  grounded: 'Claude answered, but the reply did not match the game record — the built-in writer wrote this line',
+  offline: 'Offline — built-in dialogue engine',
+  unknown: 'Waiting for the first AI reply…',
+};
 const versionMark = document.getElementById('version-mark');
-if (versionMark) {
-  versionMark.textContent = `v${__APP_VERSION__} · ${__BUILD_STAMP__}`;
-  versionMark.title = `BB Jury House v${__APP_VERSION__} — built ${__BUILD_STAMP__}`;
-}
-
-// ---------- AI status indicator (tiny, unobtrusive) ----------
-// A small dot fixed outside the HUD so frequent HUD rebuilds never wipe it.
-const aiDot = document.createElement('div');
+const aiDot = document.createElement('span');
 aiDot.id = 'ai-status-dot';
-aiDot.title = 'Waiting for the first AI reply…';
-document.body.append(aiDot);
-onAiStatusChange((status) => {
-  aiDot.classList.toggle('ai-on', status === 'ai');
-  aiDot.classList.toggle('ai-off', status === 'offline');
-  aiDot.title = status === 'ai' ? 'Claude AI active' : status === 'offline' ? 'Offline mode (built-in dialogue engine)' : 'Waiting for the first AI reply…';
-});
+if (versionMark) {
+  versionMark.textContent = '';
+  versionMark.append(aiDot, document.createTextNode(`v${__APP_VERSION__} · ${__BUILD_STAMP__}`));
+}
+function paintAiStatus(status) {
+  aiDot.className = `dot-${status}`;
+  if (versionMark) {
+    versionMark.title = `${AI_STATUS_TEXT[status]} · BB Jury House v${__APP_VERSION__}, built ${__BUILD_STAMP__}`;
+  }
+}
+paintAiStatus(getAiStatus());
+onAiStatusChange(paintAiStatus);
 
 // ---------- Room code badge (online only) ----------
 // A quiet top-right reminder of the code to rejoin with, in case the tab/app
