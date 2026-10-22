@@ -1,21 +1,14 @@
 // Interactive competition mini-games. Each returns a Promise<number 0-100>
 // (the player's performance score). Rendered as DOM overlays.
 
-export const COMP_TYPES = ['timing', 'count', 'reaction'];
-
-export function randomCompType() {
-  return COMP_TYPES[Math.floor(Math.random() * COMP_TYPES.length)];
-}
-
-export const COMP_NAMES = {
-  timing: 'Pressure Cooker',
-  count: 'Eagle Eye',
-  reaction: 'Snap Judgment',
-};
+export { COMP_TYPES, COMP_NAMES, randomCompType } from './competition-catalog.js';
+import { memoryComp, orderComp, circuitComp } from './new-comps.js';
 
 export function runComp(type, root) {
   if (type === 'timing') return timingComp(root);
-  if (type === 'count') return countComp(root);
+  if (type === 'count' || type === 'memory') return memoryComp(root); // older online turns migrate safely
+  if (type === 'order') return orderComp(root);
+  if (type === 'circuit') return circuitComp(root);
   return reactionComp(root);
 }
 
@@ -99,89 +92,6 @@ function timingComp(root) {
   });
 }
 
-// --- Count: BB-classic estimation — count the keys before they vanish ----------
-
-function countComp(root) {
-  return new Promise((resolve) => {
-    const box = el('div', 'comp-box comp-wide');
-    box.append(el('h2', '', 'EAGLE EYE'));
-    box.append(el('p', 'comp-desc', 'Count the 🔑 keys — ignore the junk. You get a few seconds, then lock in your answer. Three rounds.'));
-    const field = el('div', 'reaction-field');
-    const status = el('p', 'comp-status', '');
-    const inputRow = el('div', '');
-    inputRow.style.cssText = 'display:flex;gap:8px;justify-content:center;margin-top:12px;visibility:hidden';
-    const input = el('input');
-    input.type = 'number';
-    input.min = '0';
-    input.max = '40';
-    input.placeholder = 'How many keys?';
-    input.style.cssText = 'width:170px;background:#1a1e33;border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:10px 12px;color:#eceef8;font-size:15px;text-align:center;outline:none';
-    const lockBtn = el('button', 'bb gold', 'Lock In');
-    inputRow.append(input, lockBtn);
-    box.append(field, status, inputRow);
-    root.append(box);
-
-    const DECOYS = ['🧦', '🍕', '🦆', '🎈', '🪥', '🧀'];
-    let round = 0, total = 0, actual = 0, accepting = false;
-
-    function startRound() {
-      round++;
-      field.innerHTML = '';
-      inputRow.style.visibility = 'hidden';
-      input.value = '';
-      accepting = false;
-      actual = 8 + Math.floor(Math.random() * 13); // 8-20 keys
-      const decoyCount = 6 + round * 4;
-      const items = [];
-      for (let i = 0; i < actual; i++) items.push('🔑');
-      for (let i = 0; i < decoyCount; i++) items.push(DECOYS[Math.floor(Math.random() * DECOYS.length)]);
-      items.sort(() => Math.random() - 0.5);
-      for (const emoji of items) {
-        const it = el('div', '', emoji);
-        const px = Math.random(), py = Math.random();
-        it.style.cssText = `position:absolute;font-size:${22 + Math.random() * 12}px;left:calc(${px * 100}% - ${px * 56}px + 8px);top:calc(${py * 100}% - ${py * 56}px + 8px);transform:rotate(${(Math.random() - 0.5) * 60}deg);user-select:none`;
-        field.append(it);
-      }
-      const lookTime = 3400 - round * 500; // less time each round
-      status.textContent = `Round ${round} of 3 — count the keys!`;
-      setTimeout(() => {
-        field.innerHTML = '';
-        status.textContent = 'How many keys were there?';
-        inputRow.style.visibility = 'visible';
-        accepting = true;
-        input.focus();
-      }, lookTime);
-    }
-
-    function lockIn() {
-      if (!accepting) return;
-      const guess = Math.max(0, Math.min(40, parseInt(input.value, 10) || 0));
-      accepting = false;
-      const diff = Math.abs(guess - actual);
-      const score = Math.max(0, 100 - diff * 14);
-      total += score;
-      status.textContent = diff === 0
-        ? `EXACT! ${actual} keys (+100)`
-        : `There were ${actual} — you said ${guess} (+${Math.round(score)})`;
-      inputRow.style.visibility = 'hidden';
-      setTimeout(() => {
-        if (round >= 3) {
-          box.remove();
-          resolve(Math.round(total / 3));
-        } else {
-          startRound();
-        }
-      }, 1300);
-    }
-
-    lockBtn.onclick = lockIn;
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') lockIn();
-    });
-
-    startRound();
-  });
-}
 
 // --- Reaction: click targets as they appear -----------------------------------
 

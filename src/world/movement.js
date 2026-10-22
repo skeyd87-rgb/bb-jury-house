@@ -1,32 +1,12 @@
-// Player controls (WASD + click-to-move), NPC wandering, camera follow/orbit,
-// proximity detection, and doorway-aware navigation.
-//
-// Navigation: rooms form a graph connected by door waypoints. Any long move
-// is routed room-to-room through doors, so characters walk through doorways
-// instead of grinding against walls.
+// Player controls, NPC wandering, camera, proximity and obstacle-aware walking.
 
 import * as THREE from 'three';
 import { ROOMS, roomCenter, roomAt, hitsWall, inPool } from './scene.js';
 import { animateCharacter } from './characters.js';
+import { BOUNDS, findPath, turnToward, recoverPosition } from './navigation.js';
 
 const WALK_SPEED = 4.2;
 const NPC_SPEED = 1.8;
-
-// Interior bounds (keep everyone on the lot)
-const BOUNDS = { minX: -17, maxX: 19.5, minZ: -11.5, maxZ: 17.5 };
-
-// Doors connecting rooms. Each has an approach point set back from the wall
-// on BOTH sides (p1 in r1, p2 in r2), so characters walk to the near side,
-// step through the gap, and exit the far side — instead of angling into the
-// wall face and sliding.
-const DOORS = [
-  { r1: 'living', p1: [-0.7, 1], r2: 'kitchen', p2: [1.8, 1] },
-  { r1: 'living', p1: [-3, -2.6], r2: 'bedroom', p2: [-3, -5.2] },
-  { r1: 'kitchen', p1: [9.5, -2.6], r2: 'hoh', p2: [9.5, -5.2] },
-  { r1: 'hoh', p1: [11.1, -5.5], r2: 'diary', p2: [13.8, -5.5] },
-  { r1: 'living', p1: [-0.9, 6.0], r2: 'backyard', p2: [-0.9, 8.6] },
-  { r1: 'kitchen', p1: [3, 6.0], r2: 'backyard', p2: [3, 8.6] },
-];
 
 function nearestRoom(x, z) {
   const direct = roomAt(x, z);
@@ -39,43 +19,9 @@ function nearestRoom(x, z) {
   return best;
 }
 
-// BFS over the room graph; returns an array of waypoints ending at `to`.
-// Each door crossing contributes two waypoints: near-side approach, then
-// far-side exit.
+// Project blocked clicks to a free destination and route around furniture.
 function routeTo(from, to) {
-  const end = new THREE.Vector3(to.x, 0, to.z);
-  const a = nearestRoom(from.x, from.z);
-  const b = nearestRoom(to.x, to.z);
-  if (!a || !b || a === b) return [end];
-  const prev = { [a]: null };
-  const q = [a];
-  while (q.length) {
-    const cur = q.shift();
-    if (cur === b) break;
-    for (const d of DOORS) {
-      const nxt = d.r1 === cur ? d.r2 : d.r2 === cur ? d.r1 : null;
-      if (!nxt || nxt in prev) continue;
-      prev[nxt] = cur;
-      q.push(nxt);
-    }
-  }
-  if (!(b in prev)) return [end];
-  // room path a -> ... -> b
-  const roomPath = [b];
-  while (prev[roomPath[0]]) roomPath.unshift(prev[roomPath[0]]);
-  const way = [];
-  for (let i = 0; i < roomPath.length - 1; i++) {
-    const r1 = roomPath[i], r2 = roomPath[i + 1];
-    const d = DOORS.find(
-      (x) => (x.r1 === r1 && x.r2 === r2) || (x.r1 === r2 && x.r2 === r1)
-    );
-    const near = d.r1 === r1 ? d.p1 : d.p2;
-    const far = d.r1 === r1 ? d.p2 : d.p1;
-    way.push(new THREE.Vector3(near[0], 0, near[1]));
-    way.push(new THREE.Vector3(far[0], 0, far[1]));
-  }
-  way.push(end);
-  return way;
+  return findPath(from, to).map(p => new THREE.Vector3(p.x, 0, p.z));
 }
 
 // Swimming: sink into the pool and wade slowly; pop back up on dry land.
@@ -120,6 +66,7 @@ function separateBodies(bodies, frozenIds) {
 function moveWithCollision(obj, dx, dz) {
   let moved = false;
   const p = obj.position;
+  recoverPosition(p);
   if (dx && !hitsWall(p.x + dx, p.z)) { p.x += dx; moved = true; }
   if (dz && !hitsWall(p.x, p.z + dz)) { p.z += dz; moved = true; }
   p.x = THREE.MathUtils.clamp(p.x, BOUNDS.minX, BOUNDS.maxX);
@@ -134,14 +81,15 @@ function followQueue(obj, queue, speed, dt) {
   const to = target.clone().sub(obj.position);
   to.y = 0;
   const dist = to.length();
-  const arriveDist = queue.length > 1 ? 0.55 : 0.3; // doors are pass-through
+  const arriveDist = queue.length > 1 ? 0.06 : 0.10;
   if (dist <= arriveDist) {
     queue.shift();
     return { moving: true, done: queue.length === 0, stuck: false };
   }
   to.normalize();
-  const moved = moveWithCollision(obj, to.x * speed * dt, to.z * speed * dt);
-  obj.rotation.y = Math.atan2(to.x, to.z);
+  const stride = Math.min(dist, speed * dt);
+  const moved = moveWithCollision(obj, to.x * stride, to.z * stride);
+  turnToward(obj, Math.atan2(to.x, to.z), dt);
   return { moving: moved, done: false, stuck: !moved };
 }
 
@@ -409,12 +357,13 @@ export class WorldController {
       if (dir.lengthSq() > 0) {
         dir.normalize();
         moving = moveWithCollision(this.player, dir.x * playerSpeed * dt, dir.z * playerSpeed * dt);
-        this.player.rotation.y = Math.atan2(dir.x, dir.z);
+        turnToward(this.player, Math.atan2(dir.x, dir.z), dt);
         this.moveQueue = null;
       } else if (this.moveQueue) {
         const r = followQueue(this.player, this.moveQueue, playerSpeed, dt);
         moving = r.moving;
-        if (r.done || r.stuck) this.moveQueue = null;
+        if (r.done) this.moveQueue = null;
+        else if (r.stuck) this.moveQueue = routeTo(this.player.position, this.moveQueue.at(-1));
       }
       updateSwim(this.player);
       animateCharacter(this.player, moving, dt, t);
@@ -428,18 +377,18 @@ export class WorldController {
         animateCharacter(char, false, dt, t);
         if (this.player) {
           const to = this.player.position.clone().sub(char.position);
-          char.rotation.y = Math.atan2(to.x, to.z);
+          turnToward(char, Math.atan2(to.x, to.z), dt);
         }
         continue;
       }
       // Online: a real human is reporting this NPC's position — drive there
       // directly instead of running local wander/approach AI on top of it.
       if (st.net && t < (st.netUntil || 0)) {
-        const before = char.position.x + char.position.z;
+        const beforeX = char.position.x, beforeZ = char.position.z;
         char.position.x += (st.net.x - char.position.x) * Math.min(1, dt * 8);
         char.position.z += (st.net.z - char.position.z) * Math.min(1, dt * 8);
-        char.rotation.y = st.net.rotY;
-        const netMoving = Math.abs(char.position.x + char.position.z - before) > 0.001;
+        turnToward(char, st.net.rotY, dt);
+        const netMoving = Math.hypot(char.position.x - beforeX, char.position.z - beforeZ) > 0.001;
         updateSwim(char);
         animateCharacter(char, netMoving, dt, t);
         continue;
@@ -461,7 +410,7 @@ export class WorldController {
         } else {
           // arrived: face the player and wait
           const to = this.player.position.clone().sub(char.position);
-          char.rotation.y = Math.atan2(to.x, to.z);
+          turnToward(char, Math.atan2(to.x, to.z), dt);
           st.queue = null;
         }
       } else {

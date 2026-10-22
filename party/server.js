@@ -22,11 +22,7 @@ import {
   serverGroupChat, serverDiaryChat,
 } from './ai.js';
 
-// Mirror of comps.js COMP_TYPES (kept here to avoid importing the DOM module).
-const COMP_TYPES = ['timing', 'count', 'reaction'];
-function randomCompType() {
-  return COMP_TYPES[Math.floor(Math.random() * COMP_TYPES.length)];
-}
+import { randomCompType } from '../src/game/competition-catalog.js';
 
 // The 9 claimable houseguest seats: the 8 established cast + one "newcomer"
 // seat (the single-player 'you' slot) whose occupant names their houseguest.

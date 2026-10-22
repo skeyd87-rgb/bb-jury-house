@@ -322,8 +322,8 @@ export function upperArmGeometry(len, r, sleeve) {
 export function forearmGeometry(len, r, sleeve) {
   const g = loft([
     { y: 0.050 * len, rx: r * 0.45, rz: r * 0.45 },
-    { y: 0.010 * len, rx: r * 1.00, rz: r * 0.98 },
-    { y: -0.060 * len, rx: r * 1.10, rz: r * 1.06 },
+    { y: 0.010 * len, rx: r * 0.90, rz: r * 0.88 },
+    { y: -0.060 * len, rx: r * 1.00, rz: r * 0.96 },
     { y: -0.32 * len, rx: r * 0.96, rz: r * 0.92 },
     { y: -0.58 * len, rx: r * 0.80, rz: r * 0.75 },
     { y: -0.82 * len, rx: r * 0.66, rz: r * 0.60 },
@@ -368,8 +368,8 @@ export function thighGeometry(len, r) {
 export function shinGeometry(len, r) {
   const g = loft([
     { y: 0.050 * len, rx: r * 0.45, rz: r * 0.46 },
-    { y: 0.010 * len, rx: r * 1.06, rz: r * 1.07 },
-    { y: -0.05 * len, rx: r * 1.12, rz: r * 1.12 },
+    { y: 0.010 * len, rx: r * 0.94, rz: r * 0.96 },
+    { y: -0.05 * len, rx: r * 1.02, rz: r * 1.02 },
     { y: -0.30 * len, rx: r * 0.95, rz: r * 0.96 },
     { y: -0.62 * len, rx: r * 0.68, rz: r * 0.72 },
     { y: -0.88 * len, rx: r * 0.56, rz: r * 0.58 },

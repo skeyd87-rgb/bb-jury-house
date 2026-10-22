@@ -474,6 +474,17 @@ export function createCharacter(hg) {
     hand.translate(0, -foreArmLen + 0.004 * H, 0.002 * H);
     elbow.add(mergeInto([fore, hand], skin, { shadow: true }));
 
+    // Everyday accessories add a readable, individual silhouette without
+    // another texture download. The band follows the wrist articulation.
+    if (s === -1 && ['marcus', 'rae', 'nash', 'you'].includes(hg.id)) {
+      const band = new THREE.CylinderGeometry(foreR * .80, foreR * .77, .035 * H, 20, 1, true);
+      band.translate(0, -foreArmLen * .88, 0);
+      elbow.add(mesh(band, simpleMaterial(0x282b2e, .6)));
+      const face = new THREE.SphereGeometry(.025 * H, 14, 10);
+      face.scale(1, .9, .25); face.translate(0, -foreArmLen * .88, foreR * .8);
+      elbow.add(mesh(face, simpleMaterial(0x334956, .16, .5)));
+    }
+
     if (sleeveLong) {
       const cuff = loft([
         { y: foreR * 0.4, rx: foreR * 1.30, rz: foreR * 1.28 },
@@ -553,9 +564,9 @@ export function createCharacter(hg) {
 
   // Head breadth 155mm / length 195mm / height 230mm at 1.80m, lightly enlarged
   // the way The Sims does so faces still read at gameplay camera distance.
-  const hx = 0.107 * H * (0.97 + 0.03 * W);
-  const hy = 0.156 * H;
-  const hz = 0.130 * H;
+  const hx = 0.128 * H * (0.97 + 0.03 * W);
+  const hy = 0.177 * H;
+  const hz = 0.147 * H;
 
   const headGeom = headGeometry({
     hx, hy, hz,
@@ -580,12 +591,21 @@ export function createCharacter(hg) {
     ears.push(ear);
   }
   head.add(mergeInto([headGeom, ...ears], faceMat, { shadow: true }));
+  if (['tessa', 'bev', 'zoe'].includes(hg.id)) {
+    const jewelry = [];
+    for (const side of [-1, 1]) {
+      const ring = new THREE.TorusGeometry(.016 * H, .003 * H, 6, 16);
+      ring.translate(side * hx * 1.01, -hy * .30, -hz * .17);
+      jewelry.push(ring);
+    }
+    head.add(mergeInto(jewelry, simpleMaterial(0xc6a568, .27, .7)));
+  }
 
   // --- Eyes ------------------------------------------------------------------
   const eyeR = 0.104 * hy;                 // 12mm eyeball on a 230mm head
   const eyeX = 0.400 * hx;                 // 63mm interpupillary
   const eyeYy = 0.045 * hy;
-  const eyeZ = 0.845 * hz - eyeR * 1.14;
+  const eyeZ = 0.845 * hz - eyeR * 0.62;
   const lids = [];
   const lidMat = lidMaterial(hg.skin);
   const lashMat = simpleMaterial(0x15100d, 0.5);
@@ -617,6 +637,14 @@ export function createCharacter(hg) {
     lids.push(upper);
   }
   head.add(mergeInto(eyeBalls, eyeMaterial(fit.eye)));
+  // A small corneal highlight keeps the gaze legible in the house lighting.
+  const glints = [];
+  for (const s of [-1, 1]) {
+    const glint = new THREE.SphereGeometry(eyeR * 0.13, 8, 6);
+    glint.translate(s * eyeX - eyeR * .22, eyeYy + eyeR * .26, eyeZ + eyeR * .96);
+    glints.push(glint);
+  }
+  head.add(mergeInto(glints, simpleMaterial(0xfff9ec, .12)));
   head.add(mergeInto(sockets, faceMat));
 
   // --- Brows -----------------------------------------------------------------
@@ -793,7 +821,14 @@ export function animateCharacter(char, moving, dt, t) {
   u.blend += ((moving ? 1 : 0) - u.blend) * Math.min(1, step * 9);
   const k = u.blend;
   const idle = 1 - k;
-  if (moving || k > 0.01) u.gait += step * lerp(4.0, 8.4, k);
+  // Match cadence to distance actually travelled, including swimming and
+  // network interpolation. Blocked bodies stop stepping against the wall.
+  const last = u.lastPosition;
+  const distance = last ? Math.hypot(char.position.x-last.x, char.position.z-last.z) : 0;
+  u.lastPosition = { x:char.position.x, z:char.position.z };
+  const velocity = distance / Math.max(step,.001);
+  u.strideScale = (u.strideScale ?? 0) + (Math.min(1,velocity/3.3)-(u.strideScale ?? 0))*Math.min(1,step*10);
+  if (moving) u.gait += Math.min(distance,.3) * 3.2;
   u.breath += step * lerp(1.05, 2.5, k);
 
   const p = u.gait;
@@ -809,7 +844,7 @@ export function animateCharacter(char, moving, dt, t) {
   const [elbL, elbR] = u.elbows;
 
   // --- Legs
-  const swing = 0.62;
+  const swing = 0.38 + u.strideScale * .18;
   hipL.rotation.x = lerp(0.02 + Math.max(0, wob) * 0.05, -s * swing, k);
   hipR.rotation.x = lerp(0.02 + Math.max(0, -wob) * 0.05, s * swing, k);
   hipL.rotation.z = lerp(0, -0.03, k);
@@ -823,10 +858,10 @@ export function animateCharacter(char, moving, dt, t) {
   ankR.rotation.x = lerp(-0.04, -0.20 * Math.sin(p + ANKLE_PHASE + Math.PI) + 0.06, k);
 
   // --- Arms: opposite the legs, never fully straight
-  const armSwing = 0.38;
+  const armSwing = 0.20 + u.strideScale * .12;
   armL.rotation.x = lerp(-0.01 + Math.sin(t * 0.6 + u.idlePhase) * 0.025, s * armSwing, k);
   armR.rotation.x = lerp(-0.01 + Math.sin(t * 0.6 + u.idlePhase + 1.7) * 0.025, -s * armSwing, k);
-  const rest = u.armRest;
+  const rest = u.armRest + .025;
   armL.rotation.z = -lerp(rest, rest * 0.8, k) - br * 0.006;
   armR.rotation.z = lerp(rest, rest * 0.8, k) + br * 0.006;
   elbL.rotation.x = -lerp(0.13, 0.20 + Math.max(0, -s) * 0.40, k);

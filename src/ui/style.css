@@ -561,3 +561,13 @@ button.bb:disabled { cursor: not-allowed; }
 .chat-starter h3 { font-family: 'Bahnschrift', 'Segoe UI', sans-serif; font-size: 26px; font-weight: 500; letter-spacing: -.4px; margin: 15px 0 12px; }
 .chat-starter p { color: var(--muted); font-size: 13px; line-height: 1.8; }
 body:has(.chat-panel) .hud-hint { display: none; }
+.challenge-board { display:grid; gap:10px; margin:14px auto; width:min(100%,420px); }
+.memory-board { grid-template-columns:repeat(2,1fr); }
+.order-board,.circuit-board { grid-template-columns:repeat(3,1fr); }
+.challenge-tile { min-height:56px; padding:12px 16px; border:1px solid #ffffff30; border-radius:12px; color:#f4f0e7; background:linear-gradient(145deg,#30384c,#1b2130); font-family:inherit; font-size:20px; font-weight:600; cursor:pointer; touch-action:manipulation; }
+.challenge-tile:focus-visible { outline:3px solid #edc674; outline-offset:3px; }
+.challenge-tile.lit,.challenge-tile.solved { background:#e4ba62; color:#20190d; border-color:#fff0c2; box-shadow:0 0 20px #edc67444; }
+.challenge-tile.wrong { background:#9c3d4b; }
+.challenge-tile:disabled { cursor:default; }
+.challenge-tile.solved:disabled { opacity:.45; }
+@media(max-height:500px) { .challenge-board { gap:6px; margin:8px auto; max-width:330px; } .challenge-tile { min-height:42px; padding:8px 12px; font-size:17px; } }

@@ -302,7 +302,7 @@ export function skinMaterial(skin, mapSpec) {
     sheen: 0.5,
     sheenRoughness: 0.85,
     sheenColor: new THREE.Color(0xff9d7a),
-    clearcoat: 0.08,
+    clearcoat: 0.025,
     clearcoatRoughness: 0.7,
   }));
 }
