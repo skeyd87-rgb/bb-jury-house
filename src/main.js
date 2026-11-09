@@ -25,7 +25,7 @@ import { onAiStatusChange, getAiStatus, setAiStatus } from './ai/status.js';
 import {
   el, renderHud, showToast, clearToast, openChatPanel, closeChatPanel,
   cinematic, cinematicWait, pickHouseguests, cinematicTextInput, confetti, titleScreen,
-  openLiveGroupPanel,
+  openLiveGroupPanel, houseIntelPanel, lowerThird,
 } from './ui/ui.js';
 import { setMood, sting, setMusicEnabled, stopMusic } from './audio/music.js';
 import { speak, stopSpeaking, isVoiceOn, setVoiceOn, voiceSupported } from './audio/voice.js';
@@ -480,7 +480,7 @@ function syncOnlineWorld(game) {
   const h = document.getElementById('hud');
   h.innerHTML = '';
   const top = el('div', 'hud-top');
-  top.append(el('div', 'week', `Week ${game.week} — Online`));
+  top.append(el('div', 'week', `<span class="live-dot"></span> Week ${String(game.week).padStart(2, '0')} · Online`));
   top.append(el('div', 'phase', phaseLabelOnline(game)));
   if (game.turn?.turnDeadline) {
     const timerEl = el('div', 'hud-timer', '');
@@ -493,7 +493,10 @@ function syncOnlineWorld(game) {
   if (game.vetoHolder) bits.push(`Veto: ${nm(game, game.vetoHolder)}`);
   top.append(el('div', 'sub', `You are ${me ? me.name : '—'}${bits.length ? ' · ' + bits.join(' · ') : ''}`));
   h.append(top);
-  const st = el('div', 'hud-status');
+  // Same lower third as single-player (ui.js): house intel, with the live
+  // phase strap stacked above it during social windows (renderOnlineTurn).
+  const lower = lowerThird();
+  const st = houseIntelPanel();
   if (game.nominees && game.nominees.length) {
     st.append(el('div', 'hud-line', `<span class="nom">On the block:</span> ${game.nominees.map((n) => nm(game, n)).join(' & ')}`));
   }
@@ -509,12 +512,15 @@ function syncOnlineWorld(game) {
   for (const p of (game.myPromises || [])) {
     st.append(el('div', 'hud-line', `<span class="muted">${p.direction === 'made' ? `You promised ${p.withName}` : `${p.withName} promised you`}: "${p.text}"</span>`));
   }
-  if (st.childNodes.length) h.append(st);
+  if (st.childNodes.length === 1) st.append(el('div', 'hud-line', 'No alliances yet. Start a conversation.'));
+  lower.append(st);
+  const strap = onlineSocialStrap(game);
+  if (strap) lower.prepend(strap);
+  h.append(lower);
 
-  // Leave Room (drop-in/out: AI covers your seat; rejoin with the same code)
+  // Leave Room (drop-in/out: AI covers your seat; rejoin with the same code).
+  // Positioned by style.css alongside the single-player dock, bottom right.
   const btns = el('div', 'hud-buttons online-persistent-buttons');
-  btns.style.left = 'auto';
-  btns.style.right = 'calc(12px + var(--safe-right))';
   const socialMenu = el('details', 'dock-menu');
   socialMenu.append(el('summary', '', 'Social game'));
   const socialActions = el('div', 'dock-popover');
@@ -526,28 +532,30 @@ function syncOnlineWorld(game) {
   if (isSpectator()) {
     const eligible = onlineActiveIds(game).filter((id) => !(game.humanSeats && game.humanSeats[id]));
     if (eligible.length) {
-      const to = el('button', 'bb gold', '🎮 Take Over a Houseguest');
+      const to = el('button', 'bb gold', 'Take Over a Houseguest');
       to.onclick = () => takeOverFlowOnline(eligible);
       btns.append(to);
     } else {
-      btns.append(el('div', 'hud-hint', '👀 Spectating'));
+      // Not .hud-hint: that class is the controls hint, hidden whenever the
+      // lower third is up — which, online, is always.
+      btns.append(el('div', 'dock-note', 'Spectating'));
     }
   } else if (meId) {
     const dr = el('button', 'bb', 'Diary Room');
     dr.onclick = () => openDiaryOnline();
     btns.append(dr);
-    const ga = el('button', 'bb', '🤝 Form Alliance');
+    const ga = el('button', 'bb', 'Form Alliance');
     ga.onclick = () => formAllianceFlowOnline();
     socialActions.append(ga);
-    const gc = el('button', 'bb', '💬 Group Talk');
+    const gc = el('button', 'bb', 'Group Talk');
     gc.onclick = () => groupChatFlowOnline();
     socialActions.append(gc);
-    const hm = el('button', 'bb', '📢 House Meeting');
+    const hm = el('button', 'bb', 'House Meeting');
     hm.onclick = () => groupChatFlowOnline(onlineActiveIds(game).filter((id) => id !== meId));
     socialActions.append(hm);
     btns.append(socialMenu);
   }
-  const leave = el('button', 'bb', '🚪 Leave');
+  const leave = el('button', 'bb', 'Leave Room');
   leave.onclick = () => {
     if (isSpectator()) { room.disconnect(); location.reload(); return; }
     // Leaving must work even mid-ceremony (that's the point of drop-in/out) —
@@ -565,7 +573,7 @@ function syncOnlineWorld(game) {
   };
   roomActions.append(leave);
   if (iAmHost()) {
-    const end = el('button', 'bb danger', '🛑 End Session');
+    const end = el('button', 'bb danger', 'End Session');
     end.onclick = () => endSessionFlowOnline();
     roomActions.append(end);
   }
@@ -636,6 +644,26 @@ function roomRosterHtml(game) {
   return `<div class="week-ready-roster">${rows}</div>`;
 }
 
+// The free-roam strap: what this window is, and the host's advance button.
+// Built with the rest of the HUD on every snapshot. It used to be added only
+// when the turn changed, so the next snapshot inside the same social window
+// (a chat, an alliance) rebuilt #hud and took the host's button with it.
+function onlineSocialStrap(game) {
+  const t = game.turn;
+  if (t?.kind !== 'social') return null;
+  const bar = el('div', 'online-social-bar');
+  bar.id = 'online-social-bar';
+  bar.append(el('span', '', `<b>${t.label}</b> — tap a houseguest to talk.`));
+  if (iAmHost()) {
+    const adv = el('button', 'bb gold sm', t.next === 'nominations' ? '▶ Nominations' : t.next === 'veto_comp' ? '▶ Veto Comp' : '▶ Live Eviction');
+    adv.onclick = () => room.send('advanceTurn');
+    bar.append(adv);
+  } else {
+    bar.append(el('span', 'online-social-wait', 'Host advances when ready'));
+  }
+  return bar;
+}
+
 function handleOnlineTurn(game) {
   onlineGame = game;
   if (!game || game.phase === 'lobby') return;
@@ -664,7 +692,6 @@ function amIActing(game, t) {
 function renderOnlineTurn(game, t) {
   if (t.kind !== 'comp') compRunning = false; // never leave it stuck after a comp
   closeOnlineOverlay();
-  document.getElementById('online-social-bar')?.remove();
   const myEngine = myEngineId();
   const host = iAmHost();
 
@@ -884,21 +911,9 @@ function renderOnlineTurn(game, t) {
 
     case 'social': {
       // Free roam — no modal. Walk the house and tap houseguests to talk.
-      // Own bar, anchored under the top status panel — never share the bottom
-      // strip with the persistent Diary/Alliance/Leave buttons (that overlap
-      // was the mobile "buttons covering buttons" bug).
+      // The strap itself is part of the HUD (onlineSocialStrap, built by
+      // syncOnlineWorld on every snapshot).
       onlineOverlay = null;
-      const bar = el('div', 'online-social-bar');
-      bar.id = 'online-social-bar';
-      bar.append(el('span', '', `<b>${t.label}</b> — tap a houseguest to talk.`));
-      if (host) {
-        const adv = el('button', 'bb gold sm', t.next === 'nominations' ? '▶ Nominations' : t.next === 'veto_comp' ? '▶ Veto Comp' : '▶ Live Eviction');
-        adv.onclick = () => room.send('advanceTurn');
-        bar.append(adv);
-      } else {
-        bar.append(el('span', 'online-social-wait', '⏳ Host advances when ready'));
-      }
-      document.getElementById('hud').append(bar);
       break;
     }
 

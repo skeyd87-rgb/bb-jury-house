@@ -23,7 +23,7 @@ function relativeTime(ts) {
 export function showMultiplayerEntry({ onEnter, onBack }) {
   const wrap = el('div', 'title-screen');
   const card = el('div', 'title-card');
-  card.append(el('div', 'eye', '👁️'));
+  card.append(el('span', 'brand-eye lobby-eye'));
   card.append(el('h1', '', 'PLAY <span>ONLINE</span>'));
   card.append(el('div', 'tag', 'Host a house, or join with a code.'));
 
@@ -131,7 +131,7 @@ export function showLobby(room, initialState, { onStart, onLeave }) {
     const seated = Object.values(state.seats).filter((s) => s.occupied);
 
     card.innerHTML = '';
-    card.append(el('div', 'eye', '👁️'));
+    card.append(el('span', 'brand-eye lobby-eye'));
     const code = el('div', 'lobby-code', `ROOM CODE: <b>${state.code}</b>`);
     card.append(code);
 

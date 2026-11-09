@@ -47,7 +47,24 @@ function htmlLine(html) {
 
 // ---------- HUD ----------
 
+// House intel is the lower third, so it opens by default. The HUD is rebuilt
+// on every refresh; remember if the player folded it so it stays folded.
+// Shared by the single-player HUD and the online one in main.js.
 let houseIntelOpen = true;
+export function houseIntelPanel() {
+  const st = el('details', 'hud-status house-intel');
+  st.open = houseIntelOpen;
+  st.addEventListener('toggle', () => { houseIntelOpen = st.open; });
+  st.append(el('summary', '', 'House intel'));
+  return st;
+}
+
+// Bottom-left column the lower third stacks in: house intel, plus (online)
+// the live phase strap above it. A column, so the two can never overlap
+// whatever their heights.
+export function lowerThird() {
+  return el('div', 'bc-lower');
+}
 
 export function renderHud(g, handlers) {
   const h = hud();
@@ -62,12 +79,8 @@ export function renderHud(g, handlers) {
   if (sub.length) top.append(el('div', 'sub', sub.join(' · ')));
   h.append(top);
 
-  // House intel is the lower third, so it opens by default. The HUD is rebuilt
-  // on every refresh; remember if the player folded it so it stays folded.
-  const st = el('details', 'hud-status house-intel');
-  st.open = houseIntelOpen;
-  st.addEventListener('toggle', () => { houseIntelOpen = st.open; });
-  st.append(el('summary', '', 'House intel'));
+  const lower = lowerThird();
+  const st = houseIntelPanel();
   if (g.nominees.length) st.append(htmlLine(`<span class="nom">On the block:</span> ${g.nominees.map((n) => nameOf(g, n)).join(' & ')}`));
   if (g.jury.length) st.append(htmlLine(`<b>Jury (${g.jury.length}):</b> ${g.jury.map((j) => nameOf(g, j)).join(', ')}`));
   const als = g.alliances.filter((a) => !a.dead && a.members.includes(PLAYER_ID));
@@ -78,7 +91,8 @@ export function renderHud(g, handlers) {
     st.append(line);
   }
   if (st.childNodes.length === 1) st.append(el('div', 'hud-line', 'No alliances yet. Start a conversation.'));
-  h.append(st);
+  lower.append(st);
+  h.append(lower);
 
   const btns = el('div', 'hud-buttons');
   const social = el('details', 'dock-menu');

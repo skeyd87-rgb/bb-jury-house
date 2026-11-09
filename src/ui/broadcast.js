@@ -117,12 +117,15 @@ export function createBroadcast({ world, canvas }) {
       v.y += 2.0;
       const dist = camera.position.distanceTo(char.position);
       v.project(camera);
-      if (v.z > 1) { p.el.style.opacity = '0'; continue; }
-      marks.push({
-        id, p, dist, isMe,
-        x: (v.x * 0.5 + 0.5) * rect.width + rect.left,
-        y: (-v.y * 0.5 + 0.5) * rect.height + rect.top,
-      });
+      const x = (v.x * 0.5 + 0.5) * rect.width + rect.left;
+      const y = (-v.y * 0.5 + 0.5) * rect.height + rect.top;
+      // Behind the camera, or out of frame: no plate. (The edge clamp below
+      // is for people near the edge, not a pointer to people off it.)
+      if (v.z > 1 || x < 0 || x > window.innerWidth || y < 0 || y > window.innerHeight) {
+        p.el.style.opacity = '0';
+        continue;
+      }
+      marks.push({ id, p, dist, isMe, x, y });
     }
 
     // Pass 2: nearest to camera keeps its spot; anyone who would sit on top

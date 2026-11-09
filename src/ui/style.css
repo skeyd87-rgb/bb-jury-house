@@ -632,14 +632,37 @@ body.bc-clear::after { opacity: 0; }
 }
 .hud-timer { font-family: var(--data); font-size: 11px; letter-spacing: 0.1em; }
 
-/* ---------- house intel, promoted to a lower third ---------- */
+/* ---------- the lower third: house intel (+ the online phase strap) ----------
+   .bc-lower is the positioned column (ui.js lowerThird); what sits in it is
+   static, so the strap and the intel stack instead of overlapping whatever
+   their heights. */
+#hud > .bc-lower {
+  position: absolute; bottom: calc(30px + var(--safe-bottom));
+  left: calc(30px + var(--safe-left)); width: min(430px, 44vw);
+  display: flex; flex-direction: column; gap: 8px;
+  pointer-events: none;
+}
+.bc-lower > * { pointer-events: auto; }
 .hud-status.house-intel {
-  top: auto; bottom: calc(30px + var(--safe-bottom));
-  left: calc(30px + var(--safe-left));
-  width: min(430px, 44vw); max-width: none;
+  position: static; width: auto; max-width: none;
   background: linear-gradient(90deg, rgba(10, 16, 15, 0.95), rgba(10, 16, 15, 0.6));
   border: 0; border-left: 3px solid var(--danger); border-radius: 0;
   padding: 12px 18px; box-shadow: none; font-size: 13px;
+}
+/* Online free-roam strap: what this window is, and the host's advance. Brass
+   rule, not red — it's the show talking, not the block. */
+.bc-lower .online-social-bar {
+  position: static; max-width: none; width: auto;
+  background: linear-gradient(90deg, rgba(10, 16, 15, 0.95), rgba(10, 16, 15, 0.6));
+  border: 0; border-left: 3px solid var(--gold); border-radius: 0;
+  padding: 10px 14px 10px 18px; gap: 12px; font-size: 13px; color: var(--muted);
+}
+.bc-lower .online-social-bar b {
+  font-family: var(--display); font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; font-size: 15px; color: var(--text);
+}
+.bc-lower .online-social-wait {
+  font-family: var(--data); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase;
 }
 .house-intel summary {
   font-family: var(--data); font-size: 9.5px; letter-spacing: 0.22em;
@@ -652,13 +675,20 @@ body.bc-clear::after { opacity: 0; }
 .hud-status b { color: var(--gold); font-weight: 600; }
 .hud-status .nom { color: var(--danger); font-weight: 600; }
 
-/* ---------- the dock, moved to the opposite corner from the intel ---------- */
-.hud-buttons:not(.online-persistent-buttons) {
+/* ---------- the dock, moved to the opposite corner from the intel ----------
+   Single-player and online docks get the same corner and treatment. */
+.hud-buttons:not(.online-persistent-buttons),
+.hud-buttons.online-persistent-buttons {
   bottom: calc(30px + var(--safe-bottom));
   left: auto; right: calc(30px + var(--safe-right));
   justify-content: flex-end; max-width: 46vw;
   background: none; border: 0; border-radius: 0; padding: 0; gap: 7px;
   box-shadow: none;
+}
+.dock-note {
+  align-self: center; padding: 0 6px;
+  font-family: var(--data); font-size: 10px; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--muted);
 }
 button.bb,
 .dock-menu > summary {
@@ -841,12 +871,44 @@ button.bb.danger { background: #5E2621; border-color: var(--danger); }
   font-variant-numeric: tabular-nums; color: var(--text);
 }
 #bc-tc .cam { font-size: 9.5px; letter-spacing: 0.17em; color: var(--muted); margin-top: 4px; }
+/* Online room code: the last line of the timecode cluster, not a chip pinned
+   over its LIVE line. Fixed outside #hud so HUD rebuilds never wipe it. */
+#room-code-badge {
+  top: calc(92px + var(--safe-top)); right: calc(30px + var(--safe-right));
+  background: none; border: 0; border-radius: 0; padding: 0;
+  font-family: var(--data); font-size: 9.5px; letter-spacing: 0.17em;
+  text-transform: uppercase; color: var(--muted);
+  text-shadow: 0 2px 14px rgba(4, 8, 8, 0.9);
+}
+#room-code-badge b { color: var(--gold); font-weight: 500; letter-spacing: 0.17em; }
 
 /* nameplates projected over each houseguest */
 .bc-plate {
   position: absolute; left: 0; top: 0; transform: translate(-50%, -100%);
   white-space: nowrap; will-change: transform, opacity;
 }
+
+/* ---------- online entry + lobby ----------
+   Same brass eye as the title screen instead of the emoji with a purple
+   glow; the last navy control; display type for the seat names. */
+.title-card > .lobby-eye {
+  display: block; margin: 6px auto 30px;
+  transform: rotate(34deg) scale(1.6);
+}
+.title-screen:not(.season-title) .title-card h1 {
+  font-family: var(--display); font-weight: 700; text-transform: uppercase;
+  font-size: 56px; letter-spacing: 0.01em; line-height: 0.95;
+}
+.lobby-code { font-family: var(--data); font-size: 11px; letter-spacing: 0.22em; color: var(--muted); }
+.lobby-code b { font-family: var(--data); font-weight: 500; color: var(--gold); }
+.lobby-ctrl select {
+  background: var(--ink-3); color: var(--text); border: 1px solid var(--rule); border-radius: 2px;
+}
+.seat-card .seat-name {
+  font-family: var(--display); font-weight: 600; text-transform: uppercase;
+  font-size: 16px; letter-spacing: 0.04em;
+}
+.seat-card.mine { border-color: var(--gold); box-shadow: none; }
 .bc-plate .bc-bar {
   display: flex; align-items: stretch;
   background: rgba(10, 16, 15, 0.84); border: 1px solid rgba(236, 231, 218, 0.15);
@@ -895,13 +957,17 @@ button.bb.danger { background: #5E2621; border-color: var(--danger); }
   #bc-tc { top: calc(32px + var(--safe-top)); right: calc(20px + var(--safe-right)); }
   #bc-tc .clock { font-size: 13px; }
   #bc-tc .cam { display: none; }
-  /* Bottom: the gold action takes a row of its own here, so the dock is two
-     rows (~87px). The lower third sits above both rows rather than on them. */
-  .hud-status.house-intel {
+  #room-code-badge { top: calc(70px + var(--safe-top)); right: calc(20px + var(--safe-right)); font-size: 9px; }
+  /* Bottom: the single-player gold action takes a row of its own here, so
+     that dock is two rows (~87px) and the lower third sits above both. The
+     online dock has no full-width action and stays one row (~44px). */
+  #hud > .bc-lower {
     width: auto; right: calc(20px + var(--safe-right)); left: calc(20px + var(--safe-left));
     bottom: calc(118px + var(--safe-bottom));
   }
-  .hud-buttons:not(.online-persistent-buttons) {
+  #hud:has(> .online-persistent-buttons) > .bc-lower { bottom: calc(76px + var(--safe-bottom)); }
+  .hud-buttons:not(.online-persistent-buttons),
+  .hud-buttons.online-persistent-buttons {
     right: calc(20px + var(--safe-right)); bottom: calc(20px + var(--safe-bottom)); max-width: calc(100vw - 40px);
   }
   .cine-card h2 { font-size: 30px; }
@@ -919,6 +985,9 @@ button.bb.danger { background: #5E2621; border-color: var(--danger); }
   }
   .toast { right: 12px; }
   body.toast-open .hud-status.house-intel { transform: none; }
+  /* The old phone rule stretched each online button to the full width of a
+     44vw column, stacking them three high into the lower third. One row. */
+  .online-persistent-buttons > .bb, .online-persistent-buttons > .dock-menu { width: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

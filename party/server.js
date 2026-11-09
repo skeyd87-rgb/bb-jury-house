@@ -1313,7 +1313,10 @@ export class Room extends Server {
 
         // Build the authoritative game and seat the humans into houseguests.
         const newcomer = s.seats.newcomer;
-        const playerName = (newcomer.occupant && newcomer.occupantName) || 'You';
+        // Unclaimed (or unrenamed), the seat keeps the name the lobby showed.
+        // It used to fall back to 'You', which every client then displayed as
+        // another houseguest's name — "You wins HoH" with you sitting as Marcus.
+        const playerName = (newcomer.occupant && newcomer.occupantName) || 'Newcomer';
         this.game = newGame(playerName);
         s.humanSeats = {};
         for (const seat of claimed) {
