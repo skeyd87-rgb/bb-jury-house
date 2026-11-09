@@ -163,15 +163,19 @@ export function faceTexture(spec) {
     const soft = shade(base, -0.28);
 
     // Orbital shading — the single biggest cue that a head has a skull in it.
+    // Everything below the eyes is painted lighter than it once was: the head
+    // is now dense enough for the nose and jaw to shade themselves under the
+    // scene lights, and painting the same occlusion on top doubled it into a
+    // dark smudge that read as dirt across the middle of every face.
     blob(FACE.eye, 34, 22, deep, 0.34);
     blob([0.40, 0.14, 0.82], 30, 13, soft, 0.30);            // upper lid crease
-    blob([0.40, -0.07, 0.82], 26, 12, soft, 0.22);           // tear trough
-    blob([0.20, 0.06, 0.92], 14, 20, soft, 0.22);            // nose-bridge side
+    blob([0.40, -0.07, 0.82], 26, 12, soft, 0.18);           // tear trough
+    blob([0.20, 0.06, 0.92], 14, 20, soft, 0.11);            // nose-bridge side
     blob(FACE.temple, 30, 34, soft, 0.16);
-    blob([0.58, -0.36, 0.60], 34, 26, soft, 0.20);           // cheek hollow
-    blob(FACE.nostril, 8, 6, deep, 0.36);
-    blob([0.10, -0.28, 0.92], 12, 8, soft, 0.15, 0.4);       // under the nose
-    blob(FACE.jaw, 30, 22, soft, 0.14);
+    blob([0.58, -0.36, 0.60], 34, 26, soft, 0.12);           // cheek hollow
+    blob(FACE.nostril, 8, 6, deep, 0.24);
+    blob([0.10, -0.28, 0.92], 12, 8, soft, 0.08, 0.4);       // under the nose
+    blob(FACE.jaw, 30, 22, soft, 0.07);
     blob([0.00, -0.68, 0.74], 26, 11, soft, 0.12, 0, false); // mentolabial crease
     blob([0.00, 0.62, 0.72], 70, 26, soft, 0.10, 0, false);  // hairline falloff
 
@@ -217,7 +221,7 @@ export function faceTexture(spec) {
     ctx.restore();
 
     // Philtrum
-    blob([0.00, -0.36, 0.90], 5, 10, soft, 0.16, 0, false);
+    blob([0.00, -0.36, 0.90], 5, 10, soft, 0.10, 0, false);
 
     // Stubble / beard shadow — masked to the jaw, chin and moustache field.
     if (spec.beard > 0) {
@@ -546,22 +550,26 @@ export function hairCardMaterial(color) {
     transparent: false,
     alphaTest: 0.42,
     side: THREE.DoubleSide,
-    roughness: 0.38,
+    // Hair scatters light; it does not mirror it. At 0.38 roughness with a
+    // tight full-strength sheen every head read as a lacquered helmet, the
+    // single loudest "toy" cue at play distance. A broad, dimmer sheen still
+    // gives the highlight band without the vinyl.
+    roughness: 0.58,
     metalness: 0,
-    sheen: 1,
-    sheenRoughness: 0.28,
-    sheenColor: new THREE.Color(color).lerp(new THREE.Color(0xfff0d0), 0.55),
+    sheen: 0.55,
+    sheenRoughness: 0.55,
+    sheenColor: new THREE.Color(color).lerp(new THREE.Color(0xfff0d0), 0.30),
   }));
 }
 
 export function hairSolidMaterial(color) {
   return cached(`hairsolid:${color}`, () => new THREE.MeshPhysicalMaterial({
     color,
-    roughness: 0.64,
+    roughness: 0.74,
     metalness: 0,
-    sheen: 0.5,
-    sheenRoughness: 0.5,
-    sheenColor: new THREE.Color(color).lerp(new THREE.Color(0xfff0d0), 0.45),
+    sheen: 0.35,
+    sheenRoughness: 0.65,
+    sheenColor: new THREE.Color(color).lerp(new THREE.Color(0xfff0d0), 0.25),
   }));
 }
 

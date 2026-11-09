@@ -23,9 +23,13 @@ import {
 } from './appearance.js';
 import { buildHair, buildBrow } from './hair.js';
 
-// Upper-lid swing, in radians of the lid cap's own pivot: parked just clear of
-// the aperture, closing past its lower edge.
-const LID_OPEN = -0.06;
+// Upper-lid swing, in radians of the lid cap's own pivot: closing past the
+// aperture's lower edge. At -0.06 the resting lid sat across the top ~40% of
+// the iris and every houseguest looked half asleep; -0.24 leaves it just
+// over the top of the iris, which is where a relaxed, awake lid rests. The lid
+// sits outside the socket shell, so it was checked for a bulge above the brow
+// at this angle — there isn't one.
+const LID_OPEN = -0.24;
 const LID_SHUT = 0.66;
 
 // Eyelids are paper-thin shells; without DoubleSide you see straight through
@@ -445,13 +449,17 @@ export function createCharacter(hg) {
 
     if (sleeved) {
       const end = sleeveLong ? -upperArmLen - 0.005 * H : -upperArmLen * 0.52;
+      // Follows the lower, narrower shoulder cap in anatomy.upperArmGeometry
+      // with ~7% ease, where it used to stand 10-18% off the arm and puff up
+      // above the shoulder line like a pad. Ease is checked ring by ring
+      // against the cap, the deltoid and the biceps belly under a short sleeve.
       const sleeveRings = [
-        { y: 0.062 * upperArmLen, rx: armR * 0.10, rz: armR * 0.10 },
-        { y: 0.030 * upperArmLen, rx: armR * 1.00, rz: armR * 0.96 },
-        { y: -0.020 * upperArmLen, rx: armR * 1.42, rz: armR * 1.34 },
-        { y: -0.100 * upperArmLen, rx: armR * 1.50, rz: armR * 1.42 },
-        { y: end * 0.55, rx: armR * 1.34, rz: armR * 1.30 },
-        { y: end, rx: armR * (sleeveLong ? 1.16 : 1.28), rz: armR * (sleeveLong ? 1.12 : 1.24) },
+        { y: 0.044 * upperArmLen, rx: armR * 0.10, rz: armR * 0.10 },
+        { y: 0.020 * upperArmLen, rx: armR * 1.02, rz: armR * 0.98 },
+        { y: -0.025 * upperArmLen, rx: armR * 1.30, rz: armR * 1.24 },
+        { y: -0.110 * upperArmLen, rx: armR * 1.36, rz: armR * 1.30 },
+        { y: end * 0.55, rx: armR * 1.24, rz: armR * 1.20 },
+        { y: end, rx: armR * (sleeveLong ? 1.16 : 1.20), rz: armR * (sleeveLong ? 1.12 : 1.16) },
       ];
       // A long sleeve crosses the elbow, so it needs the same nose past the
       // pivot the arm itself has — the cuff (which is wider) hides it straight,
@@ -470,7 +478,12 @@ export function createCharacter(hg) {
     elbows.push(elbow);
 
     const fore = forearmGeometry(foreArmLen, foreR, sleeveLong);
-    const hand = handGeometry(H * 1.02);
+    const hand = handGeometry(H * 1.02, s);
+    // Palms to the thighs, thumbs forward: how a relaxed arm actually hangs.
+    // Built palm-forward, which is the anatomy-textbook pose and read as a
+    // mannequin. The hand is no wider this way round (handHalf still holds):
+    // its thickness plus the finger curl now runs across, not its breadth.
+    hand.rotateY(-s * 1.30);
     hand.translate(0, -foreArmLen + 0.004 * H, 0.002 * H);
     elbow.add(mergeInto([fore, hand], skin, { shadow: true }));
 
@@ -515,12 +528,16 @@ export function createCharacter(hg) {
         // Wide enough to clear the quadriceps bulge the ring profile does not
         // describe — otherwise the thigh z-fights its way through the cloth.
         { y: -thighLen * 0.22, rx: thighR * 1.26, rz: thighR * 1.24, sq: 0.18 },
-        { y: end * 0.72, rx: thighR * (trouserFull ? 1.12 : 1.24), rz: thighR * (trouserFull ? 1.10 : 1.22) },
-        { y: end, rx: thighR * (trouserFull ? 1.08 : 1.28), rz: thighR * (trouserFull ? 1.06 : 1.26) },
+        { y: end * 0.72, rx: thighR * (trouserFull ? 1.10 : 1.24), rz: thighR * (trouserFull ? 1.08 : 1.22) },
+        // Full trousers taper into the knee. They used to end at 1.08*thighR,
+        // which is wider than the calf shell they meet (1.26*shinR ~ 0.94*thighR)
+        // — the joint rule backwards — so the thigh tube's nose stood proud of
+        // the calf and drew a band around every trousered knee.
+        { y: end, rx: thighR * (trouserFull ? 0.92 : 1.28), rz: thighR * (trouserFull ? 0.90 : 1.26) },
       ];
       if (trouserFull) {
-        legRings.push({ y: end - 0.045 * H, rx: thighR * 0.96, rz: thighR * 0.94 });
-        legRings.push({ y: end - 0.080 * H, rx: thighR * 0.62, rz: thighR * 0.60 });
+        legRings.push({ y: end - 0.045 * H, rx: thighR * 0.80, rz: thighR * 0.78 });
+        legRings.push({ y: end - 0.080 * H, rx: thighR * 0.52, rz: thighR * 0.50 });
       }
       const leg = loft(legRings, { sections: trouserFull ? 16 : 12, radial: 22, capTop: false, capBottom: false });
       hip.add(mesh(leg, botMat, { shadow: true }));
@@ -564,9 +581,14 @@ export function createCharacter(hg) {
 
   // Head breadth 155mm / length 195mm / height 230mm at 1.80m, lightly enlarged
   // the way The Sims does so faces still read at gameplay camera distance.
-  const hx = 0.128 * H * (0.97 + 0.03 * W);
+  // Head half-breadths. Against standard anthropometry for this rig's stature
+  // the head was ~30% too wide but only ~14% too tall, which with the cheek
+  // push made every face a balloon. Width now sits ~16% over life and depth
+  // ~13% over, in step with the height: still a touch stylised, not inflated.
+  // Hair, brows, ears, eye sockets and jewellery all size off these three.
+  const hx = 0.114 * H * (0.97 + 0.03 * W);
   const hy = 0.177 * H;
-  const hz = 0.147 * H;
+  const hz = 0.140 * H;
 
   const headGeom = headGeometry({
     hx, hy, hz,
@@ -864,8 +886,9 @@ export function animateCharacter(char, moving, dt, t) {
   const rest = u.armRest + .025;
   armL.rotation.z = -lerp(rest, rest * 0.8, k) - br * 0.006;
   armR.rotation.z = lerp(rest, rest * 0.8, k) + br * 0.006;
-  elbL.rotation.x = -lerp(0.13, 0.20 + Math.max(0, -s) * 0.40, k);
-  elbR.rotation.x = -lerp(0.13, 0.20 + Math.max(0, s) * 0.40, k);
+  // A relaxed arm carries ~11 degrees at the elbow; at 7 they hung like poles.
+  elbL.rotation.x = -lerp(0.19, 0.20 + Math.max(0, -s) * 0.40, k);
+  elbR.rotation.x = -lerp(0.19, 0.20 + Math.max(0, s) * 0.40, k);
 
   // --- Pelvis / spine counter-rotation and the vertical bob
   u.hips.rotation.y = lerp(0, -s * 0.10, k);

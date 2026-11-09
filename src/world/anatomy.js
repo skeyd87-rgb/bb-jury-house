@@ -233,6 +233,9 @@ export function torsoRings(W, gender) {
   const chestW = fem ? 0.186 : 0.199;
   const shoulderW = fem ? 0.183 : 0.200;
   const chestD = fem ? 0.132 : 0.137;
+  // Neck breadth: ~120mm on a 1750mm man (0.076 half-units here), ~100mm on a
+  // 1650mm woman (0.067). The rings below were the man's for everyone.
+  const nk = fem ? 0.88 : 1.0;
   return [
     { y: 0.94, rx: w(hipW * 0.32), rz: w(0.056), sq: 0.06 },
     { y: 1.00, rx: w(hipW * 0.50), rz: w(0.076), sq: 0.08 },
@@ -247,10 +250,10 @@ export function torsoRings(W, gender) {
     { y: 1.75, rx: w(shoulderW), rz: w(0.124), sq: 0.30 },
     { y: 1.815, rx: w(shoulderW * 0.86), rz: w(0.104), sq: 0.26 },
     { y: 1.850, rx: w(0.114), rz: w(0.086), sq: 0.15 },
-    { y: 1.880, rx: w(0.078), rz: w(0.073), sq: 0.06 },
-    { y: 1.915, rx: w(0.070), rz: w(0.066) },
-    { y: 1.950, rx: w(0.052), rz: w(0.050) },
-    { y: 1.990, rx: w(0.022), rz: w(0.021) },
+    { y: 1.880, rx: w(0.078 * nk), rz: w(0.073 * nk), sq: 0.06 },
+    { y: 1.915, rx: w(0.070 * nk), rz: w(0.066 * nk) },
+    { y: 1.950, rx: w(0.052 * nk), rz: w(0.050 * nk) },
+    { y: 1.990, rx: w(0.022 * nk), rz: w(0.021 * nk) },
   ];
 }
 
@@ -294,16 +297,24 @@ export function torsoGeometry(W, gender, seed) {
 // them like a real shoulder/hip.
 export function upperArmGeometry(len, r, sleeve) {
   const g = loft([
-    { y: 0.042 * len, rx: r * 0.06, rz: r * 0.06 },
-    { y: 0.020 * len, rx: r * 0.90, rz: r * 0.88 },
-    { y: -0.020 * len, rx: r * 1.26, rz: r * 1.20 },
-    { y: -0.100 * len, rx: r * 1.36, rz: r * 1.28 },  // deltoid
+    // Shoulder cap. The torso's own shoulder line is already at ~y=1.77 over
+    // this pivot; a cap that rose to pivot+4% stood ~25mm proud of it and
+    // read as a ball set on the shoulder. Lower, flatter and ~7% narrower, it
+    // tucks under the trapezius line and shows as a deltoid only on the side.
+    { y: 0.026 * len, rx: r * 0.10, rz: r * 0.10 },
+    { y: 0.008 * len, rx: r * 0.90, rz: r * 0.88 },
+    { y: -0.032 * len, rx: r * 1.20, rz: r * 1.14 },
+    { y: -0.115 * len, rx: r * 1.27, rz: r * 1.20 },  // deltoid
     { y: -0.260 * len, rx: r * 1.14, rz: r * 1.10 },
     { y: -0.460 * len, rx: r * 1.00, rz: r * 0.98 },
+    // The distal end holds its width into the elbow (the humeral condyles)
+    // rather than pinching to its narrowest right at the pivot. A pinch there
+    // followed by the forearm flaring out is what drew a visible ring at every
+    // elbow. The forearm still meets this slightly wider, so the cap stays buried.
     { y: -0.720 * len, rx: r * 0.86, rz: r * 0.86 },
-    { y: -0.900 * len, rx: r * 0.82, rz: r * 0.82 },
-    { y: -1.000 * len, rx: r * 0.80, rz: r * 0.80 },
-    { y: -1.060 * len, rx: r * 0.72, rz: r * 0.72 },
+    { y: -0.900 * len, rx: r * 0.85, rz: r * 0.84 },
+    { y: -1.000 * len, rx: r * 0.83, rz: r * 0.82 },
+    { y: -1.060 * len, rx: r * 0.74, rz: r * 0.73 },
     { y: -1.110 * len, rx: r * 0.44, rz: r * 0.44 },
   ], { sections: 28, radial: 20, capTop: true, capBottom: true });
   if (!sleeve) {
@@ -322,7 +333,15 @@ export function upperArmGeometry(len, r, sleeve) {
 export function forearmGeometry(len, r, sleeve) {
   const g = loft([
     { y: 0.050 * len, rx: r * 0.45, rz: r * 0.45 },
-    { y: 0.010 * len, rx: r * 0.90, rz: r * 0.88 },
+    // The two segments are separate meshes, so where they cross there is
+    // always a crease; what decides whether you see it is the angle they cross
+    // at. Here the forearm stays just inside the upper arm above the pivot and
+    // just outside it below, growing only ~3% across the crossing, so its
+    // surface is near-vertical there and lights like the arm around it instead
+    // of catching the key as a bright ring. (0.95*foreR ~ 0.82*armR, inside the
+    // upper arm's 0.83 above; 0.975*foreR ~ 0.84*armR, outside its taper below.)
+    { y: 0.010 * len, rx: r * 0.95, rz: r * 0.92 },
+    { y: -0.020 * len, rx: r * 0.975, rz: r * 0.94 },
     { y: -0.060 * len, rx: r * 1.00, rz: r * 0.96 },
     { y: -0.32 * len, rx: r * 0.96, rz: r * 0.92 },
     { y: -0.58 * len, rx: r * 0.80, rz: r * 0.75 },
@@ -348,10 +367,12 @@ export function thighGeometry(len, r) {
     { y: -0.06 * len, rx: r * 1.16, rz: r * 1.14, sq: 0.2 },
     { y: -0.34 * len, rx: r * 1.04, rz: r * 1.04, sq: 0.15 },
     { y: -0.62 * len, rx: r * 0.90, rz: r * 0.92 },
+    // Same fix as the elbow: carry the femoral condyles into the knee instead
+    // of pinching at the pivot, and let the shin meet it level.
     { y: -0.88 * len, rx: r * 0.78, rz: r * 0.80 },
-    { y: -0.96 * len, rx: r * 0.74, rz: r * 0.76 },
-    { y: -1.00 * len, rx: r * 0.72, rz: r * 0.74 },
-    { y: -1.05 * len, rx: r * 0.64, rz: r * 0.66 },
+    { y: -0.96 * len, rx: r * 0.76, rz: r * 0.78 },
+    { y: -1.00 * len, rx: r * 0.74, rz: r * 0.76 },
+    { y: -1.05 * len, rx: r * 0.66, rz: r * 0.68 },
     { y: -1.10 * len, rx: r * 0.40, rz: r * 0.42 },
   ], { sections: 26, radial: 20, capTop: true, capBottom: true });
   displace(g, (v) => {
@@ -368,8 +389,11 @@ export function thighGeometry(len, r) {
 export function shinGeometry(len, r) {
   const g = loft([
     { y: 0.050 * len, rx: r * 0.45, rz: r * 0.46 },
-    { y: 0.010 * len, rx: r * 0.94, rz: r * 0.96 },
-    { y: -0.05 * len, rx: r * 1.02, rz: r * 1.02 },
+    // Shallow crossing, as at the elbow: just inside the thigh above the knee
+    // (0.97*shinR ~ 0.72*thighR vs 0.74), just outside its taper below.
+    { y: 0.010 * len, rx: r * 0.97, rz: r * 0.99 },
+    { y: -0.020 * len, rx: r * 1.01, rz: r * 1.02 },
+    { y: -0.05 * len, rx: r * 1.04, rz: r * 1.04 },
     { y: -0.30 * len, rx: r * 0.95, rz: r * 0.96 },
     { y: -0.62 * len, rx: r * 0.68, rz: r * 0.72 },
     { y: -0.88 * len, rx: r * 0.56, rz: r * 0.58 },
@@ -392,49 +416,127 @@ export function shinGeometry(len, r) {
 // Palm plus four fingers and a thumb, merged into one geometry. At gameplay
 // scale a finger is a few pixels, but in a conversation close-up the silhouette
 // of a real hand is unmistakable next to a sphere.
-export function handGeometry(scale = 1) {
+// Curl a digit built straight down -Y toward +Z (the palm) through its
+// interphalangeal joints. Each vertex rides the bent centreline at its own
+// distance from the base, so cross-sections stay square to the bone instead
+// of shearing. joints: [[fraction of len, radians], ...]. The knuckle at the
+// base is not in here — the caller rotates the whole digit for that.
+//
+// A rotation at the base alone gives a straight finger on a hinge, and four
+// of those side by side is a rake: that was most of the "paddle" read.
+function curlDigit(geom, len, joints) {
+  const N = 48, ds = len / N;
+  const phi = (d) => {
+    let a = 0;
+    for (const [at, ang] of joints) a += ang * smooth01((d - at * len) / (0.10 * len) + 0.5);
+    return a;
+  };
+  const cy = new Float32Array(N + 1), cz = new Float32Array(N + 1), ca = new Float32Array(N + 1);
+  ca[0] = phi(0);
+  for (let i = 1; i <= N; i++) {
+    const a = phi((i - 0.5) * ds);
+    cy[i] = cy[i - 1] - Math.cos(a) * ds;
+    cz[i] = cz[i - 1] + Math.sin(a) * ds;
+    ca[i] = phi(i * ds);
+  }
+  return displace(geom, (v) => {
+    const d = -v.y;
+    let y0, z0, a;
+    if (d <= 0) {
+      a = ca[0]; y0 = -Math.cos(a) * d; z0 = Math.sin(a) * d;
+    } else if (d >= len) {
+      a = ca[N]; const e = d - len;
+      y0 = cy[N] - Math.cos(a) * e; z0 = cz[N] + Math.sin(a) * e;
+    } else {
+      const f = d / ds, i = Math.min(N - 1, Math.floor(f)), t = f - i;
+      y0 = cy[i] + (cy[i + 1] - cy[i]) * t;
+      z0 = cz[i] + (cz[i + 1] - cz[i]) * t;
+      a = ca[i] + (ca[i + 1] - ca[i]) * t;
+    }
+    const oz = v.z;
+    v.y = y0 + oz * Math.sin(a);
+    v.z = z0 + oz * Math.cos(a);
+  });
+}
+
+// side: -1 for the hand at -X, +1 for the hand at +X. The character faces +Z,
+// so -X is its right. Built palm-forward (+Z) with the thumb lateral, then the
+// caller turns it to face the thigh. This used to be one geometry for both
+// arms, which made the +X hand a mirror image with its thumb on the inside.
+export function handGeometry(scale = 1, side = -1) {
   const s = scale;
+  const ts = side;                 // which way the thumb sits, in X
   const parts = [];
 
+  // Rounder than it was (sq 0.9+ made a slab), a little broader across the
+  // knuckles, then cupped, with a thenar pad under the thumb and a smaller
+  // hypothenar pad on the little-finger side.
   const palm = loft([
-    { y: 0.012 * s, rx: 0.026 * s, rz: 0.017 * s, sq: 0.4 },
-    { y: -0.022 * s, rx: 0.040 * s, rz: 0.020 * s, sq: 0.7 },
-    { y: -0.062 * s, rx: 0.046 * s, rz: 0.021 * s, sq: 0.9 },
-    { y: -0.098 * s, rx: 0.044 * s, rz: 0.019 * s, sq: 0.95 },
-    { y: -0.112 * s, rx: 0.040 * s, rz: 0.017 * s, sq: 0.9 },
-  ], { sections: 10, radial: 16 });
+    { y: 0.012 * s, rx: 0.027 * s, rz: 0.018 * s, sq: 0.4 },
+    { y: -0.020 * s, rx: 0.041 * s, rz: 0.021 * s, sq: 0.55 },
+    { y: -0.060 * s, rx: 0.048 * s, rz: 0.022 * s, sq: 0.65 },
+    { y: -0.096 * s, rx: 0.047 * s, rz: 0.020 * s, sq: 0.70 },
+    { y: -0.110 * s, rx: 0.043 * s, rz: 0.017 * s, sq: 0.65 },
+    // Round the knuckle edge over instead of closing it with a flat cap —
+    // the cap's rim drew a hard dark line straight across the hand.
+    { y: -0.119 * s, rx: 0.034 * s, rz: 0.011 * s, sq: 0.50 },
+  ], { sections: 14, radial: 18 });
+  displace(palm, (v) => {
+    if (v.z <= 0) return;
+    v.z -= brush(v.x, v.y + 0.066 * s, 0, 0.022 * s, 0.026 * s, 1) * 0.005 * s;          // cup
+    v.z += brush(v.x - ts * 0.026 * s, v.y + 0.040 * s, 0, 0.016 * s, 0.024 * s, 1) * 0.007 * s; // thenar
+    v.z += brush(v.x + ts * 0.030 * s, v.y + 0.072 * s, 0, 0.012 * s, 0.026 * s, 1) * 0.004 * s; // hypothenar
+  });
   parts.push(palm);
 
+  // Index, middle, ring, little — index sits next to the thumb.
   const fingerLens = [0.084, 0.094, 0.089, 0.072].map((v) => v * s);
-  const fingerX = [-0.029, -0.0098, 0.0098, 0.029].map((v) => v * s);
-  const curl = [0.30, 0.22, 0.24, 0.34];
+  const fingerR = [0.0112, 0.0114, 0.0108, 0.0092].map((v) => v * s);
+  const fingerX = [-0.029, -0.0098, 0.0098, 0.029].map((v) => v * s * -ts);
+  // A relaxed hand curls more toward the little finger, at every joint.
+  const mcp = [0.20, 0.26, 0.32, 0.40];
+  const pip = [0.42, 0.52, 0.60, 0.66];
+  const dip = [0.18, 0.22, 0.26, 0.30];
   fingerLens.forEach((len, i) => {
-    const r = (i === 3 ? 0.0092 : 0.0112) * s;
+    const r = fingerR[i];
     const f = loft([
-      { y: 0, rx: r, rz: r * 0.92, sq: 0.3 },
-      { y: -len * 0.42, rx: r * 0.92, rz: r * 0.86, sq: 0.25 },
-      { y: -len * 0.78, rx: r * 0.82, rz: r * 0.78 },
-      { y: -len, rx: r * 0.62, rz: r * 0.60 },
-    ], { sections: 8, radial: 10 });
-    // Fingers rest slightly curled and fanned — never board-flat.
+      // Root buried well inside the palm so the join is the palm's surface,
+      // not the finger's end cap.
+      { y: len * 0.16, rx: r * 0.70, rz: r * 0.64, sq: 0.3 },
+      { y: 0, rx: r, rz: r * 0.90, sq: 0.3 },
+      { y: -len * 0.22, rx: r * 0.95, rz: r * 0.86, sq: 0.25 },
+      { y: -len * 0.46, rx: r * 0.97, rz: r * 0.88 },   // proximal knuckle
+      { y: -len * 0.60, rx: r * 0.86, rz: r * 0.80 },
+      { y: -len * 0.76, rx: r * 0.84, rz: r * 0.78 },   // distal knuckle
+      { y: -len * 0.92, rx: r * 0.74, rz: r * 0.68 },
+      { y: -len * 1.00, rx: r * 0.52, rz: r * 0.48 },
+      { y: -len * 1.04, rx: r * 0.18, rz: r * 0.16 },   // rounded pad, not a cut end
+    ], { sections: 24, radial: 10 });
+    curlDigit(f, len, [[0.48, pip[i]], [0.77, dip[i]]]);
     const m = new THREE.Matrix4()
-      .makeTranslation(fingerX[i], -0.104 * s, 0.002 * s)
-      .multiply(new THREE.Matrix4().makeRotationX(-curl[i]))
+      .makeTranslation(fingerX[i], -0.108 * s, 0.002 * s)
+      .multiply(new THREE.Matrix4().makeRotationX(-mcp[i]))
       .multiply(new THREE.Matrix4().makeRotationZ(-fingerX[i] * 3));
     f.applyMatrix4(m);
     parts.push(f);
   });
 
-  const thumbR = 0.0125 * s, thumbLen = 0.062 * s;
+  // Thumb: rooted in the thenar pad, swung out and forward into opposition,
+  // bent once at its own joint.
+  const thumbR = 0.0128 * s, thumbLen = 0.066 * s;
   const thumb = loft([
-    { y: 0, rx: thumbR, rz: thumbR * 0.9 },
-    { y: -thumbLen * 0.5, rx: thumbR * 0.92, rz: thumbR * 0.86 },
-    { y: -thumbLen, rx: thumbR * 0.66, rz: thumbR * 0.62 },
-  ], { sections: 6, radial: 10 });
+    { y: 0, rx: thumbR, rz: thumbR * 0.90 },
+    { y: -thumbLen * 0.30, rx: thumbR * 1.04, rz: thumbR * 0.92 },
+    { y: -thumbLen * 0.55, rx: thumbR * 0.92, rz: thumbR * 0.84 },
+    { y: -thumbLen * 0.80, rx: thumbR * 0.86, rz: thumbR * 0.78 },
+    { y: -thumbLen * 0.98, rx: thumbR * 0.60, rz: thumbR * 0.55 },
+    { y: -thumbLen * 1.04, rx: thumbR * 0.20, rz: thumbR * 0.18 },
+  ], { sections: 16, radial: 10 });
+  curlDigit(thumb, thumbLen, [[0.58, 0.40]]);
   thumb.applyMatrix4(new THREE.Matrix4()
-    .makeTranslation(-0.034 * s, -0.040 * s, 0.014 * s)
-    .multiply(new THREE.Matrix4().makeRotationZ(-0.45))
-    .multiply(new THREE.Matrix4().makeRotationX(-0.35)));
+    .makeTranslation(ts * 0.033 * s, -0.034 * s, 0.012 * s)
+    .multiply(new THREE.Matrix4().makeRotationZ(ts * 0.38))
+    .multiply(new THREE.Matrix4().makeRotationX(-0.45)));
   parts.push(thumb);
 
   const merged = mergeGeometries(parts, false);
@@ -492,7 +594,11 @@ export function shoeGeometry(kind = 'sneaker', scale = 1) {
 // FACE landmark directions in appearance.js line up with what gets painted)
 // and only scales to head dimensions at the end.
 export function headGeometry(v) {
-  const geom = new THREE.SphereGeometry(1, 60, 44);
+  // The sculpt brushes are finer than the old 60x44 grid could carry: the nose
+  // is ~11 degrees wide and spanned about two longitude columns, so it averaged
+  // out into a soft shadow instead of a ridge. 112x84 gives every facial
+  // feature at least three or four columns. ~9.5k verts a head, nine heads.
+  const geom = new THREE.SphereGeometry(1, 112, 84);
   const fem = v.gender === 'f';
   const age = clamp(((v.age || 28) - 30) / 30, 0, 1);
 
@@ -551,10 +657,14 @@ export function headGeometry(v) {
     oy -= brow * 0.010 * browF;
     oz += brush(x, y - 0.29, z - 0.90, 0.16, 0.10, 0.5) * 0.026 * browF; // glabella
     oz -= brush(ax - 0.40, y - 0.03, z - 0.82, 0.26, 0.19, 0.55) * 0.165; // orbit
-    const cheek = brush(ax - 0.60, y + 0.06, z - 0.64, 0.30, 0.24, 0.58);
+    // Cheekbone, not cheek: centred on the zygomatic arch (level with the
+    // lower eyelid, further out) and pushed mostly forward. The old brush sat
+    // low and pushed sideways, which puffed out the middle of the face — with
+    // the narrow chin that made the inverted-egg balloon read.
+    const cheek = brush(ax - 0.64, y - 0.00, z - 0.62, 0.28, 0.20, 0.58);
     const rad = Math.hypot(x, z) || 1;
-    ox += (x / rad) * cheek * 0.062 * v.cheek;
-    oz += (z / rad) * cheek * 0.052 * v.cheek;
+    ox += (x / rad) * cheek * 0.032 * v.cheek;
+    oz += (z / rad) * cheek * 0.046 * v.cheek;
     oz -= brush(ax - 0.55, y + 0.42, z - 0.55, 0.26, 0.24, 0.6) * (0.026 + age * 0.022);
 
     // --- Nose
