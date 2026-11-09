@@ -6,9 +6,9 @@
 // tapered limbs, a sculpted skull), skin/cloth/eyes from `appearance.js`, and
 // hairstyles from `hair.js`.
 //
-// The external contract is unchanged: createCharacter(hg) -> Object3D,
-// animateCharacter(char, moving, dt, t), updateTagName(char, name), and
-// userData.{ id, tag, status, headY, baseY }.
+// External contract: createCharacter(hg) -> Object3D,
+// animateCharacter(char, moving, dt, t), and userData.{ id, headY, baseY }.
+// Name labels live in ui/broadcast.js, not on the rig.
 
 import * as THREE from 'three';
 import {
@@ -705,16 +705,8 @@ export function createCharacter(hg) {
   blob.renderOrder = -1;
   g.add(blob);
 
-  // --- Tag + status ----------------------------------------------------------
-  const tag = makeTag(hg.name);
-  tag.userData = { name: hg.name };
-  tag.position.y = headY + 0.46;
-  g.add(tag);
-
-  const status = makeStatusSprite();
-  status.position.y = headY + 0.78;
-  status.visible = false;
-  g.add(status);
+  // Names and status (HoH, nominee, veto, approaching) are screen-space
+  // nameplates drawn by ui/broadcast.js, not sprites on the rig.
 
   g.userData = {
     id: hg.id,
@@ -722,7 +714,6 @@ export function createCharacter(hg) {
     arms, elbows, legs, knees, ankles,
     lids, mouth, blob,
     hairSwing: hair.swing,
-    tag, status,
     headY,
     baseY: 0,
     height: H,
@@ -742,89 +733,6 @@ export function createCharacter(hg) {
     speaking: 0,
   };
   return g;
-}
-
-// ---------------------------------------------------------------------------
-// Name tag / status sprites (unchanged contract)
-// ---------------------------------------------------------------------------
-
-// Online: a houseguest's name can change after their mesh was already built
-// (mid-season Take Over + rename). The tag sprite bakes its text into a
-// canvas texture once, so redraw it with a fresh sprite instead of trying to
-// mutate the old canvas in place.
-export function updateTagName(char, newName) {
-  const old = char.userData.tag;
-  if (!old || old.userData?.name === newName) return;
-  const fresh = makeTag(newName);
-  fresh.userData = { name: newName };
-  fresh.position.copy(old.position);
-  fresh.visible = old.visible;
-  fresh.renderOrder = old.renderOrder;
-  char.remove(old);
-  old.material.map?.dispose();
-  old.material.dispose();
-  char.add(fresh);
-  char.userData.tag = fresh;
-}
-
-function makeTag(name) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 72;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = 'rgba(16,30,30,0.90)';
-  roundRect(ctx, 4, 4, 248, 64, 10);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(220,198,146,0.45)';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.font = '500 32px Segoe UI, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#f3f0e7';
-  ctx.fillText(name, 128, 37, 228);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
-  sprite.scale.set(1.4, 0.394, 1);
-  sprite.renderOrder = 10;
-  return sprite;
-}
-
-const STATUS_EMOJI = { hoh: '👑', veto: '🛡️', nominee: '🎯', talk: '💬', approach: '❗' };
-
-function makeStatusSprite() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 96;
-  canvas.height = 96;
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
-  sprite.scale.set(0.75, 0.75, 1);
-  sprite.renderOrder = 11;
-  sprite.userData.setEmoji = (kind) => {
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, 96, 96);
-    if (kind) {
-      ctx.font = '72px system-ui';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(STATUS_EMOJI[kind] || kind, 48, 54);
-    }
-    tex.needsUpdate = true;
-    sprite.visible = !!kind;
-  };
-  return sprite;
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
 }
 
 // ---------------------------------------------------------------------------

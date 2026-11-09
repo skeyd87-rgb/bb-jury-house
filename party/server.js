@@ -28,7 +28,7 @@ import { randomCompType } from '../src/game/competition-catalog.js';
 // seat (the single-player 'you' slot) whose occupant names their houseguest.
 const SEAT_DEFS = [
   ...CAST.map((c) => ({ id: c.id, name: c.name, job: c.job, color: c.color, fixed: true })),
-  { id: 'newcomer', name: 'Newcomer', job: 'Houseguest', color: 0xfafafa, fixed: false },
+  { id: 'newcomer', name: 'Newcomer', job: 'Houseguest', color: 0xECE7DA, fixed: false },
 ];
 
 export class Room extends Server {

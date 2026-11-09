@@ -458,12 +458,6 @@ export class WorldController {
 
     // --- Camera
     const focusChar = this.focusNpcId ? this.npcs.get(this.focusNpcId) : null;
-    // Name tags read as giant billboards at close-up distance — hide them in focus mode.
-    const tagsVisible = !focusChar;
-    for (const [, c] of this.npcs) {
-      c.userData.tag.visible = tagsVisible;
-    }
-    if (this.player) this.player.userData.tag.visible = tagsVisible;
 
     if (focusChar && this.player) {
       // Slightly high over-the-shoulder shot framing the NPC's face; the

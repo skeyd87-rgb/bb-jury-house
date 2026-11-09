@@ -142,49 +142,45 @@ function woodTex(base = '#a97c50', dark = '#8a6238') {
   }, 3, 3);
 }
 
-function tileTex(base = '#b9cdd4', line = '#93aab2') {
+// Room floors. Rooms used to be told apart by flat pastel zones (lilac
+// bedroom, mint kitchen, grass-green yard), which read as a different show
+// from the UI. Now four desaturated tones plus brass for the HoH suite and a
+// dim red for the diary room; the rooms read apart by their lamps instead.
+// Grain everywhere so a quiet fill never reads as plastic.
+function floorTex(base, mode, repeat) {
   return canvasTex(256, (ctx, s) => {
     ctx.fillStyle = base;
     ctx.fillRect(0, 0, s, s);
-    const n = 4, t = s / n;
-    for (let i = 0; i <= n; i++) {
-      ctx.fillStyle = line;
-      ctx.fillRect(i * t - 1, 0, 3, s);
-      ctx.fillRect(0, i * t - 1, s, 3);
+    for (let i = 0; i < 2400; i++) {
+      ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.07})`;
+      ctx.fillRect(Math.random() * s, Math.random() * s, 2, 1);
     }
-    for (let i = 0; i < n; i++)
-      for (let j = 0; j < n; j++) {
-        ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.08})`;
-        ctx.fillRect(i * t + 2, j * t + 2, t - 4, t - 4);
+    if (mode === 'plank') {
+      ctx.lineWidth = 1;
+      for (let y = 0; y < s; y += 32) {
+        ctx.strokeStyle = 'rgba(0,0,0,0.26)';
+        ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(s, y + 0.5); ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,255,255,0.045)';
+        ctx.beginPath(); ctx.moveTo(0, y + 1.5); ctx.lineTo(s, y + 1.5); ctx.stroke();
       }
-  }, 4, 4);
-}
-
-function carpetTex(base) {
-  return canvasTex(128, (ctx, s) => {
-    ctx.fillStyle = base;
-    ctx.fillRect(0, 0, s, s);
-    for (let i = 0; i < 2600; i++) {
-      ctx.fillStyle = `rgba(${Math.random() < 0.5 ? '255,255,255' : '0,0,0'},${Math.random() * 0.07})`;
-      ctx.fillRect(Math.random() * s, Math.random() * s, 1.6, 1.6);
     }
-  }, 5, 5);
-}
-
-function grassTex() {
-  return canvasTex(256, (ctx, s) => {
-    ctx.fillStyle = '#5d8f4a';
-    ctx.fillRect(0, 0, s, s);
-    for (let i = 0; i < 3000; i++) {
-      const g = 120 + Math.random() * 70;
-      ctx.strokeStyle = `rgba(${40 + Math.random() * 40},${g},${45 + Math.random() * 30},0.35)`;
-      const x = Math.random() * s, y = Math.random() * s;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + (Math.random() - 0.5) * 3, y - 3 - Math.random() * 4);
-      ctx.stroke();
+    if (mode === 'tile') {
+      ctx.strokeStyle = 'rgba(255,255,255,0.055)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= s; i += 64) {
+        ctx.beginPath();
+        ctx.moveTo(i + 0.5, 0); ctx.lineTo(i + 0.5, s);
+        ctx.moveTo(0, i + 0.5); ctx.lineTo(s, i + 0.5);
+        ctx.stroke();
+      }
     }
-  }, 6, 3);
+    if (mode === 'grass') {
+      for (let i = 0; i < 4200; i++) {
+        ctx.fillStyle = `rgba(${Math.random() > 0.5 ? '190,205,160' : '70,95,70'},${Math.random() * 0.14})`;
+        ctx.fillRect(Math.random() * s, Math.random() * s, 1, 2);
+      }
+    }
+  }, repeat, repeat);
 }
 
 function plasterTex(tint = '#efe9dc') {
@@ -248,7 +244,9 @@ export function createScene(canvas) {
   renderer.toneMappingExposure = 1.05;
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0x10142a, 60, 110);
+  // Same green-black as the UI's --ink, so the far yard falls away into the
+  // frame instead of into a purple night from a different show.
+  scene.fog = new THREE.Fog(0x0A100F, 60, 110);
 
   const camera = new THREE.PerspectiveCamera(46, 2, 0.1, 300);
   camera.position.set(0, 22, 26);
@@ -283,9 +281,9 @@ function addSky(scene) {
     side: THREE.BackSide,
     depthWrite: false,
     uniforms: {
-      top: { value: new THREE.Color(0x0a0e24) },
-      mid: { value: new THREE.Color(0x1c2450) },
-      bot: { value: new THREE.Color(0x3b2d5e) },
+      top: { value: new THREE.Color(0x05090A) },
+      mid: { value: new THREE.Color(0x0B1413) },
+      bot: { value: new THREE.Color(0x18231F) },
     },
     vertexShader: `varying vec3 vPos; void main(){ vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: `varying vec3 vPos; uniform vec3 top; uniform vec3 mid; uniform vec3 bot;
@@ -307,11 +305,12 @@ function addSky(scene) {
   starGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
   const stars = new THREE.Points(
     starGeo,
-    new THREE.PointsMaterial({ color: 0xcfd8ff, size: 0.7, sizeAttenuation: true, transparent: true, opacity: 0.85 })
+    // A studio sky, not a planetarium: few, small, dim.
+    new THREE.PointsMaterial({ color: 0xBFCBC2, size: 0.5, sizeAttenuation: true, transparent: true, opacity: 0.3 })
   );
   scene.add(stars);
   fxCallbacks.push((t) => {
-    stars.material.opacity = 0.7 + Math.sin(t * 0.7) * 0.15;
+    stars.material.opacity = 0.28 + Math.sin(t * 0.7) * 0.06;
   });
 
   // Moon
@@ -340,9 +339,13 @@ function addSky(scene) {
   scene.add(moonGlow);
 }
 
+// Lit like a set: cool bounce from above, warm off the floor, one hard key,
+// a fill that keeps the yard off black, and a rim from behind the default
+// camera so people separate from the floor at play distance. The only warm
+// light in the house is the practicals (addRoomLights).
 function addLights(scene) {
-  scene.add(new THREE.HemisphereLight(0xd6e7e0, 0x70624e, 1.3));
-  const sun = new THREE.DirectionalLight(0xffe9cc, 2.1);
+  scene.add(new THREE.HemisphereLight(0xB9CBC6, 0x3B3426, 1.25));
+  const sun = new THREE.DirectionalLight(0xFFF2DC, 2.3);
   sun.position.set(-12, 30, 16);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
@@ -354,9 +357,13 @@ function addLights(scene) {
   sun.shadow.normalBias = 0.03;
   sun.shadow.radius = 3;
   scene.add(sun);
-  const fill = new THREE.DirectionalLight(0x9fc7c4, 0.8);
+  const fill = new THREE.DirectionalLight(0x86A5A1, 0.9);
   fill.position.set(-15, 12, -12);
   scene.add(fill);
+  // No shadows: one caster is enough, and a second doubles every contact shadow.
+  const rim = new THREE.DirectionalLight(0xC8DCE0, 1.15);
+  rim.position.set(-14, 18, -22);
+  scene.add(rim);
 }
 
 function mat(color, opts = {}) {
@@ -364,25 +371,25 @@ function mat(color, opts = {}) {
 }
 
 const FLOOR_TEX = {
-  living: () => woodTex('#a58e70', '#877155'),
-  kitchen: () => tileTex('#b9c3b9', '#a1ab9f'),
-  bedroom: () => carpetTex('#738b86'),
-  hoh: () => carpetTex('#a3906b'),
-  diary: () => carpetTex('#7c3030'),
-  backyard: () => grassTex(),
+  living: () => floorTex('#4A4036', 'plank', 4),
+  kitchen: () => floorTex('#394443', 'tile', 5),
+  bedroom: () => floorTex('#3C3A42', 'plank', 4),
+  hoh: () => floorTex('#5E4E2E', 'plank', 3),
+  diary: () => floorTex('#4A2520', 'tile', 3),
+  backyard: () => floorTex('#2B382A', 'grass', 8),
 };
 
 function buildHouse(scene) {
   const house = new THREE.Group();
 
   // Ground plate under everything
-  const ground = new THREE.Mesh(new THREE.BoxGeometry(64, 1, 54), mat(0x1b1d28, { roughness: 1 }));
+  const ground = new THREE.Mesh(new THREE.BoxGeometry(64, 1, 54), mat(0x0D1413, { roughness: 1 }));
   ground.position.y = -0.5;
   ground.receiveShadow = true;
   house.add(ground);
 
   // Continuous circulation floor beneath room finishes, including the eastern hall.
-  const circulation = new THREE.Mesh(new THREE.BoxGeometry(32, 0.2, 19), mat(0x9b9e8c));
+  const circulation = new THREE.Mesh(new THREE.BoxGeometry(32, 0.2, 19), mat(0x6E7266));
   circulation.position.set(4, 0.015, -2.5);
   circulation.receiveShadow = true;
   house.add(circulation);
@@ -509,7 +516,7 @@ function addLivingRoom(house) {
     leg.position.set(Math.cos(a) * 0.7, 0.27, Math.sin(a) * 0.7);
     table.add(leg);
   }
-  const bowl = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5), mat(0xdc2626));
+  const bowl = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5), mat(0xB4503F));
   bowl.rotation.x = Math.PI;
   bowl.position.y = 0.68;
   table.add(bowl);
@@ -535,7 +542,8 @@ function addLivingRoom(house) {
   // Memory wall: gold-framed portrait tiles
   const wallPanel = new THREE.Group();
   const frameMat = mat(0xc7a63c, { metalness: 0.6, roughness: 0.3 });
-  const colors = [0x3b82f6, 0xdc2626, 0xec4899, 0xf59e0b, 0x16a34a, 0x8b5cf6, 0x0ea5e9, 0xd946ef, 0xfafafa];
+  // The cast hues (cast.js), one frame per houseguest.
+  const colors = [0x4E7CA1, 0xB4503F, 0xC56C84, 0xD79A3C, 0x6E8F52, 0x7D6596, 0x4E9A93, 0xA85C8C, 0xECE7DA];
   for (let i = 0; i < 9; i++) {
     const frame = new THREE.Mesh(softBox(1.0, 1.2, 0.06), frameMat);
     frame.position.set((i % 3 - 1) * 1.18, Math.floor(i / 3) * 1.32, 0);
@@ -653,7 +661,7 @@ function addKitchen(house) {
   add(island, 7, 0, 2);
   for (const sx of [-1, 0, 1]) {
     const stool = new THREE.Group();
-    const sSeat = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.1, 12), mat(0xdc2626, { roughness: 0.5 }));
+    const sSeat = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.1, 12), mat(0xB4503F, { roughness: 0.5 }));
     sSeat.position.y = 0.72;
     stool.add(sSeat);
     const sLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 0.7, 8), mat(0x2b2b33, { metalness: 0.6 }));
@@ -985,10 +993,10 @@ function addBackyard(house) {
 
 function addRoomLights(house) {
   const lights = [
-    [-6, 2, 0xffe6c4, 4.5, 14],   // living
-    [7, 2, 0xd7f0ff, 4, 14],      // kitchen
-    [-6, -8, 0xc9b8ff, 3, 12],    // bedroom
-    [7, -8, 0xffe2a8, 3.5, 12],   // hoh
+    [-6, 2, 0xE8C184, 5.2, 15],   // living
+    [7, 2, 0xCFE3DA, 3.4, 15],    // kitchen: the one cool practical
+    [-6, -8, 0xC9A86A, 5.2, 15],  // bedroom
+    [7, -8, 0xF0CF93, 5.2, 15],   // hoh
   ];
   for (const [x, z, color, intensity, dist] of lights) {
     const l = new THREE.PointLight(color, intensity, dist);

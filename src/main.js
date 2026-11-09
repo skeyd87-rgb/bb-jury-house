@@ -2,7 +2,8 @@
 
 import { createScene } from './world/scene.js';
 import { WorldController } from './world/movement.js';
-import { createCharacter, updateTagName } from './world/characters.js';
+import { createCharacter } from './world/characters.js';
+import { createBroadcast } from './ui/broadcast.js';
 import { PLAYER_ID } from './game/cast.js';
 import {
   newGame, loadGame, saveGame, clearSave,
@@ -75,6 +76,7 @@ const canvas = document.getElementById('scene');
 const overlayRoot = document.getElementById('overlay-root');
 const { renderer, scene, camera, resize, updateFx } = createScene(canvas);
 const world = new WorldController(scene, camera, canvas);
+const broadcast = createBroadcast({ world, canvas });
 
 let g = null; // game state
 let busy = false; // an overlay/ceremony is running
@@ -470,13 +472,8 @@ function syncOnlineWorld(game) {
   for (const id of game.evicted) {
     if (world.npcs.has(id)) world.removeNpc(id);
   }
-  // A rename (Take Over, or a claim-time rename broadcast late) doesn't
-  // retroactively repaint an already-built name tag — refresh any that
-  // drifted from the current houseguest name.
-  for (const hg of game.houseguests) {
-    const char = world.npcs.get(hg.id) || (world.player?.userData.id === hg.id ? world.player : null);
-    if (char) updateTagName(char, hg.name);
-  }
+  // Renames (Take Over, a late claim) need no repaint: nameplates read names
+  // from the game state every frame (ui/broadcast.js).
   // HUD: week / phase / who's HoH & nominated.
   const meId = myEngineId();
   const me = game.houseguests.find((h) => h.id === meId);
@@ -1048,6 +1045,7 @@ function animate() {
   }
   updateFx(world.clock.elapsedTime);
   renderer.render(scene, camera);
+  broadcast.update(broadcastState());
 
   // Broadcast our own position to other connected humans (throttled).
   if (onlineMode && room && world.player) {
@@ -1080,18 +1078,35 @@ function refresh() {
       refresh();
     },
   });
-  updateStatusSprites();
   saveGame(g);
 }
 
-function updateStatusSprites() {
-  for (const [id, char] of world.npcs) {
-    const s = char.userData.status;
-    if (id === g.hoh) s.userData.setEmoji('hoh');
-    else if (id === g.vetoHolder) s.userData.setEmoji('veto');
-    else if (g.nominees.includes(id)) s.userData.setEmoji('nominee');
-    else s.userData.setEmoji(null);
+// What the nameplates and timecode need, from whichever game is live. Online
+// play tracks progress by turn kind rather than phase, and has no proactive
+// approaches.
+function broadcastState() {
+  if (onlineMode && onlineGame) {
+    const turn = onlineGame.turn || {};
+    return {
+      houseguests: onlineGame.houseguests || [],
+      hoh: onlineGame.hoh,
+      vetoHolder: onlineGame.vetoHolder,
+      nominees: onlineGame.nominees || [],
+      approachId: null,
+      week: onlineGame.week,
+      step: turn.kind === 'comp' ? (turn.comp === 'veto' ? 'veto_comp' : 'hoh_comp') : turn.kind,
+    };
   }
+  if (!g) return null;
+  return {
+    houseguests: g.houseguests,
+    hoh: g.hoh,
+    vetoHolder: g.vetoHolder,
+    nominees: g.nominees || [],
+    approachId: g.pendingApproach?.npcId || null,
+    week: g.week,
+    step: g.phase,
+  };
 }
 
 function setMoodForPhase() {
@@ -1427,9 +1442,7 @@ function scheduleApproaches() {
     if (g.pendingApproach) return;
     const ap = chooseApproacher(g);
     if (!ap) return;
-    g.pendingApproach = ap;
-    const char = world.npcs.get(ap.npcId);
-    if (char) char.userData.status.userData.setEmoji('approach');
+    g.pendingApproach = ap;   // their nameplate shows "→ YOU" while this is set
     world.summonNpc(ap.npcId);
     sting('knock');
 
