@@ -16,7 +16,7 @@ import {
 } from './game/season.js';
 import { buildFinaleContext, countJuryVotes, winnerFromJuryVotes, playerPlacement } from './game/finale.js';
 import { chooseApproacher, APPROACH_REASON_TEXT, allianceWillingness, formOfficialAlliance, leaveAlliance, applySpotted, mentionsHouseguest } from './game/social.js';
-import { pickHuddlePair, huddleIntel, recordIntel } from './game/intel.js';
+import { pickHuddlePair, huddleIntel, recordIntel, houseReadView } from './game/intel.js';
 import { showHouseRead } from './ui/houseread.js';
 import { randomCompType, COMP_NAMES, runComp } from './game/comps.js';
 import {
@@ -25,7 +25,7 @@ import {
 } from './ai/dialogue.js';
 import { onAiStatusChange, getAiStatus, setAiStatus } from './ai/status.js';
 import {
-  el, renderHud, showToast, clearToast, openChatPanel, closeChatPanel,
+  el, renderHud, resetHud, showToast, clearToast, openChatPanel, closeChatPanel,
   cinematic, cinematicWait, pickHouseguests, cinematicTextInput, confetti, titleScreen,
   openLiveGroupPanel, houseIntelPanel, lowerThird,
 } from './ui/ui.js';
@@ -173,6 +173,18 @@ function startOnlineSeason(game) {
   };
   wireOnlineSocialHandlers();
   wireReconnectHandling();
+  scheduleHuddles();
+  room.onHuddleIntel = (text) => {
+    sting('chime');
+    showToast(`<b>Overheard.</b> ${escHtml(text)}`, [
+      { label: 'House Read', style: 'gold', onClick: () => openHouseReadOnline('intel') },
+      { label: 'OK', style: '', onClick: () => {} },
+    ]);
+  };
+  room.onHuddleSpotted = (msg) => {
+    sting('knock');
+    showToast(`<b>${escHtml(msg.aName)}</b> and <b>${escHtml(msg.bName)}</b> go quiet the second they see you. They noticed.`);
+  };
   // Live position updates from other connected humans.
   room.onPos = (id, x, z, rotY) => world.setNetTarget(id, x, z, rotY);
   // The server reports whether each reply was actually AI-generated or the
@@ -188,11 +200,18 @@ function startOnlineSeason(game) {
 let openChatTargetId = null;
 let openChatPanelRef = null;
 
+function openHouseReadOnline(tab = 'people') {
+  if (onlineOverlay || compRunning || !onlineGame?.houseRead) return;
+  closeChatPanel();
+  showHouseRead(onlineGame.houseRead, tab);
+}
+
 async function openOnlineChat(targetId) {
   if (onlineOverlay || compRunning) return; // don't interrupt a ceremony/comp
   const hg = onlineGame.houseguests.find((h) => h.id === targetId);
   if (!hg || onlineGame.evicted.includes(targetId)) return;
   const isHuman = !!(onlineGame.humanSeats && onlineGame.humanSeats[targetId]);
+  if (world.inHuddle(targetId)) world.endHuddle(); // you walked up and broke it off (for you)
   world.freezeNpc(targetId, true);
   world.focusOn(targetId);
   // Human-human chat has real shared history server-side (unlike an AI
@@ -210,6 +229,9 @@ async function openOnlineChat(targetId) {
     color: hg.color,
     voice: { key: targetId, gender: hg.gender },
     thread,
+    // A person does not need to be handed a line; a houseguest played by the
+    // AI gets the same openers as single-player.
+    prompts: isHuman ? null : chatPrompts(targetId, onlinePromptView(onlineGame)),
     onSend: async (text) => {
       const { text: reply, note } = await room.sendChat(targetId, text);
       if (note) panel.addSystemMsg(note);
@@ -479,8 +501,7 @@ function syncOnlineWorld(game) {
   // HUD: week / phase / who's HoH & nominated.
   const meId = myEngineId();
   const me = game.houseguests.find((h) => h.id === meId);
-  const h = document.getElementById('hud');
-  h.innerHTML = '';
+  const h = resetHud();
   const top = el('div', 'hud-top');
   top.append(el('div', 'week', `<span class="live-dot"></span> Week ${String(game.week).padStart(2, '0')} · Online`));
   top.append(el('div', 'phase', phaseLabelOnline(game)));
@@ -543,6 +564,12 @@ function syncOnlineWorld(game) {
       btns.append(el('div', 'dock-note', 'Spectating'));
     }
   } else if (meId) {
+    if (game.houseRead) { // absent until the room server is on 0.5
+      const hr = el('button', 'bb', 'House Read');
+      hr.title = 'Where you stand with everyone, the vote count, and what you have overheard';
+      hr.onclick = () => openHouseReadOnline();
+      btns.append(hr);
+    }
     const dr = el('button', 'bb', 'Diary Room');
     dr.onclick = () => openDiaryOnline();
     btns.append(dr);
@@ -671,6 +698,7 @@ function handleOnlineTurn(game) {
   if (!game || game.phase === 'lobby') return;
   maybeUpgradeSpectator(game);
   syncOnlineWorld(game);
+  syncOnlineHuddle(game);
   const t = game.turn;
   if (!t) return;
   // Signature stable across waitingOn changes so we don't restart mid-action.
@@ -691,9 +719,22 @@ function amIActing(game, t) {
   return false;
 }
 
+// Turn kinds that are ceremonies: the house lines up in the living room and
+// the card drops to a lower third, as in single-player.
+const STAGED_TURNS = ['nominate', 'noms_result', 'veto_decision', 'veto_result', 'replacement', 'vote', 'eviction_result'];
+
 function renderOnlineTurn(game, t) {
   if (t.kind !== 'comp') compRunning = false; // never leave it stuck after a comp
   closeOnlineOverlay();
+  if (STAGED_TURNS.includes(t.kind)) {
+    closeChatPanel();
+    // Re-stage on every ceremony turn: someone may have been evicted or
+    // saved since the last one, and the line-up should close the gap.
+    world.beginStage(onlineActiveIds(game));
+    document.body.classList.add('staging');
+  } else {
+    stageOff();
+  }
   const myEngine = myEngineId();
   const host = iAmHost();
 
@@ -824,9 +865,40 @@ function renderOnlineTurn(game, t) {
     }
 
     case 'eviction_result': {
-      const lines = Object.entries(t.votes).map(([v, tg]) => `<div class="v"><b>${v}</b> → evict <b>${tg}</b></div>`).join('');
-      onlineOverlay = cinematic({ kicker: 'Live Eviction', title: `${t.evictedName} has been evicted.`, bodyHtml: `<div class="votes-list">${lines}</div><p class="muted">${t.evictedName} joins the jury.</p>` });
-      onlineOverlay.setActions(host ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      // One ballot at a time, in the order the server recorded them, so
+      // everyone in the room watches the same count build.
+      const ballots = Object.entries(t.votes);
+      const sides = Object.keys(t.tally);
+      const counts = Object.fromEntries(sides.map((n) => [n, 0]));
+      const ov = onlineOverlay = cinematic({
+        kicker: 'Live Eviction', title: 'The votes are in.',
+        bodyHtml: `<div class="jury-tally">${sides.map((n, i) => `<div class="t" data-side="${i}">${escHtml(n)}: 0</div>`).join('')}</div><div class="votes-list"></div>`,
+      });
+      const list = ov.card.querySelector('.votes-list');
+      const tied = sides.length === 2 && t.tally[sides[0]] === t.tally[sides[1]];
+      let i = 0;
+      const step = () => {
+        if (onlineOverlay !== ov || !ov.el.isConnected) return; // the turn moved on
+        if (i >= ballots.length) {
+          ov.card.querySelector('h2').textContent = `${t.evictedName} has been evicted.`;
+          list.insertAdjacentHTML('afterend', `<p class="muted">${tied ? 'A tie — the Head of Household broke it. ' : ''}${escHtml(t.evictedName)} joins the jury.</p>`);
+          sting('reveal');
+          ov.setActions(host ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+          return;
+        }
+        const [voter, target] = ballots[i++];
+        counts[target] = (counts[target] || 0) + 1;
+        list.append(el('div', 'v ev-in', `<b>${escHtml(voter)}</b> votes to evict <b>${escHtml(target)}</b>`));
+        list.scrollTop = list.scrollHeight;
+        sides.forEach((n, k) => {
+          const cell = ov.card.querySelector(`[data-side="${k}"]`);
+          cell.textContent = `${n}: ${counts[n]}`;
+          cell.classList.toggle('lead', counts[n] > counts[sides[1 - k]]);
+        });
+        sting('knock');
+        setTimeout(step, 1150);
+      };
+      setTimeout(step, 900);
       break;
     }
 
@@ -1063,7 +1135,7 @@ function animate() {
   } else {
     world.update();
   }
-  if (!onlineMode) updateHuddle();
+  updateHuddle();
   updateFx(world.clock.elapsedTime);
   renderFrame(world.clock.elapsedTime);
   broadcast.update(broadcastState());
@@ -1090,7 +1162,7 @@ function refresh() {
     onHouseRead: () => {
       if (busy || document.querySelector('.cinematic')) return;
       closeChatPanel();
-      showHouseRead(g);
+      showHouseRead(houseReadView(g));
     },
     onFormAlliance: () => formAllianceFlow(),
     onGroupChat: () => groupChatFlow(),
@@ -1123,6 +1195,7 @@ function broadcastState() {
       vetoHolder: onlineGame.vetoHolder,
       nominees: onlineGame.nominees || [],
       approachId: null,
+      huddleIds: world.huddle?.ready ? [world.huddle.a, world.huddle.b] : [],
       week: onlineGame.week,
       step: turn.kind === 'comp' ? (turn.comp === 'veto' ? 'veto_comp' : 'hoh_comp') : turn.kind,
     };
@@ -1205,20 +1278,32 @@ function openNpcChat(id, opener = null, approachReason = null) {
 
 // Openers that fit this person at this point in the week. They only fill the
 // input box; nothing is sent until the player sends it.
-function chatPrompts(id) {
+// `v` is the handful of facts the prompts depend on, so the same list serves
+// single-player (from `g`) and online (from the server snapshot).
+function soloPromptView() {
+  return { hoh: g.hoh, nominees: g.nominees, vetoHolder: g.vetoHolder, phase: g.phase, me: PLAYER_ID, allied: (id) => sharedAlliance(g, id, PLAYER_ID) };
+}
+function onlinePromptView(game) {
+  const allies = new Set((game.myAlliances || []).flatMap((a) => a.memberNames));
+  return {
+    hoh: game.hoh, nominees: game.nominees || [], vetoHolder: game.vetoHolder, phase: game.phase, me: myEngineId(),
+    allied: (id) => allies.has(nm(game, id)),
+  };
+}
+function chatPrompts(id, v = soloPromptView()) {
   const out = [];
-  const nominated = g.nominees.includes(id);
-  const meNominated = g.nominees.includes(PLAYER_ID);
-  const blockSet = g.nominees.length === 2;
-  if (g.hoh === id && g.phase === 'social_hoh') out.push({ label: 'Ask for safety', text: 'Am I safe with you this week? Tell me where your head is at for nominations.' });
-  if (g.hoh === PLAYER_ID && g.phase === 'social_hoh') out.push({ label: 'Offer safety', text: "I'm not putting you up this week. You have my word." });
-  if (g.hoh === id && g.phase === 'renom_watch') out.push({ label: 'Stay off the block', text: "Don't put me up as the replacement. Tell me what you need from me." });
-  if (g.vetoHolder === id && meNominated && ['social_veto', 'veto_lobby'].includes(g.phase)) out.push({ label: 'Ask for the veto', text: 'I need you to use the veto on me. What would it take?' });
-  if (g.vetoHolder === PLAYER_ID && nominated && g.phase === 'veto_lobby') out.push({ label: 'Name your price', text: 'If I use the veto on you, what do I get?' });
-  if (blockSet && meNominated && !nominated && g.hoh !== id) out.push({ label: 'Ask for their vote', text: 'I need your vote to stay. Keep me this week and I will not forget it.' });
-  if (blockSet && !meNominated && nominated && g.hoh !== PLAYER_ID) out.push({ label: 'Promise your vote', text: 'You have my vote to stay this week.' });
-  if (blockSet && !nominated && g.hoh !== id) out.push({ label: 'Count their vote', text: 'Who are you voting to evict this week?' });
-  if (!sharedAlliance(g, id, PLAYER_ID)) out.push({ label: 'Pitch an alliance', text: 'I think you and I should be working together. Are you in?' });
+  const nominated = v.nominees.includes(id);
+  const meNominated = v.nominees.includes(v.me);
+  const blockSet = v.nominees.length === 2;
+  if (v.hoh === id && v.phase === 'social_hoh') out.push({ label: 'Ask for safety', text: 'Am I safe with you this week? Tell me where your head is at for nominations.' });
+  if (v.hoh === v.me && v.phase === 'social_hoh') out.push({ label: 'Offer safety', text: "I'm not putting you up this week. You have my word." });
+  if (v.hoh === id && v.phase === 'renom_watch') out.push({ label: 'Stay off the block', text: "Don't put me up as the replacement. Tell me what you need from me." });
+  if (v.vetoHolder === id && meNominated && ['social_veto', 'veto_lobby'].includes(v.phase)) out.push({ label: 'Ask for the veto', text: 'I need you to use the veto on me. What would it take?' });
+  if (v.vetoHolder === v.me && nominated && v.phase === 'veto_lobby') out.push({ label: 'Name your price', text: 'If I use the veto on you, what do I get?' });
+  if (blockSet && meNominated && !nominated && v.hoh !== id) out.push({ label: 'Ask for their vote', text: 'I need your vote to stay. Keep me this week and I will not forget it.' });
+  if (blockSet && !meNominated && nominated && v.hoh !== v.me) out.push({ label: 'Promise your vote', text: 'You have my vote to stay this week.' });
+  if (blockSet && !nominated && v.hoh !== id) out.push({ label: 'Count their vote', text: 'Who are you voting to evict this week?' });
+  if (!v.allied(id)) out.push({ label: 'Pitch an alliance', text: 'I think you and I should be working together. Are you in?' });
   out.push({ label: 'Ask their target', text: 'If you win HoH next, who are you going after?' });
   out.push({ label: 'Check in', text: 'How are you holding up in here?' });
   return out.slice(0, 4);
@@ -1237,10 +1322,35 @@ let listenFor = 0;
 let huddleTickAt = 0;
 let listenEl = null;
 
+// Online, the room server picks the pair and holds the truth: it puts the
+// huddle in everyone's snapshot, hands out the intel, and applies the cost of
+// being caught. Each client walks the two houseguests to its own quiet spot —
+// AI positions are not synced between clients (a pinned decision), so the
+// spot does not need to be either.
+let onlineHuddleId = null;   // the server huddle this client is currently showing
+let spentHuddleId = null;    // one this player already heard or blew
+function syncOnlineHuddle(game) {
+  const h = game?.turn?.kind === 'social' ? game.huddle : null;
+  if (!h) {
+    if (onlineHuddleId) { world.endHuddle(); onlineHuddleId = null; }
+    return;
+  }
+  if (h.id === onlineHuddleId || h.id === spentHuddleId || isSpectator()) return;
+  if (!world.npcs.has(h.a) || !world.npcs.has(h.b)) return;
+  world.endHuddle();
+  if (world.startHuddle(h.a, h.b)) onlineHuddleId = h.id; // no free spot: retried on the next tick
+}
+
 function scheduleHuddles() {
   clearInterval(huddleTimer);
   huddleTimer = setInterval(() => {
-    if (busy || !g || onlineMode || world.huddle) return;
+    if (onlineMode) {
+      if (!room || !onlineGame || isSpectator() || onlineGame.turn?.kind !== 'social') return;
+      syncOnlineHuddle(onlineGame);
+      if (!onlineGame.huddle && !onlineOverlay && Math.random() < 0.45) room.send('huddleRequest');
+      return;
+    }
+    if (busy || !g || world.huddle) return;
     if (!SOCIAL_WINDOWS.includes(g.phase)) return;
     if (document.querySelector('.cinematic, #chat-panel')) return;
     if (Math.random() > 0.45) return;
@@ -1265,14 +1375,17 @@ function updateHuddle() {
   const dt = Math.min(0.1, (now - huddleTickAt) / 1000);
   huddleTickAt = now;
   const h = world.huddle;
-  if (!g || !h || !h.ready || !world.player || busy || document.querySelector('#chat-panel, .cinematic')) {
+  const live = onlineMode ? (onlineGame && onlineHuddleId && !onlineOverlay && !compRunning) : (g && !busy);
+  if (!live || !h || !h.ready || !world.player || document.querySelector('#chat-panel, .cinematic')) {
     listenFor = 0;
     if (listenEl) paintListen(0, false);
     return;
   }
-  if (!g.tips?.huddle && !document.getElementById('toast')) {
-    g.tips = { ...(g.tips || {}), huddle: true };
-    showToast(`<b>${nameOf(g, h.a)}</b> and <b>${nameOf(g, h.b)}</b> have stepped aside to talk game. Stand inside the <b>gold ring</b> to listen in. Cross the <b>red ring</b> and they will see you.`);
+  const nameIn = (id) => escHtml(onlineMode ? nm(onlineGame, id) : nameOf(g, id));
+  const tipSeen = onlineMode ? !!safeLocal('bbjury.tip.huddle') : !!g.tips?.huddle;
+  if (!tipSeen && !document.getElementById('toast')) {
+    if (onlineMode) safeLocal('bbjury.tip.huddle', '1'); else g.tips = { ...(g.tips || {}), huddle: true };
+    showToast(`<b>${nameIn(h.a)}</b> and <b>${nameIn(h.b)}</b> have stepped aside to talk game. Stand inside the <b>gold ring</b> to listen in. Cross the <b>red ring</b> and they will see you.`);
   }
   const p = world.player.position;
   const d = Math.hypot(p.x - h.x, p.z - h.z);
@@ -1288,7 +1401,28 @@ function updateHuddle() {
   if (listenFor >= LISTEN_SECONDS) huddleHeard(h);
 }
 
+const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function safeLocal(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    localStorage.setItem(key, value);
+  } catch { /* private mode */ }
+  return null;
+}
+
+// Online: tell the server and stop showing this huddle. The intel (or the
+// news that you were seen) comes back as its own message.
+function reportOnlineHuddle(type) {
+  room.send(type, { id: onlineHuddleId });
+  spentHuddleId = onlineHuddleId;
+  onlineHuddleId = null;
+  world.endHuddle();
+  listenFor = 0;
+  paintListen(0, false);
+}
+
 function huddleHeard(h) {
+  if (onlineMode) return reportOnlineHuddle('huddleHeard');
   const item = recordIntel(g, huddleIntel(g, h.a, h.b));
   world.endHuddle();
   listenFor = 0;
@@ -1296,12 +1430,13 @@ function huddleHeard(h) {
   sting('chime');
   refresh(); // before the toast: a HUD rebuild clears it
   showToast(`<b>Overheard.</b> ${item.text}`, [
-    { label: 'House Read', style: 'gold', onClick: () => showHouseRead(g, 'intel') },
+    { label: 'House Read', style: 'gold', onClick: () => showHouseRead(houseReadView(g), 'intel') },
     { label: 'OK', style: '', onClick: () => {} },
   ]);
 }
 
 function huddleSpotted(h) {
+  if (onlineMode) return reportOnlineHuddle('huddleSpotted');
   applySpotted(g, h.a, h.b);
   world.endHuddle();
   listenFor = 0;

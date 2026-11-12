@@ -243,7 +243,91 @@ async function testApiChatAllowsConfiguredOriginsToReachKeyCheck() {
   if (res.status !== 503) throw new Error(`allowed-origin api chat returned ${res.status}, expected 503 without local key`);
 }
 
+// Two humans (the newcomer seat and Rae) played through to the first
+// free-roam window, where House Read and huddles are live.
+async function setupSocialRoom(prefix) {
+  const room = await setupStartedRoom(prefix);
+  send(room.host, { type: 'advanceTurn' });
+  await waitTurn(room.host, 'comp');
+  send(room.host, { type: 'compScore', score: 10 });
+  send(room.rae, { type: 'compScore', score: 10 });
+  await waitTurn(room.host, 'comp_result');
+  send(room.host, { type: 'advanceTurn' });
+  await waitTurn(room.host, 'social');
+  await waitTurn(room.rae, 'social');
+  return room;
+}
+
+async function testHouseReadIsPrivateTieredAndBlindToHumans() {
+  const { code, host, rae } = await setupSocialRoom('BB-R');
+  const spectator = openClient(code, 'Watcher', `watch_${code}`);
+  await waitFor(spectator, (m) => m.type === 'game');
+  const hostRead = latest(host, 'game')?.game?.houseRead;
+  const raeRead = latest(rae, 'game')?.game?.houseRead;
+  const watcherGame = latest(spectator, 'game')?.game;
+  closeAll(host, rae, spectator);
+  if (!hostRead || !raeRead) throw new Error('a seated human got no House Read');
+  if (watcherGame?.houseRead) throw new Error('a spectator was sent a House Read');
+  if (hostRead.people.some((p) => p.id === 'you')) throw new Error("the host's read includes themselves");
+  if (raeRead.people.some((p) => p.id === 'rae')) throw new Error("Rae's read includes herself");
+  const raeSeenByHost = hostRead.people.find((p) => p.id === 'rae');
+  if (!raeSeenByHost?.read.human || raeSeenByHost.read.trust) throw new Error('a human seat was read out to another player');
+  for (const p of hostRead.people) {
+    if (p.read.human) continue;
+    for (const k of ['trust', 'bond', 'threat']) {
+      const lv = p.read[k]?.level;
+      if (!Number.isInteger(lv) || lv < 0 || lv > 4) throw new Error(`${p.id} ${k} is not a tier: ${JSON.stringify(p.read[k])}`);
+    }
+  }
+  // Tiers only: no raw relationship numbers anywhere in the projection.
+  if (/"(trust|bond|threat)":\s*\d/.test(JSON.stringify(hostRead))) throw new Error('raw relationship numbers leaked into House Read');
+}
+
+async function testHuddleIntelGoesOnlyToTheListener() {
+  const { host, rae } = await setupSocialRoom('BB-H');
+  send(host, { type: 'huddleRequest' });
+  const withHuddle = await waitFor(rae, (m) => m.type === 'game' && m.game?.huddle);
+  const h = withHuddle.game.huddle;
+  if ([h.a, h.b].some((id) => id === 'rae' || id === 'you')) throw new Error('a human seat was put in a huddle');
+  if (h.a === h.b) throw new Error('huddle pair is one person');
+
+  send(host, { type: 'huddleHeard', id: h.id });
+  const intel = await waitFor(host, (m) => m.type === 'huddleIntel');
+  if (!intel.text || /undefined|NaN/.test(intel.text)) throw new Error('bad intel text: ' + intel.text);
+  send(host, { type: 'huddleHeard', id: h.id }); // a second claim on the same huddle
+  await delay(400);
+  const hostIntel = host.messages.filter((m) => m.type === 'huddleIntel').length;
+  const raeIntel = rae.messages.filter((m) => m.type === 'huddleIntel').length;
+  const hostBook = latest(host, 'game')?.game?.houseRead?.intel || [];
+  const raeBook = latest(rae, 'game')?.game?.houseRead?.intel || [];
+  if (hostIntel !== 1) throw new Error(`listener received ${hostIntel} intel messages for one huddle`);
+  if (raeIntel !== 0) throw new Error('intel was sent to a player who did not listen');
+  if (hostBook.length !== 1 || raeBook.length !== 0) throw new Error(`notebooks: host ${hostBook.length}, rae ${raeBook.length}`);
+
+  // Rae gets caught: the huddle ends for everyone, and only she is told.
+  send(rae, { type: 'huddleSpotted', id: h.id });
+  await waitFor(rae, (m) => m.type === 'huddleSpotted');
+  await delay(300);
+  const ended = !latest(host, 'game')?.game?.huddle && !latest(rae, 'game')?.game?.huddle;
+  const hostTold = host.messages.some((m) => m.type === 'huddleSpotted');
+  closeAll(host, rae);
+  if (!ended) throw new Error('huddle still live after someone was spotted');
+  if (hostTold) throw new Error('the wrong player was told they were spotted');
+}
+
+async function testHuddlesOnlyDuringFreeRoam() {
+  const { host } = await setupStartedRoom('BB-N'); // still on the week intro card
+  send(host, { type: 'huddleRequest' });
+  await delay(500);
+  const huddle = latest(host, 'game')?.game?.huddle;
+  closeAll(host);
+  if (huddle) throw new Error('a huddle started outside a free-roam window');
+}
+
 const tests = [
+  testHouseReadIsPrivateTieredAndBlindToHumans,
+  testHuddleIntelGoesOnlyToTheListener,
+  testHuddlesOnlyDuringFreeRoam,
   testNoPrivateIdsInState,
   testNoPrivateIdsInGame,
   testSpoofedPidCannotReleaseSeat,

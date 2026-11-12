@@ -508,18 +508,18 @@ function pairwise(arr) {
 
 // The player was caught hovering over a private conversation. Both speakers
 // clam up and mark the player as someone working angles.
-export function applySpotted(g, a, b) {
+export function applySpotted(g, a, b, viewerId = PLAYER_ID) {
   for (const id of [a, b]) {
-    const r = g.social[id]?.[PLAYER_ID];
+    const r = g.social[id]?.[viewerId];
     if (!r) continue;
     r.threat = clamp(r.threat + 5);
     r.trust = clamp(r.trust - 4);
     g.memory[id].gossipHeard.push({
-      text: `caught ${nameOf(g, PLAYER_ID)} hovering while I was talking to ${nameOf(g, id === a ? b : a)}`,
-      aboutId: PLAYER_ID, fromId: id, week: g.week, believed: true,
+      text: `caught ${nameOf(g, viewerId)} hovering while I was talking to ${nameOf(g, id === a ? b : a)}`,
+      aboutId: viewerId, fromId: id, week: g.week, believed: true,
     });
   }
-  logEvent(g, 'spotted', `${nameOf(g, a)} and ${nameOf(g, b)} caught you listening in.`, [a, b]);
+  logEvent(g, 'spotted', `${nameOf(g, a)} and ${nameOf(g, b)} caught ${nameOf(g, viewerId)} listening in.`, [a, b]);
 }
 
 export function personality(g, id) {

@@ -57,9 +57,13 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
   - Memory text that enters a prompt names the player; "you" in a prompt means the houseguest reading it.
 
 - **Intel never moves the game.** Everything in `intel.js` except `recordIntel` must leave `g.social`, `g.promises` and `g.alliances` untouched; `sim.js` `checkIntel` compares them byte-for-byte every simulated week. The only cost of listening is `applySpotted` (social.js), when the player is caught.
-- Huddles (`world.startHuddle` / `endHuddle`, ranges `LISTEN_R`/`SPOT_R`) are single-player only and must end at every phase boundary (`advance()`), when either speaker is frozen for a chat, and on their own timeout.
+- Huddles (`world.startHuddle` / `endHuddle`, ranges `LISTEN_R`/`SPOT_R`) must end at every phase boundary (`advance()`; online, any non-`social` turn), when either speaker is frozen for a chat, and on their own timeout.
+- **Online, the server owns huddles and intel.** `party/server.js` picks the pair (AI-played seats only), publishes `game.huddle` to everyone, and answers `huddleHeard` / `huddleSpotted` — the text of what was said goes only to the listener. Each client walks the pair to its own spot, because AI positions are not synced between clients. `this.huddle` is transient, never persisted.
+- **House Read online is built per viewer on the server** (`houseReadView(g, viewerId, humanIds)` → `game.houseRead` in that viewer's slice only). Tiers, never numbers; no lean for anyone who would not confide in that viewer; nothing at all read off a seat a human has claimed. `src/ui/houseread.js` renders that view model and never sees game state — keep it that way, it is what makes the same panel safe in both modes.
+- Everything in `intel.js` takes the viewer. Single-player passes nothing (viewer `'you'`, notebook `g.intel`); the server passes the engine id (notebook `g.intelBy[id]`).
 - Staged ceremonies: `stageOn()`/`stageOff()` in main.js are idempotent and `advance()` always calls `stageOff()` — a ceremony that throws must not leave the house frozen in a line-up or `body.staging` set (it hides the HUD).
-- **Call `refresh()` before `showToast()`, never after.** The toast lives inside `#hud`, and a HUD rebuild wipes it.
+- Clear the HUD with `resetHud()` (ui.js), never `innerHTML = ''`: the toast lives inside `#hud` and `resetHud` carries a live one across the rebuild. Online the HUD is rebuilt on every snapshot, so a raw wipe eats alliance invites and intel the instant anyone does anything.
+- The room server is a separate Cloudflare Worker (`npx wrangler deploy`), not part of the GitHub Pages deploy. Anything under `src/game/` or `party/` reaches online games only after that redeploy. The client must keep working against an older server: treat `game.houseRead` and `game.huddle` as optional.
 
 - Diary Room must have **zero** game-state side effects.
 - Jury notes are snapshotted at eviction (`snapshotJuryNotes`) — jurors judge from what they knew then.

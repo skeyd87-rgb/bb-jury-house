@@ -173,6 +173,10 @@ export class Room {
       } else if (msg.type === 'roomClosed') {
         this._explicitDisconnect = true; // host ended it — don't try to reconnect
         this.onRoomClosed && this.onRoomClosed(msg.reason);
+      } else if (msg.type === 'huddleIntel') {
+        this.onHuddleIntel && this.onHuddleIntel(msg.text);
+      } else if (msg.type === 'huddleSpotted') {
+        this.onHuddleSpotted && this.onHuddleSpotted(msg);
       } else if (msg.type === 'takeoverNotice') {
         this.onTakeoverNotice && this.onTakeoverNotice(msg.text);
       }

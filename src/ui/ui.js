@@ -66,9 +66,21 @@ export function lowerThird() {
   return el('div', 'bc-lower');
 }
 
-export function renderHud(g, handlers) {
+// The toast lives inside #hud, and the HUD is rebuilt from scratch on every
+// refresh (online: on every snapshot, which any player's action triggers).
+// Lift a live toast out before the wipe and put it back after, or an alliance
+// invite or a piece of overheard intel vanishes the moment anything changes.
+export function resetHud() {
   const h = hud();
+  const toast = document.getElementById('toast');
+  toast?.remove();
   h.innerHTML = '';
+  if (toast) queueMicrotask(() => { if (!document.getElementById('toast')) h.append(toast); });
+  return h;
+}
+
+export function renderHud(g, handlers) {
+  const h = resetHud();
 
   const top = el('div', 'hud-top');
   top.append(el('div', 'week', `<span class="live-dot"></span> Week ${String(g.week).padStart(2, '0')} · ${activeIds(g).length} houseguests`));

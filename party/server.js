@@ -14,8 +14,9 @@ import {
   applyEviction, nextPhase, phaseLabel,
 } from '../src/game/season.js';
 import {
-  simulateHouseLife, applyChatEffects, formOfficialAlliance, leaveAlliance, allianceWillingness, settleWeekPromises,
+  simulateHouseLife, applyChatEffects, formOfficialAlliance, leaveAlliance, allianceWillingness, settleWeekPromises, applySpotted,
 } from '../src/game/social.js';
+import { pickHuddlePair, huddleIntel, recordIntel, houseReadView } from '../src/game/intel.js';
 import { fallbackChat, fallbackDiary } from '../src/ai/fallback.js';
 import {
   serverNpcChat, serverJurorQuestion, serverOpponentAnswer, serverJurorVote,
@@ -170,6 +171,10 @@ export class Room extends Server {
       jury: g.jury,
       evicted: g.evicted,
       humanSeats,
+      // Two AI houseguests talking game where it can be overheard. Who and
+      // that it is happening is public (anyone in the house can see it);
+      // what is said goes only to a player who listens in.
+      huddle: this.liveHuddle(),
       myEngineId: viewerEngineId || null,
       turn: this.projectTurn(viewerPid),
       houseguests: g.houseguests.map((h) => ({
@@ -195,8 +200,64 @@ export class Room extends Server {
           withName: nameOf(g, p.from === viewerEngineId ? p.to : p.from),
           direction: p.from === viewerEngineId ? 'made' : 'received',
         }));
+      // House Read: this viewer's own read of the house, and nothing else.
+      // It is built by the same function single-player uses, which returns
+      // tiers rather than numbers, hides the lean of anyone who would not
+      // confide in this viewer, and reads nothing at all off a seat a human
+      // has claimed. Never send another player's view.
+      base.houseRead = houseReadView(g, viewerEngineId, Object.keys(this.state.humanSeats || {}));
     }
     return base;
+  }
+
+  // ---- Huddles ---------------------------------------------------------------
+  // Transient (not persisted): a huddle that was in flight when the room
+  // restarted is simply gone, and the next request starts another.
+
+  liveHuddle() {
+    const h = this.huddle;
+    if (!h || Date.now() > h.until || this.turn?.kind !== 'social') return null;
+    return { id: h.id, a: h.a, b: h.b };
+  }
+
+  handleHuddleRequest(pid) {
+    const g = this.game;
+    if (!g || this.turn?.kind !== 'social' || !this.engineForPlayer(pid)) return;
+    const now = Date.now();
+    if (this.liveHuddle() || now - (this.lastHuddleAt || 0) < 15000) return;
+    // Only houseguests the AI is playing step aside: a claimed seat is a
+    // person, and the engine has no idea what a person is plotting.
+    const pair = pickHuddlePair(g, Math.random, Object.keys(this.state.humanSeats || {}));
+    if (!pair) return;
+    this.lastHuddleAt = now;
+    this.huddle = { id: 'h' + now, a: pair[0], b: pair[1], until: now + 50000, heardBy: [] };
+    this.broadcastGame();
+  }
+
+  async handleHuddleHeard(pid, id) {
+    const g = this.game;
+    const h = this.huddle;
+    const viewer = this.engineForPlayer(pid);
+    if (!g || !viewer || !this.liveHuddle() || h.id !== id || h.heardBy.includes(viewer)) return;
+    h.heardBy.push(viewer);
+    const item = recordIntel(g, huddleIntel(g, h.a, h.b, Math.random, viewer), viewer);
+    await this.saveGame();
+    // Snapshot first: a snapshot rebuilds the HUD, which would wipe the toast
+    // the intel message raises.
+    this.broadcastGame();
+    this.sendToPid(pid, { type: 'huddleIntel', text: item.text });
+  }
+
+  async handleHuddleSpotted(pid, id) {
+    const g = this.game;
+    const h = this.huddle;
+    const viewer = this.engineForPlayer(pid);
+    if (!g || !viewer || !this.liveHuddle() || h.id !== id) return;
+    applySpotted(g, h.a, h.b, viewer);
+    this.huddle = null; // they stop talking — for everyone
+    await this.saveGame();
+    this.broadcastGame();
+    this.sendToPid(pid, { type: 'huddleSpotted', aName: nameOf(g, h.a), bName: nameOf(g, h.b) });
   }
 
   broadcastGame() {
@@ -228,6 +289,7 @@ export class Room extends Server {
 
   async setTurn(turn) {
     this.turn = turn;
+    if (turn?.kind !== 'social') this.huddle = null;
     this.applyTurnTimer();
     await this.commit();
   }
@@ -895,6 +957,7 @@ export class Room extends Server {
       type: 'chatReply', npcId: targetId, text: reply, usedAi: !!result.usedAi,
       note: fx.promiseMade ? `📋 Promise recorded: "${fx.promiseMade.text}"`
         : (fx.allianceProposal?.accepted || fx.allianceSignal === 'accept') ? `🤝 ${nameOf(g, targetId)} is in.`
+        : fx.allianceSignal === 'propose' ? `🤝 ${nameOf(g, targetId)} is offering to work together. Nothing is agreed until you say yes.`
         : fx.suspicionOfLie ? `👀 ${nameOf(g, targetId)} didn't seem to buy that…` : null,
     }));
   }
@@ -1449,6 +1512,21 @@ export class Room extends Server {
       case 'diary': {
         const pid = this.connToPlayer.get(connection.id);
         if (pid) await this.handleDiary(pid, msg.text);
+        return;
+      }
+      case 'huddleRequest': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) this.handleHuddleRequest(pid);
+        return;
+      }
+      case 'huddleHeard': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleHuddleHeard(pid, String(msg.id || ''));
+        return;
+      }
+      case 'huddleSpotted': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleHuddleSpotted(pid, String(msg.id || ''));
         return;
       }
       case 'forceResolve': {
