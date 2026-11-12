@@ -8,6 +8,27 @@ import { BOUNDS, findPath, turnToward, recoverPosition } from './navigation.js';
 const WALK_SPEED = 4.2;
 const NPC_SPEED = 1.8;
 
+// Eavesdropping ranges, shared with the director (main.js). Inside LISTEN_R
+// you can hear a huddle; inside SPOT_R they can see you doing it.
+export const LISTEN_R = 4.6;
+export const SPOT_R = 2.3;
+
+// Where the house gathers for a ceremony: an arc north of the coffee table,
+// facing the sofa (and the default camera).
+const STAGE = { x: -6, z: 3.0, r: 3.5 };
+
+function flatRing(inner, outer, color, opacity) {
+  const m = new THREE.Mesh(
+    new THREE.RingGeometry(inner, outer, 72),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide })
+  );
+  m.rotation.x = -Math.PI / 2;
+  m.position.y = 0.26;
+  m.renderOrder = 2;
+  m.visible = false;
+  return m;
+}
+
 function nearestRoom(x, z) {
   const direct = roomAt(x, z);
   if (direct) return direct;
@@ -111,6 +132,19 @@ export class WorldController {
     this.clock = new THREE.Clock();
     this.inputLocked = false;
     this.onNpcClick = null; // (id) => {}
+    this.huddle = null;     // { a, b, x, z, until, ready }
+    this.stage = null;      // { slots: Map<id,{x,z,rotY}>, t0 } while a ceremony is staged
+    this.hoverId = null;
+
+    // Floor feedback: who you'd click, where you're walking, where a
+    // conversation can be overheard from.
+    this.hoverRing = flatRing(0.46, 0.54, 0xC9A86A, 0.85);
+    this.playerRing = flatRing(0.42, 0.47, 0xECE7DA, 0.4);
+    this.moveRing = flatRing(0.22, 0.3, 0xECE7DA, 0.8);
+    this.listenRing = flatRing(LISTEN_R - 0.07, LISTEN_R, 0xC9A86A, 0.55);
+    this.spotRing = flatRing(SPOT_R - 0.06, SPOT_R, 0xD9483C, 0.6);
+    this.moveRingAt = -10;
+    for (const r of [this.hoverRing, this.playerRing, this.moveRing, this.listenRing, this.spotRing]) scene.add(r);
 
     window.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -141,9 +175,12 @@ export class WorldController {
     });
 
     canvas.addEventListener('pointermove', (e) => {
-      if (this.uiBlocked()) return;
+      if (this.uiBlocked()) { this.setHover(null); return; }
       const p = this._pointers.get(e.pointerId);
-      if (!p) return;
+      if (!p) {
+        if (e.pointerType === 'mouse') this.setHover(this.pickNpc(e));
+        return;
+      }
       const dx = e.clientX - p.x;
       p.x = e.clientX;
       p.y = e.clientY;
@@ -224,6 +261,33 @@ export class WorldController {
     }
   }
 
+  // Which houseguest is under the pointer? Tested against a capsule round
+  // each body rather than the meshes: it is far cheaper than raycasting eight
+  // sculpted characters on every mouse move, and more forgiving to click.
+  pickNpc(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const a = new THREE.Vector3(), b = new THREE.Vector3();
+    let best = null, bestD = 0.5 * 0.5;
+    for (const [id, char] of this.npcs) {
+      a.copy(char.position); a.y += 0.25;
+      b.copy(char.position); b.y += 1.75;
+      const d = this.raycaster.ray.distanceSqToSegment(a, b);
+      if (d < bestD) { bestD = d; best = id; }
+    }
+    return best;
+  }
+
+  setHover(id) {
+    if (this.hoverId === id) return;
+    this.hoverId = id;
+    this.canvas.style.cursor = id ? 'pointer' : '';
+  }
+
   handleClick(e) {
     if (this.uiBlocked()) return;
     const rect = this.canvas.getBoundingClientRect();
@@ -250,7 +314,81 @@ export class WorldController {
       pt.x = THREE.MathUtils.clamp(pt.x, BOUNDS.minX, BOUNDS.maxX);
       pt.z = THREE.MathUtils.clamp(pt.z, BOUNDS.minZ, BOUNDS.maxZ);
       this.moveQueue = routeTo(this.player.position, pt);
+      const end = this.moveQueue.at(-1);
+      if (end) {
+        this.moveRing.position.set(end.x, 0.27, end.z);
+        this.moveRingAt = this.clock.elapsedTime;
+      }
     }
+  }
+
+  // ---- Huddles: two houseguests step aside to talk game --------------------
+
+  // Send a and b to a quiet spot away from the player. Returns false if no
+  // spot could be found this tick (the director just tries again later).
+  startHuddle(a, b) {
+    const sa = this.npcState.get(a), sb = this.npcState.get(b);
+    if (!sa || !sb || sa.frozen || sb.frozen || this.huddle || this.stage) return false;
+    const rooms = Object.keys(ROOMS).filter((r) => r !== 'diary');
+    for (let i = 0; i < 24; i++) {
+      const room = ROOMS[rooms[Math.floor(Math.random() * rooms.length)]];
+      const x = room.x + rnd(-room.w / 2 + 2, room.w / 2 - 2);
+      const z = room.z + rnd(-room.d / 2 + 2, room.d / 2 - 2);
+      if (hitsWall(x - 0.5, z, 0.6) || hitsWall(x + 0.5, z, 0.6) || inPool(x, z)) continue;
+      if (this.player && Math.hypot(x - this.player.position.x, z - this.player.position.z) < LISTEN_R + 3) continue;
+      this.huddle = { a, b, x, z, until: this.clock.elapsedTime + 46, ready: false };
+      sa.queue = null; sb.queue = null;
+      sa.approachPlayer = false; sb.approachPlayer = false;
+      return true;
+    }
+    return false;
+  }
+
+  endHuddle() {
+    if (!this.huddle) return;
+    const t = this.clock.elapsedTime;
+    for (const id of [this.huddle.a, this.huddle.b]) {
+      const st = this.npcState.get(id);
+      if (st) { st.queue = null; st.pauseUntil = t + rnd(0.4, 1.6); }
+    }
+    this.huddle = null;
+  }
+
+  inHuddle(id) {
+    return !!this.huddle && (this.huddle.a === id || this.huddle.b === id);
+  }
+
+  // ---- Ceremonies: everyone to the living room -----------------------------
+
+  beginStage(ids) {
+    this.endHuddle();
+    const slots = new Map();
+    const n = ids.length;
+    ids.forEach((id, i) => {
+      const a = n > 1 ? (-1 + (2 * i) / (n - 1)) * 1.25 : 0; // spread across ~145 degrees
+      const x = STAGE.x + Math.sin(a) * STAGE.r;
+      const z = STAGE.z - Math.cos(a) * STAGE.r * 0.82;
+      slots.set(id, { x, z, rotY: Math.atan2(STAGE.x - x, STAGE.z + 4 - z) });
+    });
+    this.stage = { slots, t0: this.clock.elapsedTime };
+    this.moveQueue = null;
+    const place = (char, id) => {
+      const s = slots.get(id);
+      if (!char || !s) return;
+      char.position.set(s.x, 0, s.z);
+      char.rotation.y = s.rotY;
+    };
+    if (this.player) place(this.player, this.player.userData.id);
+    for (const [id, char] of this.npcs) place(char, id);
+    // Cut, don't glide: a ceremony starts on a new shot.
+    this.camera.position.set(STAGE.x + 2, 6.4, STAGE.z + 11.5);
+  }
+
+  endStage() {
+    if (!this.stage) return;
+    this.stage = null;
+    const t = this.clock.elapsedTime;
+    for (const [, st] of this.npcState) { st.queue = null; st.pauseUntil = t + rnd(0.2, 2.5); }
   }
 
   nearestNpc(maxDist = 3.2) {
@@ -373,6 +511,18 @@ export class WorldController {
     const roomNames = Object.keys(ROOMS).filter((r) => r !== 'diary');
     for (const [id, char] of this.npcs) {
       const st = this.npcState.get(id);
+      if (this.stage) {
+        // Hold the ceremony line-up (collision can nudge people; ease back).
+        const s = this.stage.slots.get(id);
+        if (s) {
+          char.position.x += (s.x - char.position.x) * Math.min(1, dt * 6);
+          char.position.z += (s.z - char.position.z) * Math.min(1, dt * 6);
+          turnToward(char, s.rotY, dt);
+        }
+        updateSwim(char);
+        animateCharacter(char, false, dt, t);
+        continue;
+      }
       if (st.frozen) {
         animateCharacter(char, false, dt, t);
         if (this.player) {
@@ -396,7 +546,24 @@ export class WorldController {
       let npcMoving = false;
       const npcSpeed = inPool(char.position.x, char.position.z) ? NPC_SPEED * 0.45 : NPC_SPEED;
 
-      if (st.approachPlayer && this.player) {
+      if (this.inHuddle(id) && !st.approachPlayer) {
+        const h = this.huddle;
+        const side = h.a === id ? -0.5 : 0.5;
+        const dx = h.x + side - char.position.x, dz = h.z - char.position.z;
+        const far = Math.hypot(dx, dz);
+        if (far > 0.3) {
+          if (!st.queue || !st.queue.length) st.queue = routeTo(char.position, new THREE.Vector3(h.x + side, 0, h.z));
+          const r = followQueue(char, st.queue, npcSpeed * 1.25, dt);
+          npcMoving = r.moving;
+          if (r.stuck) st.queue = null;
+          st.huddleHere = false;
+        } else {
+          st.queue = null;
+          st.huddleHere = true;
+          // Face each other, with the small sway of someone mid-argument.
+          turnToward(char, Math.atan2(-side, 0) + Math.sin(t * 1.3 + (side > 0 ? 2 : 0)) * 0.12, dt);
+        }
+      } else if (st.approachPlayer && this.player) {
         const dist = char.position.distanceTo(this.player.position);
         const sameRoom = nearestRoom(char.position.x, char.position.z) === nearestRoom(this.player.position.x, this.player.position.z);
         if (dist > 2.0 || !sameRoom) {
@@ -456,10 +623,50 @@ export class WorldController {
       separateBodies([this.player, ...this.npcs.values()], frozenIds);
     }
 
+    // --- Huddle bookkeeping
+    if (this.huddle) {
+      const h = this.huddle;
+      const sa = this.npcState.get(h.a), sb = this.npcState.get(h.b);
+      if (!sa || !sb || t > h.until || sa.frozen || sb.frozen) this.endHuddle();
+      else h.ready = !!(sa.huddleHere && sb.huddleHere);
+    }
+
+    // --- Floor feedback
+    const hov = this.hoverId ? this.npcs.get(this.hoverId) : null;
+    this.hoverRing.visible = !!hov && !this.stage;
+    if (hov) {
+      this.hoverRing.position.set(hov.position.x, 0.27, hov.position.z);
+      const s = 1 + Math.sin(t * 5) * 0.04;
+      this.hoverRing.scale.set(s, s, 1);
+    }
+    this.playerRing.visible = !!this.player && !this.stage && !this.focusNpcId && !inPool(this.player.position.x, this.player.position.z);
+    if (this.player) this.playerRing.position.set(this.player.position.x, 0.262, this.player.position.z);
+    const mk = (t - this.moveRingAt) / 0.7;
+    this.moveRing.visible = mk >= 0 && mk < 1 && !!this.moveQueue;
+    if (this.moveRing.visible) {
+      const s = 1.6 - mk * 0.9;
+      this.moveRing.scale.set(s, s, 1);
+      this.moveRing.material.opacity = 0.8 * (1 - mk);
+    }
+    const showHuddle = !!this.huddle?.ready && !this.focusNpcId;
+    this.listenRing.visible = this.spotRing.visible = showHuddle;
+    if (showHuddle) {
+      this.listenRing.position.set(this.huddle.x, 0.265, this.huddle.z);
+      this.spotRing.position.set(this.huddle.x, 0.268, this.huddle.z);
+      this.listenRing.material.opacity = 0.4 + Math.sin(t * 2.4) * 0.15;
+    }
+
     // --- Camera
     const focusChar = this.focusNpcId ? this.npcs.get(this.focusNpcId) : null;
 
-    if (focusChar && this.player) {
+    if (this.stage) {
+      // Ceremony shot: low and wide across the sofa, drifting slowly.
+      const k = t - this.stage.t0;
+      const a = Math.sin(k * 0.11) * 0.3;
+      const want = new THREE.Vector3(STAGE.x + Math.sin(a) * 11.5, 6.2 + Math.sin(k * 0.07) * 0.4, STAGE.z + Math.cos(a) * 11.5);
+      this.camera.position.lerp(want, 0.04);
+      this.camera.lookAt(STAGE.x, 1.15, STAGE.z - 1.6);
+    } else if (focusChar && this.player) {
       // Slightly high over-the-shoulder shot framing the NPC's face; the
       // elevated angle keeps passers-by from filling the lens.
       const npcP = focusChar.position;

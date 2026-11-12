@@ -23,10 +23,12 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 - `src/game/social.js` — effect application, betrayal/promise bookkeeping, off-screen NPC drift + gossip leaks, proactive-approach picker
 - `src/game/season.js` — phase machine; all nominations/votes are weighted-probabilistic over live social state (never scripted)
 - `src/game/comps.js` — 3 DOM mini-games returning a 0–100 player score
+- `src/game/intel.js` — **what the player is allowed to know**: tiered reads of each houseguest, the vote count (`voteRead`), and what a huddle gives up (`huddleIntel`). Read-only apart from `recordIntel` (the player's notebook, `g.intel`). Reads call `nominationDesire`/`evictionDesire` with a flat `rand` so they show the current lean without rolling the dice; the real decision still rolls. `src/ui/houseread.js` is its panel.
 - `src/ai/claude.js` — direct-from-browser Claude API (`claude-sonnet-5`), key in localStorage `bbjury.apikey`
 - `src/ai/prompts.js` — system prompts incl. the JSON effects contract; `src/ai/fallback.js` — offline engine (same output shape) used when no key / API fails
 - `src/main.js` — director: boots world, runs ceremonies/finale, wires UI↔engine↔AI. `window.__bb` is a debug hook (`.g`, `.openChat(id)`, `.ff([ids])` fast-forward)
-- `src/world/scene.js` (house) + `src/world/movement.js` (controls, NPC wander, camera); `src/ui/ui.js` — all DOM panels; `src/audio/music.js` — synthesized adaptive score
+- `src/world/postfx.js` — the composer: MSAA render → GTAO → bloom → tone map → grade. `createScene` returns `render(t)`; nothing calls `renderer.render` directly any more. Quality 3→0 steps down on its own when frames run long (`__bb.postfx.quality`).
+- `src/world/scene.js` (house) + `src/world/movement.js` (controls, NPC wander, camera, **huddles**, **ceremony staging**, floor rings); `src/ui/ui.js` — all DOM panels; `src/audio/music.js` — synthesized adaptive score
 - **Look: "Live Feed"** — the game is dressed as the broadcast watching it.
   - One palette, in `style.css` `:root`: `--ink` surfaces, brass `--gold` (the show speaking), bone `--text`, `--danger` reserved for block/eviction/betrayal. The same values are baked into `scene.js` (sky, fog, lights, floors, set dressing) and the `cast.js` hues — change one, change the others.
   - The Live Feed section sits **last** in `style.css`, unscoped, and wins over the older layers by source order. Phone overrides for anything the old phone block also set (chat bottom sheet, toast) must use that block's query, `(max-width: 760px), (max-height: 500px)`, or the unscoped rules beat them.
@@ -45,6 +47,11 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 
 ## Invariants to preserve
 
+- **Intel never moves the game.** Everything in `intel.js` except `recordIntel` must leave `g.social`, `g.promises` and `g.alliances` untouched; `sim.js` `checkIntel` compares them byte-for-byte every simulated week. The only cost of listening is `applySpotted` (social.js), when the player is caught.
+- Huddles (`world.startHuddle` / `endHuddle`, ranges `LISTEN_R`/`SPOT_R`) are single-player only and must end at every phase boundary (`advance()`), when either speaker is frozen for a chat, and on their own timeout.
+- Staged ceremonies: `stageOn()`/`stageOff()` in main.js are idempotent and `advance()` always calls `stageOff()` — a ceremony that throws must not leave the house frozen in a line-up or `body.staging` set (it hides the HUD).
+- **Call `refresh()` before `showToast()`, never after.** The toast lives inside `#hud`, and a HUD rebuild wipes it.
+
 - Diary Room must have **zero** game-state side effects.
 - Jury notes are snapshotted at eviction (`snapshotJuryNotes`) — jurors judge from what they knew then.
 - Nothing decision-level is deterministic: comps, noms, votes, jury all include noise/weighted sampling.
@@ -56,6 +63,12 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 - NPCs must never endlessly follow the player: `world.releaseAllFollowers()` is called at every conversation/phase boundary; proactive approaches auto-expire (~22s).
 - Alliances: form via button or organic chat (`formOfficialAlliance`), leave via `leaveAlliance` (soft betrayal), and decay if untended (`decayAlliances` in `simulateHouseLife`, driven by `al.lastActive`).
 - Group chat is public (all present hear/remember); `/whisper <name>` is private but the rest notice. 1-on-1s can be overheard by physically-near NPCs (`applyEavesdrop` + `world.nearbyListeners`).
+
+## Rendering rules
+
+- **Bloom only sees values above 1.0** (the composer is half-float, threshold 1.0). A light source that should glow is a `MeshBasicMaterial` whose colour is multiplied past 1 (bulbs, the HoH neon, the stage ring); anything pale and merely well-lit must stay below it or it blooms into a white blob — the pool rim, umbrella and old white walls all did.
+- **The AO pass redraws the scene with one opaque material.** Anything transparent, alpha-tested or back-faced is hidden while it runs (`overrideVisibility` in postfx.js), or hair cards, glass, water and floor decals occlude as solid slabs. A new see-through object that isn't caught by those tests needs `userData.noAO = true`.
+- A flat surface that sits inside a taller solid is invisible: the pool water has to sit above the rim box's top face (0.22), not at the old water height.
 
 ## Character-mesh rules (learned the hard way)
 

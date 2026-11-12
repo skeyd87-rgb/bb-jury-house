@@ -84,7 +84,7 @@ export function resolveComp(g, playerScore, { excludeIds = [], playerPlays = tru
 // HoH ranks everyone by nomination desire = threat + distrust + grudges
 // - alliance/promise protection, then samples 2 via weighted randomness.
 
-export function nominationDesire(g, hohId, targetId) {
+export function nominationDesire(g, hohId, targetId, rand = Math.random) {
   const r = rel(g, hohId, targetId);
   const p = personality(g, hohId);
   let d = r.threat * (0.5 + p.strategic / 200) + (100 - r.trust) * 0.45 + (60 - r.bond) * 0.25;
@@ -95,7 +95,7 @@ export function nominationDesire(g, hohId, targetId) {
   }
   const grudges = g.memory[hohId]?.grudges.filter((x) => x.againstId === targetId) || [];
   d += grudges.reduce((s, x) => s + x.severity * 12, 0) * (0.5 + p.bitterness / 150);
-  d += (Math.random() - 0.5) * 18; // never deterministic
+  d += (rand() - 0.5) * 18; // never deterministic (intel.js passes a flat rand for reads)
   return d;
 }
 
@@ -224,7 +224,7 @@ export function applyReplacement(g, replacementId) {
 
 // ---- Eviction vote -----------------------------------------------------------
 
-export function evictionDesire(g, voterId, nomineeId, otherNomineeId) {
+export function evictionDesire(g, voterId, nomineeId, otherNomineeId, rand = Math.random) {
   const r = rel(g, voterId, nomineeId);
   const ro = rel(g, voterId, otherNomineeId);
   const p = personality(g, voterId);
@@ -241,7 +241,7 @@ export function evictionDesire(g, voterId, nomineeId, otherNomineeId) {
     d += 45 * (p.loyalty / 100);
   const grudges = g.memory[voterId]?.grudges.filter((x) => x.againstId === nomineeId) || [];
   d += grudges.reduce((s, x) => s + x.severity * 10, 0);
-  d += (Math.random() - 0.5) * (10 + p.chaos * 0.3); // chaos players are swingy
+  d += (rand() - 0.5) * (10 + p.chaos * 0.3); // chaos players are swingy
   return d;
 }
 

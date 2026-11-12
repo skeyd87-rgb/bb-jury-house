@@ -13,6 +13,41 @@ import { PLAYER_ID } from '../game/cast.js';
 import { fallbackChat, fallbackJurorQuestion, fallbackJurorVote } from '../ai/fallback.js';
 import { applyChatEffects } from '../game/social.js';
 import { buildFinaleContext } from '../game/finale.js';
+import { readHouse, voteRead, pickHuddlePair, huddleIntel, recordIntel } from '../game/intel.js';
+import { applySpotted } from '../game/social.js';
+
+// The player's reads must never move the game: snapshot every relationship,
+// run every read, compare.
+function checkIntel(g) {
+  const before = JSON.stringify([g.social, g.promises, g.alliances]);
+  const reads = readHouse(g);
+  if (reads.length !== activeNpcIds(g).length) throw new Error('house read size');
+  for (const r of reads) if (!r.trust.label || !r.standing) throw new Error('malformed read for ' + r.id);
+  const vr = voteRead(g);
+  if (g.nominees.length === 2) {
+    if (!vr) throw new Error('no vote read with two nominees');
+    const voters = activeIds(g).filter((id) => id !== g.hoh && !g.nominees.includes(id) && id !== PLAYER_ID);
+    if (vr.rows.length !== voters.length) throw new Error('vote read rows ' + vr.rows.length + ' vs voters ' + voters.length);
+    for (const row of vr.rows) {
+      if (!['unread', 'torn', ...g.nominees].includes(row.lean)) throw new Error('bad lean ' + row.lean);
+    }
+  } else if (vr) throw new Error('vote read without a block');
+  const pair = pickHuddlePair(g);
+  let heard = null;
+  if (pair) {
+    if (pair[0] === pair[1] || pair.includes(PLAYER_ID)) throw new Error('bad huddle pair');
+    heard = huddleIntel(g, pair[0], pair[1]);
+    if (!heard.text || /undefined|NaN/.test(heard.text)) throw new Error('bad intel text: ' + heard.text);
+  }
+  if (JSON.stringify([g.social, g.promises, g.alliances]) !== before) throw new Error('intel read mutated game state');
+  if (heard) recordIntel(g, heard);
+  // Getting caught is the one path that does cost something.
+  if (pair && Math.random() < 0.2) {
+    const t0 = g.social[pair[0]][PLAYER_ID].trust;
+    applySpotted(g, pair[0], pair[1]);
+    if (g.social[pair[0]][PLAYER_ID].trust > t0) throw new Error('spotted raised trust');
+  }
+}
 
 const PLAYER_LINES = [
   'Want to work together? Final two, you and me.',
@@ -51,6 +86,7 @@ function simSeason(log) {
     chatRandomly(g);
     simulateHouseLife(g);
     chooseApproacher(g);
+    checkIntel(g);
 
     // Noms
     g.phase = 'nominations';
@@ -81,6 +117,7 @@ function simSeason(log) {
     // Eviction
     g.phase = 'campaigning';
     chatRandomly(g, 2);
+    checkIntel(g);
     g.phase = 'eviction';
     const playerVotes = !g.nominees.includes(PLAYER_ID) && g.hoh !== PLAYER_ID;
     const pv = playerVotes ? g.nominees[Math.floor(Math.random() * 2)] : null;
@@ -135,6 +172,8 @@ export function runSims(n = 60) {
       out.promises += r.g.promises.length;
       out.betrayals += r.g.events.filter((e) => e.type === 'betrayal').length;
       out.leaks += r.g.events.filter((e) => e.type === 'leak').length;
+      out.intel = (out.intel || 0) + (r.g.intel || []).length;
+      for (const x of r.g.intel || []) (out.intelKinds ||= {})[x.kind] = (out.intelKinds[x.kind] || 0) + 1;
       for (const c of r.g.compHistory.filter((c) => c.type === 'hoh')) {
         out.hohWinners[c.winner] = (out.hohWinners[c.winner] || 0) + 1;
       }

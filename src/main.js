@@ -1,13 +1,13 @@
 // Director: boots the world, runs the season, wires UI <-> engine <-> AI.
 
 import { createScene } from './world/scene.js';
-import { WorldController } from './world/movement.js';
+import { WorldController, LISTEN_R, SPOT_R } from './world/movement.js';
 import { createCharacter } from './world/characters.js';
 import { createBroadcast } from './ui/broadcast.js';
 import { PLAYER_ID } from './game/cast.js';
 import {
   newGame, loadGame, saveGame, clearSave,
-  activeIds, activeNpcIds, nameOf, logEvent,
+  activeIds, activeNpcIds, nameOf, logEvent, sharedAlliance,
 } from './game/state.js';
 import {
   resolveComp, decideNominations, applyNominations, vetoPlayers,
@@ -15,7 +15,9 @@ import {
   resolveEviction, applyEviction, nextPhase, evictionDesire, phaseLabel,
 } from './game/season.js';
 import { buildFinaleContext, countJuryVotes, winnerFromJuryVotes, playerPlacement } from './game/finale.js';
-import { chooseApproacher, APPROACH_REASON_TEXT, allianceWillingness, formOfficialAlliance, leaveAlliance } from './game/social.js';
+import { chooseApproacher, APPROACH_REASON_TEXT, allianceWillingness, formOfficialAlliance, leaveAlliance, applySpotted } from './game/social.js';
+import { pickHuddlePair, huddleIntel, recordIntel } from './game/intel.js';
+import { showHouseRead } from './ui/houseread.js';
 import { randomCompType, COMP_NAMES, runComp } from './game/comps.js';
 import {
   npcChat, diaryChat, npcSpeech, jurorQuestion, opponentJuryAnswer, jurorVote, npcOpener,
@@ -74,7 +76,7 @@ function showRoomCodeBadge(code) {
 
 const canvas = document.getElementById('scene');
 const overlayRoot = document.getElementById('overlay-root');
-const { renderer, scene, camera, resize, updateFx } = createScene(canvas);
+const { scene, camera, resize, updateFx, render: renderFrame, postfx } = createScene(canvas);
 const world = new WorldController(scene, camera, canvas);
 const broadcast = createBroadcast({ world, canvas });
 
@@ -1008,6 +1010,8 @@ window.__bb = {
   get onlineGame() { return onlineGame; },
   openOnlineChat: (id) => openOnlineChat(id),
   world,
+  postfx,
+  tickHuddle: () => updateHuddle(),
   refresh: () => refresh(),
   advance: () => advance(),
   openChat: (id, opener, reason) => openNpcChat(id, opener, reason),
@@ -1044,6 +1048,7 @@ function startWorld() {
   world.onNpcClick = (id) => openNpcChat(id);
   startAnimation();
   scheduleApproaches();
+  scheduleHuddles();
 }
 
 let lastPosSentAt = 0;
@@ -1058,8 +1063,9 @@ function animate() {
   } else {
     world.update();
   }
+  if (!onlineMode) updateHuddle();
   updateFx(world.clock.elapsedTime);
-  renderer.render(scene, camera);
+  renderFrame(world.clock.elapsedTime);
   broadcast.update(broadcastState());
 
   // Broadcast our own position to other connected humans (throttled).
@@ -1081,6 +1087,11 @@ function refresh() {
   renderHud(g, {
     onAdvance: () => advance(),
     onDiary: () => openDiary(),
+    onHouseRead: () => {
+      if (busy || document.querySelector('.cinematic')) return;
+      closeChatPanel();
+      showHouseRead(g);
+    },
     onFormAlliance: () => formAllianceFlow(),
     onGroupChat: () => groupChatFlow(),
     onHouseMeeting: () => groupChatFlow(activeNpcIds(g)),
@@ -1119,6 +1130,7 @@ function broadcastState() {
     vetoHolder: g.vetoHolder,
     nominees: g.nominees || [],
     approachId: g.pendingApproach?.npcId || null,
+    huddleIds: world.huddle?.ready ? [world.huddle.a, world.huddle.b] : [],
     week: g.week,
     step: g.phase,
   };
@@ -1144,10 +1156,12 @@ function openNpcChat(id, opener = null, approachReason = null) {
   // Any pending approacher stops trailing the moment a conversation starts.
   world.releaseAllFollowers();
   g.pendingApproach = null;
+  if (world.inHuddle(id)) world.endHuddle(); // you walked up and broke it off
   world.freezeNpc(id, true);
   world.focusOn(id);
   const hg = g.houseguests.find((h) => h.id === id);
   const panel = openChatPanel({
+    prompts: chatPrompts(id),
     title: hg.name,
     subtitle: `${hg.job}${g.hoh === id ? ' · HoH 👑' : ''}${g.nominees.includes(id) ? ' · Nominated 🎯' : ''}${g.vetoHolder === id ? ' · Veto 🛡️' : ''}`,
     color: hg.color,
@@ -1182,6 +1196,169 @@ function openNpcChat(id, opener = null, approachReason = null) {
       return reply;
     });
   }
+}
+
+// Openers that fit this person at this point in the week. They only fill the
+// input box; nothing is sent until the player sends it.
+function chatPrompts(id) {
+  const out = [];
+  const nominated = g.nominees.includes(id);
+  const meNominated = g.nominees.includes(PLAYER_ID);
+  const blockSet = g.nominees.length === 2;
+  if (g.hoh === id && g.phase === 'social_hoh') out.push({ label: 'Ask for safety', text: 'Am I safe with you this week? Tell me where your head is at for nominations.' });
+  if (g.hoh === PLAYER_ID && g.phase === 'social_hoh') out.push({ label: 'Offer safety', text: "I'm not putting you up this week. You have my word." });
+  if (g.hoh === id && g.phase === 'renom_watch') out.push({ label: 'Stay off the block', text: "Don't put me up as the replacement. Tell me what you need from me." });
+  if (g.vetoHolder === id && meNominated && ['social_veto', 'veto_lobby'].includes(g.phase)) out.push({ label: 'Ask for the veto', text: 'I need you to use the veto on me. What would it take?' });
+  if (g.vetoHolder === PLAYER_ID && nominated && g.phase === 'veto_lobby') out.push({ label: 'Name your price', text: 'If I use the veto on you, what do I get?' });
+  if (blockSet && meNominated && !nominated && g.hoh !== id) out.push({ label: 'Ask for their vote', text: 'I need your vote to stay. Keep me this week and I will not forget it.' });
+  if (blockSet && !meNominated && nominated && g.hoh !== PLAYER_ID) out.push({ label: 'Promise your vote', text: 'You have my vote to stay this week.' });
+  if (blockSet && !nominated && g.hoh !== id) out.push({ label: 'Count their vote', text: 'Who are you voting to evict this week?' });
+  if (!sharedAlliance(g, id, PLAYER_ID)) out.push({ label: 'Pitch an alliance', text: 'I think you and I should be working together. Are you in?' });
+  out.push({ label: 'Ask their target', text: 'If you win HoH next, who are you going after?' });
+  out.push({ label: 'Check in', text: 'How are you holding up in here?' });
+  return out.slice(0, 4);
+}
+
+// ---------- Huddles: overhearing the house ----------
+// Every so often two houseguests step aside to talk game (world.startHuddle).
+// Stand inside the gold ring long enough and you catch one true thing from
+// it (intel.js). Step inside the red ring — or linger and get unlucky — and
+// they see you, which costs trust with both.
+
+const SOCIAL_WINDOWS = ['social_hoh', 'social_veto', 'veto_lobby', 'renom_watch', 'campaigning'];
+const LISTEN_SECONDS = 4;
+let huddleTimer = null;
+let listenFor = 0;
+let huddleTickAt = 0;
+let listenEl = null;
+
+function scheduleHuddles() {
+  clearInterval(huddleTimer);
+  huddleTimer = setInterval(() => {
+    if (busy || !g || onlineMode || world.huddle) return;
+    if (!SOCIAL_WINDOWS.includes(g.phase)) return;
+    if (document.querySelector('.cinematic, #chat-panel')) return;
+    if (Math.random() > 0.45) return;
+    const pair = pickHuddlePair(g, Math.random, g.pendingApproach ? [g.pendingApproach.npcId] : []);
+    if (pair) world.startHuddle(pair[0], pair[1]);
+  }, 5000);
+}
+
+function paintListen(frac, inRange) {
+  if (!listenEl) {
+    listenEl = document.createElement('div');
+    listenEl.id = 'listen-meter';
+    listenEl.innerHTML = '<span>Listening in</span><div><i></i></div>';
+    document.body.append(listenEl);
+  }
+  listenEl.classList.toggle('on', inRange);
+  listenEl.querySelector('i').style.width = `${Math.round(Math.min(1, frac) * 100)}%`;
+}
+
+function updateHuddle() {
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - huddleTickAt) / 1000);
+  huddleTickAt = now;
+  const h = world.huddle;
+  if (!g || !h || !h.ready || !world.player || busy || document.querySelector('#chat-panel, .cinematic')) {
+    listenFor = 0;
+    if (listenEl) paintListen(0, false);
+    return;
+  }
+  if (!g.tips?.huddle && !document.getElementById('toast')) {
+    g.tips = { ...(g.tips || {}), huddle: true };
+    showToast(`<b>${nameOf(g, h.a)}</b> and <b>${nameOf(g, h.b)}</b> have stepped aside to talk game. Stand inside the <b>gold ring</b> to listen in. Cross the <b>red ring</b> and they will see you.`);
+  }
+  const p = world.player.position;
+  const d = Math.hypot(p.x - h.x, p.z - h.z);
+  if (d < SPOT_R) return huddleSpotted(h);
+  if (d < LISTEN_R) {
+    listenFor += dt;
+    // Lingering is a risk even at a distance: roughly one time in eight.
+    if (Math.random() < dt * 0.035) return huddleSpotted(h);
+  } else {
+    listenFor = Math.max(0, listenFor - dt * 1.5);
+  }
+  paintListen(listenFor / LISTEN_SECONDS, d < LISTEN_R);
+  if (listenFor >= LISTEN_SECONDS) huddleHeard(h);
+}
+
+function huddleHeard(h) {
+  const item = recordIntel(g, huddleIntel(g, h.a, h.b));
+  world.endHuddle();
+  listenFor = 0;
+  paintListen(0, false);
+  sting('chime');
+  refresh(); // before the toast: a HUD rebuild clears it
+  showToast(`<b>Overheard.</b> ${item.text}`, [
+    { label: 'House Read', style: 'gold', onClick: () => showHouseRead(g, 'intel') },
+    { label: 'OK', style: '', onClick: () => {} },
+  ]);
+}
+
+function huddleSpotted(h) {
+  applySpotted(g, h.a, h.b);
+  world.endHuddle();
+  listenFor = 0;
+  paintListen(0, false);
+  sting('knock');
+  refresh();
+  showToast(`<b>${nameOf(g, h.a)}</b> and <b>${nameOf(g, h.b)}</b> go quiet the second they see you. They noticed.`);
+}
+
+// ---------- Staged ceremonies ----------
+// Ceremonies happen in the living room, on camera: the house lines up, the
+// shot cuts wide, and the ceremony card drops to a lower third so the room
+// stays in view (body.staging in style.css). Idempotent both ways.
+function stageOn() {
+  if (!world.player) return;
+  world.beginStage(activeIds(g));
+  document.body.classList.add('staging');
+}
+function stageOff() {
+  world.endStage();
+  document.body.classList.remove('staging');
+}
+
+// The eviction vote, one ballot at a time.
+function revealEvictionVotes(votes, n1, n2) {
+  const ballots = Object.entries(votes).filter(([v]) => !v.endsWith('_tiebreak'));
+  if (!ballots.length) return Promise.resolve();
+  for (let i = ballots.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [ballots[i], ballots[j]] = [ballots[j], ballots[i]];
+  }
+  const nm = (id) => (id === PLAYER_ID ? 'You' : nameOf(g, id));
+  return new Promise((resolve) => {
+    const counts = { [n1]: 0, [n2]: 0 };
+    const c = cinematic({
+      kicker: 'Live Eviction',
+      title: 'The votes are in.',
+      bodyHtml: `<div class="jury-tally"><div class="t" id="ev-${n1}">${nm(n1)}: 0</div><div class="t" id="ev-${n2}">${nm(n2)}: 0</div></div><div class="votes-list" id="ev-list"></div>`,
+    });
+    const list = c.card.querySelector('#ev-list');
+    let i = 0;
+    const step = () => {
+      if (!c.el.isConnected) return resolve();
+      if (i >= ballots.length) {
+        c.setActions([{ label: 'The Result', style: 'gold', onClick: () => { c.close(); resolve(); } }]);
+        return;
+      }
+      const [voter, target] = ballots[i++];
+      counts[target]++;
+      const row = el('div', 'v ev-in', `<b>${nm(voter)}</b> votes to evict <b>${nm(target)}</b>`);
+      list.append(row);
+      list.scrollTop = list.scrollHeight;
+      for (const n of [n1, n2]) {
+        const t = c.card.querySelector(`#ev-${CSS.escape(n)}`);
+        t.textContent = `${nm(n)}: ${counts[n]}`;
+        t.classList.toggle('lead', counts[n] > counts[n === n1 ? n2 : n1]);
+      }
+      sting('knock');
+      setTimeout(step, 1150);
+    };
+    setTimeout(step, 900);
+  });
 }
 
 // Roll eavesdropping for nearby NPCs. Closer = far likelier to overhear.
@@ -1466,7 +1643,6 @@ function scheduleApproaches() {
       if (g.pendingApproach !== ap) return; // already handled
       g.pendingApproach = null;
       world.releaseNpc(ap.npcId);
-      updateStatusSprites();
     };
     const expireTimer = setTimeout(() => {
       clearApproach();
@@ -1480,7 +1656,6 @@ function scheduleApproaches() {
         onClick: () => {
           clearTimeout(expireTimer);
           g.pendingApproach = null;
-          updateStatusSprites();
           openNpcChat(ap.npcId, `${nameOf(g, ap.npcId)} came to find you — they ${APPROACH_REASON_TEXT[ap.reason] || 'want to talk'}.`, ap.reason);
         },
       },
@@ -1506,6 +1681,7 @@ async function advance() {
   world.clearFocus();
   for (const [id] of world.npcs) world.freezeNpc(id, false);
   world.releaseAllFollowers();
+  world.endHuddle();
   clearToast();
   g.pendingApproach = null;
   try {
@@ -1518,6 +1694,7 @@ async function advance() {
   } catch (err) {
     console.error('phase error', err);
   }
+  stageOff();
   busy = false;
   world.inputLocked = false;
   refresh();
@@ -1604,6 +1781,7 @@ async function runNominations() {
   g.phase = 'nominations';
   refresh();
   setMoodForPhase();
+  stageOn();
   let nominees;
   if (g.hoh === PLAYER_ID) {
     nominees = await pickHouseguests(g, {
@@ -1692,6 +1870,7 @@ async function runVetoCeremony() {
   g.phase = 'veto_ceremony';
   refresh();
   setMoodForPhase();
+  stageOn();
   const holder = g.vetoHolder;
 
   if (holder === PLAYER_ID) {
@@ -1771,6 +1950,7 @@ async function runRenomCeremony() {
   const { holder, savedId } = g.pendingRenom || {};
   g.phase = 'veto_ceremony';
   refresh();
+  stageOn();
   let replacement;
   if (g.hoh === PLAYER_ID) {
     [replacement] = await pickHouseguests(g, {
@@ -1802,6 +1982,7 @@ async function runEviction() {
   g.phase = 'eviction';
   refresh();
   setMoodForPhase();
+  stageOn();
   const [n1, n2] = g.nominees;
   const playerVotes = !g.nominees.includes(PLAYER_ID) && g.hoh !== PLAYER_ID;
 
@@ -1835,11 +2016,8 @@ async function runEviction() {
   }
 
   // Reveal votes one by one
+  await revealEvictionVotes(votes, n1, n2);
   sting('reveal');
-  const voteLines = Object.entries(votes)
-    .filter(([v]) => !v.endsWith('_tiebreak'))
-    .map(([voter, target]) => `<div class="v"><b>${voter === PLAYER_ID ? 'You' : nameOf(g, voter)}</b> voted to evict <b>${nameOf(g, target)}</b></div>`)
-    .join('');
   const goodbyeQuote = evicted !== PLAYER_ID ? await npcSpeech(g, evicted, 'eviction_goodbye') : null;
 
   applyEviction(g, evicted, Object.fromEntries(Object.entries(votes).filter(([v]) => !v.endsWith('_tiebreak'))));
@@ -1847,12 +2025,13 @@ async function runEviction() {
   await cinematicWait({
     kicker: 'Live Eviction',
     title: `By a vote of ${tally[evicted]} to ${tally[evicted === n1 ? n2 : n1]}${tiedBrokenByHoh ? ' (tie broken by HoH)' : ''}...`,
-    bodyHtml: `<div class="votes-list">${voteLines}</div><h2>${nameOf(g, evicted)}, you have been evicted.</h2>` +
+    bodyHtml: `<h2>${nameOf(g, evicted)}, you have been evicted.</h2>` +
       (goodbyeQuote ? `<div class="quote">"${goodbyeQuote}"</div>` : '') +
       `<p class="muted">${nameOf(g, evicted)} heads to the jury house — and remembers everything.</p>`,
     continueLabel: evicted === PLAYER_ID ? 'Face the Music' : 'Continue',
   });
 
+  stageOff();
   if (evicted === PLAYER_ID) return continueAsJuror();
 
   world.removeNpc(evicted);

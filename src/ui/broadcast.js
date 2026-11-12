@@ -93,7 +93,10 @@ export function createBroadcast({ world, canvas }) {
 
   function update(state) {
     const blocked = document.querySelector('.title-screen, .cinematic, .comp-box');
-    root.hidden = !!blocked || !state;
+    // A staged ceremony keeps the room on screen behind its card, so the
+    // nameplates stay up: you need to see who is standing where.
+    const staged = document.body.classList.contains('staging') && !document.querySelector('.title-screen, .comp-box');
+    root.hidden = (!!blocked && !staged) || !state;
     document.body.classList.toggle('bc-clear', !!blocked);
     if (root.hidden) return;
 
@@ -170,7 +173,9 @@ export function createBroadcast({ world, canvas }) {
       else if (state.vetoHolder === id) setChip(p, 'status', 'vet', 'VETO');
       else if (m.isMe) setChip(p, 'status', 'you', 'YOU');
       else setChip(p, 'status', '', '');
-      setChip(p, 'approach', state.approachId === id ? 'app' : '', '→ YOU');
+      if (state.approachId === id) setChip(p, 'approach', 'app', '→ YOU');
+      else if (state.huddleIds?.includes(id)) setChip(p, 'approach', 'talk', 'TALKING');
+      else setChip(p, 'approach', '', '');
     }
 
     for (const [id, p] of made) if (!seen.has(id)) p.el.style.opacity = '0';

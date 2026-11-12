@@ -4,6 +4,8 @@
 
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { createPostFx } from './postfx.js';
 
 function softBox(w, h, d) {
   return new RoundedBoxGeometry(w, h, d, 2, Math.min(0.09, Math.min(w, h, d) * 0.22));
@@ -241,7 +243,7 @@ export function createScene(canvas) {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.0;
 
   const scene = new THREE.Scene();
   // Same green-black as the UI's --ink, so the far yard falls away into the
@@ -251,9 +253,20 @@ export function createScene(canvas) {
   const camera = new THREE.PerspectiveCamera(46, 2, 0.1, 300);
   camera.position.set(0, 22, 26);
 
+  // Image-based light for reflections only: steel, glass and water need
+  // something to reflect or they render as flat grey. Kept low so the authored
+  // lights still decide the mood.
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environmentIntensity = 0.32;
+  pmrem.dispose();
+
   addSky(scene);
   addLights(scene);
   buildHouse(scene);
+  addAtmosphere(scene);
+
+  const postfx = createPostFx(renderer, scene, camera);
 
   let lastWidth = 0, lastHeight = 0;
   function resize() {
@@ -261,6 +274,7 @@ export function createScene(canvas) {
     if (w !== lastWidth || h !== lastHeight) {
       lastWidth = w; lastHeight = h;
       renderer.setSize(w, h, false);
+      postfx.setSize(w, h, renderer.getPixelRatio());
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
     }
@@ -271,7 +285,11 @@ export function createScene(canvas) {
     for (const fn of fxCallbacks) fn(t);
   }
 
-  return { renderer, scene, camera, resize, updateFx };
+  function render(t) {
+    postfx.render(t);
+  }
+
+  return { renderer, scene, camera, resize, updateFx, render, postfx };
 }
 
 function addSky(scene) {
@@ -344,26 +362,69 @@ function addSky(scene) {
 // camera so people separate from the floor at play distance. The only warm
 // light in the house is the practicals (addRoomLights).
 function addLights(scene) {
-  scene.add(new THREE.HemisphereLight(0xB9CBC6, 0x3B3426, 1.25));
-  const sun = new THREE.DirectionalLight(0xFFF2DC, 2.3);
+  scene.add(new THREE.HemisphereLight(0xA9BDBA, 0x2E2A20, 0.78));
+  const sun = new THREE.DirectionalLight(0xFFEBD0, 2.1);
   sun.position.set(-12, 30, 16);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -30;
-  sun.shadow.camera.right = 30;
-  sun.shadow.camera.top = 30;
-  sun.shadow.camera.bottom = -30;
-  sun.shadow.bias = -0.0004;
-  sun.shadow.normalBias = 0.03;
-  sun.shadow.radius = 3;
+  // The frustum is fitted to the lot rather than a loose 60 x 60, which
+  // nearly doubles the texel density of every shadow in the house.
+  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  sun.shadow.mapSize.set(coarse ? 2048 : 4096, coarse ? 2048 : 4096);
+  sun.target.position.set(2, 0, 3);
+  scene.add(sun.target);
+  sun.shadow.camera.left = -24;
+  sun.shadow.camera.right = 24;
+  sun.shadow.camera.top = 22;
+  sun.shadow.camera.bottom = -22;
+  sun.shadow.camera.near = 5;
+  sun.shadow.camera.far = 80;
+  sun.shadow.bias = -0.0003;
+  sun.shadow.normalBias = 0.035;
+  sun.shadow.radius = 4;
   scene.add(sun);
-  const fill = new THREE.DirectionalLight(0x86A5A1, 0.9);
+  const fill = new THREE.DirectionalLight(0x7FA09E, 0.55);
   fill.position.set(-15, 12, -12);
   scene.add(fill);
   // No shadows: one caster is enough, and a second doubles every contact shadow.
-  const rim = new THREE.DirectionalLight(0xC8DCE0, 1.15);
+  const rim = new THREE.DirectionalLight(0xC8DCE0, 1.0);
   rim.position.set(-14, 18, -22);
   scene.add(rim);
+}
+
+// Things that hang in the air: fireflies over the lawn, dust in the lamp
+// light indoors. Both are single draw calls animated in the vertex shader.
+function addAtmosphere(scene) {
+  const motes = (count, box, color, size, speed) => {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(count * 3), seed = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      pos[i * 3] = box.x + (Math.random() - 0.5) * box.w;
+      pos[i * 3 + 1] = box.y0 + Math.random() * (box.y1 - box.y0);
+      pos[i * 3 + 2] = box.z + (Math.random() - 0.5) * box.d;
+      seed[i] = Math.random() * 100;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('seed', new THREE.BufferAttribute(seed, 1));
+    const m = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: { time: { value: 0 }, color: { value: new THREE.Color(color) }, size: { value: size }, speed: { value: speed } },
+      vertexShader: `attribute float seed; uniform float time; uniform float size; uniform float speed; varying float vA;
+        void main(){ vec3 p = position; float t = time * speed + seed;
+          p.x += sin(t * 0.7 + seed) * 0.9; p.y += sin(t * 1.1) * 0.35; p.z += cos(t * 0.6 + seed * 2.0) * 0.9;
+          vA = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(t * 2.3 + seed * 5.0), 3.0);
+          vec4 mv = modelViewMatrix * vec4(p, 1.0);
+          gl_PointSize = size * (60.0 / -mv.z); gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `uniform vec3 color; varying float vA;
+        void main(){ float d = length(gl_PointCoord - 0.5); float a = smoothstep(0.5, 0.0, d);
+          gl_FragColor = vec4(color * 2.2, a * a * vA); }`,
+    });
+    const pts = new THREE.Points(geo, m);
+    pts.frustumCulled = false;
+    scene.add(pts);
+    fxCallbacks.push((t) => { m.uniforms.time.value = t; });
+  };
+  motes(46, { x: 0, z: 13.5, w: 32, d: 8, y0: 0.5, y1: 3.2 }, 0xE9D27A, 2.6, 0.5);   // fireflies
+  motes(70, { x: 2, z: -2, w: 26, d: 16, y0: 0.6, y1: 2.6 }, 0xC9B48A, 0.55, 0.12);  // dust
 }
 
 function mat(color, opts = {}) {
@@ -383,7 +444,9 @@ function buildHouse(scene) {
   const house = new THREE.Group();
 
   // Ground plate under everything
-  const ground = new THREE.Mesh(new THREE.BoxGeometry(64, 1, 54), mat(0x0D1413, { roughness: 1 }));
+  // Wide enough that its edge is always inside the fog: the lot used to end in
+  // a visible slab floating in the sky.
+  const ground = new THREE.Mesh(new THREE.BoxGeometry(420, 1, 420), mat(0x1A241F, { roughness: 1 }));
   ground.position.y = -0.5;
   ground.receiveShadow = true;
   house.add(ground);
@@ -415,9 +478,12 @@ function buildHouse(scene) {
   }
 
   // Walls with plaster texture + baseboards + top trim
-  const wallTexMat = new THREE.MeshStandardMaterial({ map: plasterTex(), roughness: 0.95 });
-  const baseMat = mat(0x334b46, { roughness: 0.7 });
-  const trimMat = mat(0xfaf6ea, { roughness: 0.6 });
+  // Mid-tone plaster. Bone-white walls were the brightest thing in frame and
+  // blew out under the key; a warm grey lets the practicals and the people
+  // carry the highlights instead.
+  const wallTexMat = new THREE.MeshStandardMaterial({ map: plasterTex('#a8a394'), roughness: 0.95 });
+  const baseMat = mat(0x2a3b37, { roughness: 0.7 });
+  const trimMat = mat(0x8c7a52, { roughness: 0.45, metalness: 0.35 });
   for (const w of WALLS) {
     // Dollhouse cutaway keeps furniture and faces readable; collision stays full height.
     const wallH = w.z === -12 || w.x === -12 || w.x === 20 ? 2.6 : w.z === 7 ? 0.55 : 1.0;
@@ -529,13 +595,47 @@ function addLivingRoom(house) {
   tv.add(stand);
   const screen = new THREE.Mesh(
     softBox(2.3, 1.25, 0.08),
-    new THREE.MeshStandardMaterial({ color: 0x0a0f1e, roughness: 0.15, metalness: 0.4, emissive: 0x16305a, emissiveIntensity: 0.7 })
+    new THREE.MeshStandardMaterial({ color: 0x0a0f1e, roughness: 0.15, metalness: 0.4 })
   );
   screen.position.y = 1.25;
   tv.add(screen);
-  const tvRef = screen;
+  // The picture: the show's own feed, redrawn a few times a second.
+  const feed = document.createElement('canvas');
+  feed.width = 184; feed.height = 100;
+  const fctx = feed.getContext('2d');
+  const feedTex = new THREE.CanvasTexture(feed);
+  feedTex.colorSpace = THREE.SRGBColorSpace;
+  const picture = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.14, 1.1),
+    new THREE.MeshBasicMaterial({ map: feedTex, toneMapped: false })
+  );
+  picture.position.set(0, 1.25, 0.05);
+  tv.add(picture);
+  const tvGlow = new THREE.PointLight(0x6FA8C8, 2.2, 6);
+  tvGlow.position.set(0, 1.3, 0.9);
+  tv.add(tvGlow);
+  let feedAt = -1;
   fxCallbacks.push((t) => {
-    tvRef.material.emissiveIntensity = 0.55 + Math.sin(t * 3.1) * 0.12 + Math.sin(t * 7.7) * 0.06;
+    tvGlow.intensity = 2.0 + Math.sin(t * 3.1) * 0.35 + Math.sin(t * 7.7) * 0.2;
+    if (t - feedAt < 0.2) return;
+    feedAt = t;
+    const w = feed.width, h = feed.height;
+    const cut = Math.floor(t / 6) % 3;           // three "cameras", six seconds each
+    const g = fctx.createLinearGradient(0, 0, w, h);
+    g.addColorStop(0, ['#16323a', '#3a2a18', '#1d2a44'][cut]);
+    g.addColorStop(1, ['#0a1516', '#150e08', '#0a0f1e'][cut]);
+    fctx.fillStyle = g; fctx.fillRect(0, 0, w, h);
+    for (let i = 0; i < 3; i++) {                 // drifting silhouettes
+      const x = ((t * (6 + i * 3) + i * 70 + cut * 40) % (w + 40)) - 20;
+      fctx.fillStyle = 'rgba(236,231,218,0.16)';
+      fctx.beginPath(); fctx.arc(x, 44, 9, 0, 7); fctx.fill();
+      fctx.fillRect(x - 11, 54, 22, 46);
+    }
+    for (let y = 0; y < h; y += 3) { fctx.fillStyle = 'rgba(0,0,0,0.18)'; fctx.fillRect(0, y, w, 1); }
+    fctx.fillStyle = '#D9483C'; fctx.beginPath(); fctx.arc(10, 10, 3.2, 0, 7); fctx.fill();
+    fctx.fillStyle = '#ECE7DA'; fctx.font = '600 9px monospace'; fctx.fillText('LIVE', 17, 13);
+    fctx.fillStyle = '#C9A86A'; fctx.fillText('CAM 0' + (cut + 1), w - 42, 13);
+    feedTex.needsUpdate = true;
   });
   add(tv, -6, 0, -2.55);
 
@@ -771,7 +871,7 @@ function addHoh(house) {
   // Neon HoH ring on the wall
   const ring = new THREE.Mesh(
     new THREE.TorusGeometry(1.3, 0.07, 10, 44),
-    new THREE.MeshBasicMaterial({ color: 0xffd76a })
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffd76a).multiplyScalar(2.4) })
   );
   ring.position.set(7, 2.1, -11.6);
   house.add(ring);
@@ -839,38 +939,65 @@ function addBackyard(house) {
   const add = addTo(house);
 
   // Pool: animated water + deck rim
-  const rim = new THREE.Mesh(softBox(POOL.w + 0.9, 0.22, POOL.d + 0.9), mat(0xd9d3c5, { roughness: 0.6 }));
+  const rim = new THREE.Mesh(softBox(POOL.w + 0.9, 0.22, POOL.d + 0.9), mat(0x8F8A7C, { roughness: 0.7 }));
   rim.position.set(POOL.x, 0.11, POOL.z);
   house.add(rim);
-  const waterTex = canvasTex(128, (ctx, s) => {
-    ctx.fillStyle = '#2fa8d8';
-    ctx.fillRect(0, 0, s, s);
-    for (let i = 0; i < 26; i++) {
-      ctx.strokeStyle = `rgba(255,255,255,${0.10 + Math.random() * 0.14})`;
-      ctx.lineWidth = 1.5 + Math.random() * 1.5;
-      const y = Math.random() * s;
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.bezierCurveTo(s * 0.3, y + 8, s * 0.6, y - 8, s, y + 3);
-      ctx.stroke();
-    }
-  }, 2, 1.4);
-  const water = new THREE.Mesh(
-    softBox(POOL.w, 0.24, POOL.d),
+  // Tiled basin under the surface, so the water has something to sit over.
+  const basin = new THREE.Mesh(
+    new THREE.BoxGeometry(POOL.w, 0.1, POOL.d),
     new THREE.MeshStandardMaterial({
-      map: waterTex, color: 0x9adfff, roughness: 0.1, metalness: 0.25,
-      emissive: 0x0b4b66, emissiveIntensity: 0.5, transparent: true, opacity: 0.92,
+      map: canvasTex(128, (ctx, s) => {
+        ctx.fillStyle = '#1c6f8c'; ctx.fillRect(0, 0, s, s);
+        ctx.strokeStyle = 'rgba(200,240,255,0.35)'; ctx.lineWidth = 2;
+        for (let i = 0; i <= s; i += 32) {
+          ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, s); ctx.moveTo(0, i); ctx.lineTo(s, i); ctx.stroke();
+        }
+      }, 6, 3.6),
+      roughness: 0.4,
     })
   );
-  water.position.set(POOL.x, 0.12, POOL.z);
-  house.add(water);
-  fxCallbacks.push((t) => {
-    waterTex.offset.x = t * 0.03;
-    waterTex.offset.y = Math.sin(t * 0.6) * 0.05;
+  basin.position.set(POOL.x, 0.17, POOL.z);
+  house.add(basin);
+  // Surface: caustic light from an animated cell pattern, with a fresnel term
+  // so the far edge goes glassy. The bright net is what the bloom picks up.
+  const waterMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    uniforms: { time: { value: 0 } },
+    vertexShader: `varying vec2 vUv; varying vec3 vView; varying vec3 vN;
+      void main(){ vUv = uv; vec4 wp = modelMatrix * vec4(position, 1.0);
+        vView = normalize(cameraPosition - wp.xyz); vN = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp; }`,
+    fragmentShader: `uniform float time; varying vec2 vUv; varying vec3 vView; varying vec3 vN;
+      vec2 hash2(vec2 p){ p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3))); return fract(sin(p) * 43758.5453); }
+      float cell(vec2 p){ vec2 i = floor(p), f = fract(p); float d = 1.0;
+        for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+          vec2 g = vec2(float(x), float(y)); vec2 o = hash2(i + g);
+          o = 0.5 + 0.5 * sin(time * 0.9 + 6.2831 * o);
+          d = min(d, length(g + o - f)); }
+        return d; }
+      void main(){
+        vec2 p = vUv * vec2(9.0, 5.4);
+        p += 0.18 * vec2(sin(p.y * 1.7 + time * 0.8), cos(p.x * 1.5 - time * 0.7));
+        float c = cell(p); float c2 = cell(p * 1.9 + 3.7);
+        float caustic = pow(c, 3.2) * 1.5 + pow(c2, 4.0) * 0.5;
+        vec3 deep = vec3(0.01, 0.10, 0.15), shallow = vec3(0.04, 0.34, 0.44);
+        vec3 col = mix(deep, shallow, clamp(0.25 + 0.6 * caustic, 0.0, 1.0));
+        col += vec3(0.55, 0.85, 0.95) * pow(c, 9.0) * 1.6;
+        float fres = pow(1.0 - max(dot(normalize(vN), vView), 0.0), 3.0);
+        col = mix(col, vec3(0.20, 0.30, 0.33), fres * 0.5);
+        gl_FragColor = vec4(col, 0.9);
+      }`,
   });
-  const poolGlow = new THREE.PointLight(0x54c8f0, 4, 9);
-  poolGlow.position.set(POOL.x, 0.8, POOL.z);
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(POOL.w, POOL.d), waterMat);
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(POOL.x, 0.235, POOL.z);
+  house.add(water);
+  fxCallbacks.push((t) => { waterMat.uniforms.time.value = t; });
+  const poolGlow = new THREE.PointLight(0x54c8f0, 6, 11);
+  poolGlow.position.set(POOL.x, 0.9, POOL.z);
   house.add(poolGlow);
+  fxCallbacks.push((t) => { poolGlow.intensity = 5.6 + Math.sin(t * 1.9) * 0.5 + Math.sin(t * 3.3) * 0.3; });
 
   // Loungers + umbrella west of the pool
   for (const [z] of [[11.5], [14.8]]) {
@@ -893,7 +1020,7 @@ function addBackyard(house) {
   const upole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.6, 8), mat(0xe8e2d5));
   upole.position.y = 1.3;
   umb.add(upole);
-  const canopy = new THREE.Mesh(new THREE.ConeGeometry(1.5, 0.6, 32), mat(0xe3d9c0, { roughness: 0.8 }));
+  const canopy = new THREE.Mesh(new THREE.ConeGeometry(1.5, 0.6, 32), mat(0xA65E44, { roughness: 0.9 }));
   canopy.position.y = 2.7;
   umb.add(canopy);
   add(umb, -14.2, 0, 13.2);
@@ -906,7 +1033,7 @@ function addBackyard(house) {
   );
   plat.position.y = 0.3;
   stage.add(plat);
-  const stageRing = new THREE.Mesh(new THREE.TorusGeometry(3.35, 0.06, 8, 32), mat(0xffd76a, { metalness: 0.7, roughness: 0.2 }));
+  const stageRing = new THREE.Mesh(new THREE.TorusGeometry(3.35, 0.05, 8, 64), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffc76a).multiplyScalar(2.6) }));
   stageRing.rotation.x = Math.PI / 2;
   stageRing.position.y = 0.62;
   stage.add(stageRing);
@@ -929,30 +1056,73 @@ function addBackyard(house) {
   add(tub, -1, 0.45, 15.5);
   const tubWater = new THREE.Mesh(
     new THREE.CylinderGeometry(1.3, 1.3, 0.1, 16),
-    new THREE.MeshStandardMaterial({ color: 0x67e8f9, emissive: 0x155e6b, emissiveIntensity: 0.6, roughness: 0.15 })
+    new THREE.MeshStandardMaterial({ color: 0x2E8FA3, emissive: 0x0E4651, emissiveIntensity: 0.5, roughness: 0.15 })
   );
   tubWater.position.set(-1, 0.88, 15.5);
   house.add(tubWater);
   fxCallbacks.push((t) => {
     tubWater.position.y = 0.88 + Math.sin(t * 2.4) * 0.015;
   });
+  const steamTex = canvasTex(64, (ctx, s) => {
+    const g = ctx.createRadialGradient(s / 2, s / 2, 2, s / 2, s / 2, s / 2);
+    g.addColorStop(0, 'rgba(255,255,255,0.55)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
+  });
+  const puffs = [];
+  for (let i = 0; i < 7; i++) {
+    const puff = new THREE.Sprite(new THREE.SpriteMaterial({ map: steamTex, transparent: true, depthWrite: false, opacity: 0, color: 0xCFE3DA }));
+    puff.userData.phase = i / 7;
+    puff.userData.ox = (Math.random() - 0.5) * 1.6;
+    puff.userData.oz = (Math.random() - 0.5) * 1.6;
+    house.add(puff);
+    puffs.push(puff);
+  }
+  fxCallbacks.push((t) => {
+    for (const puff of puffs) {
+      const k = (t * 0.16 + puff.userData.phase) % 1;
+      puff.position.set(-1 + puff.userData.ox + Math.sin(t * 0.5 + puff.userData.phase * 9) * 0.25, 1.0 + k * 2.2, 15.5 + puff.userData.oz);
+      const sc = 0.7 + k * 1.5;
+      puff.scale.set(sc, sc, 1);
+      puff.material.opacity = Math.sin(k * Math.PI) * 0.16;
+    }
+  });
 
-  // Palms
+  // Palms: arched, tapering, V-folded fronds that droop under their own weight.
+  const frondMat = new THREE.MeshStandardMaterial({ color: 0x3f6a47, roughness: 0.85, side: THREE.DoubleSide });
+  function frondGeometry(len, droop) {
+    const geo = new THREE.PlaneGeometry(0.62, len, 4, 12);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const u = pos.getX(i) / 0.31;                 // -1..1 across the blade
+      const v = pos.getY(i) / len + 0.5;            // 0 at the stem, 1 at the tip
+      const half = 0.31 * Math.sin(Math.min(1, v * 1.15 + 0.08) * Math.PI) ** 0.7;
+      pos.setXYZ(i,
+        u * half,
+        Math.sin(v * Math.PI * 0.62) * len * 0.23 - droop * v * v * len - Math.abs(u) * half * 0.55,
+        v * len * (1 - 0.12 * v));
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
   for (const [x, z] of [[-15.5, 16], [15.5, 16], [0, 17.3]]) {
     const palm = new THREE.Group();
     const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.3, 3.2, 8), mat(0x7a5b3a, { roughness: 1 }));
     trunk.position.y = 1.6;
     trunk.rotation.z = (Math.random() - 0.5) * 0.15;
     palm.add(trunk);
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const frond = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), mat(0x456e4d, { roughness: 1 }));
-      frond.scale.set(0.2, 1.15, 0.06);
-      frond.position.set(Math.cos(a) * 0.85, 3.3, Math.sin(a) * 0.85);
-      frond.rotation.z = Math.cos(a) * 1.25;
-      frond.rotation.x = Math.sin(a) * 1.25;
-      palm.add(frond);
+    const crown = new THREE.Group();
+    crown.position.y = 3.2;
+    for (let i = 0; i < 11; i++) {
+      const frond = new THREE.Mesh(frondGeometry(2.1 + Math.random() * 0.7, 0.3 + Math.random() * 0.25), frondMat);
+      frond.rotation.y = (i / 11) * Math.PI * 2 + Math.random() * 0.3;
+      crown.add(frond);
     }
+    palm.add(crown);
+    const sway = Math.random() * 6;
+    fxCallbacks.push((t) => {
+      crown.rotation.z = Math.sin(t * 0.7 + sway) * 0.035;
+      crown.rotation.x = Math.cos(t * 0.53 + sway) * 0.03;
+    });
     const coco = new THREE.Mesh(new THREE.SphereGeometry(0.32, 8, 8), mat(0x4f7a3a));
     coco.position.y = 3.25;
     palm.add(coco);
@@ -971,7 +1141,15 @@ function addBackyard(house) {
   house.add(rail);
 
   // String lights: posts + sagging bulb runs
-  const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffdf9e });
+  const bulbMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffd08a).multiplyScalar(3.2) });
+  // Hedge behind the fence, so the yard ends in planting rather than a void.
+  const hedgeMat = mat(0x243a2b, { roughness: 1 });
+  for (let x = -16; x <= 16; x += 2) {
+    const hedge = new THREE.Mesh(softBox(2.15, 1.5 + Math.random() * 0.35, 1.1), hedgeMat);
+    hedge.position.set(x, 0.8, 18.8);
+    hedge.castShadow = true; hedge.receiveShadow = true;
+    house.add(hedge);
+  }
   for (const x of [-16, 16]) {
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 3.4, 6), mat(0x333333));
     post.position.set(x, 1.7, 9);

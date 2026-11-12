@@ -116,6 +116,12 @@ export function renderHud(g, handlers) {
     b.onclick = handlers.onAdvance;
     btns.append(b);
   }
+  if (handlers.onHouseRead) {
+    const hr = el('button', 'bb', 'House Read');
+    hr.title = 'Where you stand with everyone, the vote count, and what you have overheard';
+    hr.onclick = handlers.onHouseRead;
+    btns.append(hr);
+  }
   const dr = el('button', 'bb', 'Diary Room');
   dr.onclick = handlers.onDiary;
   btns.append(dr);
@@ -202,7 +208,7 @@ export function clearToast() {
 
 // ---------- Chat panel ----------
 
-export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend, onClose, voice }) {
+export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend, onClose, voice, prompts }) {
   closeChatPanel();
   const panel = el('div', 'chat-panel');
   panel.id = 'chat-panel';
@@ -323,6 +329,19 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
     if (e.key === 'Escape') closeChatPanel();
   });
   inputRow.append(input, send);
+  // Conversation prompts: openers that fit the moment. They fill the box
+  // rather than send, so the player still says it in their own words.
+  if (prompts?.length) {
+    const row = el('div', 'chat-prompts');
+    for (const p of prompts) {
+      const b = el('button', 'chat-prompt', '');
+      b.type = 'button';
+      b.textContent = p.label;
+      b.onclick = () => { input.value = p.text; input.focus(); input.setSelectionRange(p.text.length, p.text.length); };
+      row.append(b);
+    }
+    panel.append(row);
+  }
   panel.append(inputRow);
 
   overlayRoot().append(panel);
