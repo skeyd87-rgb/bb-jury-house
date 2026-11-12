@@ -3,7 +3,7 @@
 // it, and maintains threads/summaries.
 
 import { askClaudeJson } from './claude.js';
-import { validateNarrative } from './grounding.js';
+import { validateNarrative, groundedChat } from './grounding.js';
 import { rememberExchange } from '../game/knowledge.js';
 import { setAiStatus } from './status.js';
 import {
@@ -79,12 +79,12 @@ export async function npcChat(g, npcId, playerMsg) {
   const npcIds = g.houseguests.map((h) => h.id);
   let result;
   try {
-    result = await askClaudeJson({
+    result = await groundedChat({
+      g, speakerId: npcId, listenerId: PLAYER_ID, utterance: playerMsg,
       system: buildChatSystemPrompt(g, npcId),
       messages: buildThreadMessages(g, npcId, playerMsg),
-      maxTokens: 900,
+      askJson: askClaudeJson,
     });
-    await validateNarrative(g, npcId, PLAYER_ID, result, askClaudeJson, { utterance: playerMsg });
     setAiStatus(true);
   } catch (err) {
     aiFailed(err);

@@ -11,7 +11,7 @@ import {
 import {
   fallbackChat, fallbackJurorQuestion, fallbackJurorVote, fallbackGroupChat, fallbackDiary,
 } from '../src/ai/fallback.js';
-import { validateNarrative } from '../src/ai/grounding.js';
+import { validateNarrative, groundedChat } from '../src/ai/grounding.js';
 import { extractJson } from '../src/ai/claude.js';
 
 const MODEL = 'claude-sonnet-5';
@@ -43,9 +43,7 @@ export async function serverNpcChat(g, npcId, playerMsg, chatterId, thread, apiK
       g.threads[npcId] = thread;
       const messages = buildThreadMessages(g, npcId, playerMsg);
       g.threads[npcId] = saved;
-      const text = await callClaude(apiKey, system, messages, 900);
-      const json = extractJson(text);
-      await validateNarrative(g, npcId, chatterId, json, auditor(apiKey), { utterance: playerMsg });
+      const json = await groundedChat({ g, speakerId: npcId, listenerId: chatterId, utterance: playerMsg, system, messages, askJson: auditor(apiKey) });
       if (json && json.reply) return { reply: String(json.reply).slice(0, 600), effects: json.effects || {}, usedAi: true };
     } catch (err) {
       // fall through to the built-in engine

@@ -43,16 +43,71 @@ function detectTargetId(g, msg) {
   return null;
 }
 
-function strategyLead(g, targetId) {
+function strategyLead(g, targetId, chatterId) {
   if (targetId) return `Gamewise, ${nameOf(g, targetId)} is the name we need to count votes around.`;
   if (g.nominees?.length) return `Gamewise, this week is about the votes between ${g.nominees.map((id) => nameOf(g, id)).join(' and ')}.`;
+  if (g.hoh === chatterId) return 'Gamewise, you have the power right now, so everyone is managing you.';
   if (g.hoh) return `Gamewise, ${nameOf(g, g.hoh)} has the power right now, so the smart move is managing that relationship.`;
   return 'Gamewise, the numbers matter more than vibes right now.';
+}
+
+// ---- Questions about what has happened -----------------------------------------
+// "Have I been HoH yet?", "How did Zoe get HoH last week?", "Who won the veto?"
+// have answers, and the engine has them. The offline writer used to file these
+// under "strategy" and reply with a line about counting votes. Now they are
+// answered from the public record — including correcting a question whose
+// premise is wrong.
+const HISTORY_Q = /\b(last week|this week|this season|so far|ever|never|yet|who (won|was|is|got|has)|how did|have i|did i|when did|has anyone|week \d+)\b/i;
+const TOPIC = [
+  { key: 'hoh', rx: /\b(hoh|head of household)\b/i, noun: 'Head of Household', kinds: ['hoh', 'final_hoh'] },
+  { key: 'veto', rx: /\b(veto|pov)\b/i, noun: 'the Power of Veto', kinds: ['veto_win'] },
+  { key: 'evict', rx: /\b(evict\w*|sent home|went home|voted out)\b/i, noun: 'evicted', kinds: ['eviction'] },
+];
+const weekWord = (g, w) => (w === g.week ? 'this week' : w === g.week - 1 ? 'last week' : `in week ${w}`);
+
+export function answerFromRecord(g, npcId, msg, chatterId = PLAYER_ID) {
+  if (!HISTORY_Q.test(msg)) return null;
+  const topic = TOPIC.find((t) => t.rx.test(msg));
+  if (!topic) return null;
+  const facts = knowledgeFor(g, npcId).publicFacts.filter((f) => topic.kinds.includes(f.kind));
+  const who = (id) => (id === chatterId ? 'you' : id === npcId ? 'I' : nameOf(g, id));
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const list = facts.map((f) => `${who(f.actorId)} ${weekWord(g, f.week)}`).join(', ');
+  const about = /\b(i|i'?ve|me|my)\b/i.test(msg) && !activeIds(g).concat(g.evicted || []).some((id) => id !== chatterId && new RegExp(`\\b${nameOf(g, id)}\\b`, 'i').test(msg));
+  const named = activeIds(g).concat(g.evicted || []).find((id) => id !== chatterId && new RegExp(`\\b${nameOf(g, id)}\\b`, 'i').test(msg));
+  const asksLast = /\blast week\b/i.test(msg);
+
+  if (topic.key === 'evict') {
+    return facts.length ? `So far: ${facts.map((f) => `${nameOf(g, f.actorId)} went ${weekWord(g, f.week)}`).join(', ')}.` : 'Nobody has been evicted yet.';
+  }
+  if (!facts.length) return `Nobody has won ${topic.noun} yet this season.`;
+  if (about) {
+    const mine = facts.filter((f) => f.actorId === chatterId);
+    return mine.length
+      ? `You have, actually: you won ${topic.noun} ${mine.map((f) => weekWord(g, f.week)).join(' and ')}.`
+      : `No, you haven't won ${topic.noun} this season. It has gone to ${list}.`;
+  }
+  if (named) {
+    const theirs = facts.filter((f) => f.actorId === named);
+    const lastWinner = facts.find((f) => f.week === g.week - 1);
+    if (asksLast && lastWinner && lastWinner.actorId !== named) {
+      return `That isn't how I remember it. ${cap(who(lastWinner.actorId))} won ${topic.noun} last week, not ${nameOf(g, named)}.${theirs.length ? ` ${nameOf(g, named)} won it ${theirs.map((f) => weekWord(g, f.week)).join(' and ')}.` : ''}`;
+    }
+    if (asksLast && !lastWinner) return `There was no ${topic.noun} winner last week on the record. So far: ${list}.`;
+    return theirs.length
+      ? `${nameOf(g, named)} won the ${topic.key === 'hoh' ? 'HoH' : 'veto'} competition ${theirs.map((f) => weekWord(g, f.week)).join(' and ')}. Nothing more to it than that, as far as I know.`
+      : `${nameOf(g, named)} hasn't won ${topic.noun} this season. It has gone to ${list}.`;
+  }
+  return `${cap(topic.noun)} so far: ${list}.`;
 }
 
 export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
   if (deniesCommitment(playerMsg)) return { reply: "I hear you. Let's be precise about what was actually agreed. I'm not treating that as a new commitment.", effects: { trustDelta: 0, bondDelta: 0, threatDelta: 0, suspicionOfLie: false } };
   const intent = INTENTS.find((i) => i.rx.test(playerMsg)).key;
+  if (!intent.startsWith('promise') && intent !== 'alliance' && intent !== 'ask_safety') {
+    const fact = answerFromRecord(g, npcId, playerMsg, chatterId);
+    if (fact) return { reply: fact, effects: { trustDelta: 0, bondDelta: 0, threatDelta: 0, suspicionOfLie: false, summary: 'Player asked what has happened this season.' } };
+  }
   const targetId = detectTargetId(g, playerMsg);
   const r = rel(g, npcId, chatterId);
   const c = castById(npcId);
@@ -194,7 +249,7 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
   };
   const lines = answers[bucket] || answers.smalltalk;
   const baseReply = lines[Math.floor(Math.random() * lines.length)];
-  const reply = intent === 'strategy' ? `${strategyLead(g, targetId)} ${baseReply}` : baseReply;
+  const reply = intent === 'strategy' ? `${strategyLead(g, targetId, chatterId)} ${baseReply}` : baseReply;
   return { reply, effects };
 }
 
