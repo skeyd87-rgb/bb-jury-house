@@ -12,6 +12,8 @@ npm run dev      # dev server (use --port 5199)
 npm run build    # production build
 ```
 
+**Live replay: `npm run replay`** (`scripts/live-replay.mjs`) runs scripted conversations against the real model and the real fact-check through the deployed server, and reports how many replies arrived as written, after one correction, or replaced by the offline writer, plus any that contradict the record. Run it after ANY change to `src/ai/prompts.js`, `grounding.js` or `fallback.js` — the mocked suites return whatever they are told and cannot see what the model actually does (three shipped bugs were only visible this way). About 30–50 AI calls on the server key per full run; `npm run replay -- week` runs only scenarios whose name contains "week". Add a scenario for every dialogue bug a player reports.
+
 Headless logic test: open `/test.html` in a browser — runs 60 simulated seasons via `src/test/sim.js` and prints stats/errors as JSON. Run this after changing anything in `src/game/`.
 
 ## Architecture
