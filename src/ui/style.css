@@ -1186,3 +1186,6 @@ body.toast-open #version-mark { opacity: 0; }
 /* A prompt chip that does something rather than fills the box. */
 .chat-prompt.act { border-color: var(--gold); color: var(--gold); }
 .chat-prompt.act:hover { background: var(--gold); color: #1B1708; }
+
+/* Talk mode: the mic is live. */
+button.bb.mic.live { border-color: var(--danger); background: #3A1A17; }

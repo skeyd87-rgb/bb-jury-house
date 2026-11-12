@@ -4,7 +4,7 @@
 import { nameOf, activeIds } from '../game/state.js';
 import { PLAYER_ID } from '../game/cast.js';
 import { phaseLabel } from '../game/season.js';
-import { isVoiceOn, setVoiceOn, voiceSupported, voiceQuality, speak, stopSpeaking, dictationSupported, startDictation } from '../audio/voice.js';
+import { isVoiceOn, setVoiceOn, voiceSupported, voiceQuality, speak, stopSpeaking, whenQuiet, dictationSupported, startDictation } from '../audio/voice.js';
 
 const hud = () => document.getElementById('hud');
 const overlayRoot = () => document.getElementById('overlay-root');
@@ -287,6 +287,9 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
   // voice: { key, gender } for 1-on-1, or { lookupGender(name) } for group chats
   // where each reply names a different speaker.
   const speakAs = (text, name) => {
+    // A reply can land after the conversation was closed. It used to be
+    // spoken anyway, over the house, with no panel on screen.
+    if (!panel.isConnected) return;
     if (!voiceSupported() || !isVoiceOn() || isDiary) return;
     const gender = name && voice?.lookupGender ? voice.lookupGender(name) : voice?.gender || null;
     speak(text, name || voice?.key || title, gender);
@@ -314,7 +317,7 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
   }
   // Register onClose so it fires however the panel closes (✕, Esc, or a
   // programmatic closeChatPanel() from a phase advance / new conversation).
-  panel._onClose = () => { stopSpeaking(); onClose && onClose(); };
+  panel._onClose = () => { panel._stopTalk && panel._stopTalk(); stopSpeaking(); onClose && onClose(); };
   const x = el('button', 'bb close', '✕');
   x.setAttribute('aria-label', 'Close conversation');
   x.onclick = () => closeChatPanel();
@@ -336,18 +339,57 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
   input.placeholder = isDiary ? 'Tell the Diary Room everything...' : 'Say something...';
   input.maxLength = 300;
   // Dictation mic (Chrome/Edge/Android; iOS users: use the keyboard's 🎤)
+  // Talk mode: tap the mic once and have a conversation. It listens, sends
+  // what you said when you stop talking, speaks the reply, and listens again
+  // — until you tap the mic, type, or close the panel. It never listens while
+  // the game is speaking, or it would answer itself.
+  let talk = null; // { rec } while talk mode is on
+  let afterReply = null;
   if (dictationSupported()) {
-    const mic = el('button', 'bb', '🎤');
-    mic.title = 'Dictate your message';
-    let rec = null;
-    mic.onclick = () => {
-      if (rec) { try { rec.stop(); } catch {} rec = null; mic.textContent = '🎤'; return; }
-      mic.textContent = '🔴';
-      rec = startDictation(
-        (text) => { input.value = (input.value ? input.value + ' ' : '') + text; },
-        () => { rec = null; mic.textContent = '🎤'; input.focus(); }
-      );
+    const mic = el('button', 'bb mic', '🎤');
+    mic.title = 'Talk: tap once, then just speak. It sends when you pause and keeps listening after each reply. Tap again to stop.';
+    const paint = (state) => {
+      mic.textContent = state === 'listen' ? '🔴' : state === 'wait' ? '💬' : '🎤';
+      mic.classList.toggle('live', !!state);
+      input.placeholder = state === 'listen' ? 'Listening…' : state === 'wait' ? '…' : (isDiary ? 'Tell the Diary Room everything...' : 'Say something...');
     };
+    const stopTalk = () => {
+      if (!talk) return;
+      const rec = talk.rec;
+      talk = null;
+      try { rec && rec.stop(); } catch { /* already stopped */ }
+      paint(null);
+    };
+    const listen = () => {
+      if (!talk || !panel.isConnected) return stopTalk();
+      const base = input.value.trim();
+      paint('listen');
+      talk.rec = startDictation(
+        (text) => { input.value = base ? `${base} ${text}` : text; },
+        (heard) => {
+          if (!talk) return;
+          talk.rec = null;
+          // Silence ends the conversation mode: otherwise it would sit there
+          // re-opening the microphone for ever.
+          if (!heard) return stopTalk();
+          paint('wait');
+          submit();
+        },
+        (text) => { input.value = base ? `${base} ${text}` : text; }
+      );
+      if (!talk.rec) stopTalk();
+    };
+    afterReply = () => { if (talk) whenQuiet(() => listen()); };
+    mic.onclick = () => {
+      if (talk) return stopTalk();
+      talk = { rec: null };
+      // An open dialogue is spoken both ways.
+      if (voiceSupported() && !isDiary && !isVoiceOn()) setVoiceOn(true);
+      stopSpeaking();
+      listen();
+    };
+    input.addEventListener('keydown', (e) => { if (talk && e.key.length === 1) stopTalk(); });
+    panel._stopTalk = stopTalk;
     inputRow.append(mic);
   }
   const send = el('button', 'bb primary', 'Send');
@@ -393,7 +435,7 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
     busy = false;
     input.disabled = false;
     send.disabled = false;
-    input.focus();
+    if (afterReply && talk) afterReply(); else input.focus();
   }
   send.onclick = submit;
   input.addEventListener('keydown', (e) => {
@@ -482,16 +524,15 @@ export function openLiveGroupPanel({ title, subtitle, color, onSend, onClose }) 
   input.placeholder = 'Say something... (/whisper <name> <msg> for a private aside)';
   input.maxLength = 300;
   if (dictationSupported()) {
-    const mic = el('button', 'bb', '🎤');
+    const mic = el('button', 'bb mic', '🎤');
     mic.title = 'Dictate your message';
     let rec = null;
     mic.onclick = () => {
       if (rec) { try { rec.stop(); } catch {} rec = null; mic.textContent = '🎤'; return; }
       mic.textContent = '🔴';
-      rec = startDictation(
-        (text) => { input.value = (input.value ? input.value + ' ' : '') + text; },
-        () => { rec = null; mic.textContent = '🎤'; input.focus(); }
-      );
+      const base = input.value.trim();
+      const show = (text) => { input.value = base ? `${base} ${text}` : text; };
+      rec = startDictation(show, () => { rec = null; mic.textContent = '🎤'; input.focus(); }, show);
     };
     inputRow.append(mic);
   }
