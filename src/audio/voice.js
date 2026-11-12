@@ -42,25 +42,71 @@ function hash(str) {
   return Math.abs(h);
 }
 
-// Per-character vocal identity: stable voice pick + pitch/rate offsets.
-// gender hint ('m'|'f') biases the voice choice when names allow it.
+// A device's voice list mixes very different quality: neural voices that
+// sound like people, older "desktop" voices that sound like a satnav, and
+// (on Apple devices) a set of joke voices. The old picker chose from all of
+// them at random and then shifted the pitch by up to 20%, which makes even a
+// good voice sound synthetic. Now: rank the list, choose only from the best
+// tier available, and leave a good voice at its natural pitch.
+const GOOD_VOICE = /natural|neural|online|enhanced|premium|siri|wavenet|google (us|uk) english/i;
+const POOR_VOICE = /desktop|espeak|compact|festival|pico|albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|good news|jester|junior|organ|ralph|superstar|trinoids|whisper|wobble|zarvox|fred|kathy|princess|eddy|flo|grandma|grandpa|reed|rocko|sandy|shelley/i;
+const FEMALE_VOICE = /female|woman|samantha|victoria|karen|moira|tessa|susan|zira|jenny|aria|libby|sonia|natasha|ava|allison|emma|olivia|michelle|ana\b|sara|nicky|serena|kate|hazel|catherine|fiona|clara|heather|linda|joanna|salli|kendra|kimberly|ivy|amy/i;
+const MALE_VOICE = /\bmale|\bman\b|daniel|alex|david|mark|guy|ryan|thomas|james|george|andrew|brian|christopher|eric|roger|steffan|william|liam|oliver|aaron|arthur|gordon|nathan|\btom\b|rishi|\blee\b|matthew|joey|justin|kevin|russell/i;
+
+function voiceScore(v) {
+  let s = 0;
+  if (GOOD_VOICE.test(v.name)) s += 3;
+  if (v.localService === false) s += 1;        // network voices are the neural ones
+  if (POOR_VOICE.test(v.name)) s -= 5;
+  if (/^en-(US|GB|AU|IE|CA)/i.test(v.lang || '')) s += 0.5;
+  return s;
+}
+function bestTier(list) {
+  if (!list.length) return list;
+  const top = Math.max(...list.map(voiceScore));
+  return list.filter((v) => voiceScore(v) >= top - 1);
+}
+
+// Per-character vocal identity: a stable pick from the best voices, with only
+// a slight pitch/rate offset. gender ('m'|'f') narrows the pick when the
+// device's voice names make that possible.
 function voiceFor(characterKey, gender) {
   const voices = englishVoices();
   const h = hash(characterKey);
-  let pool = voices;
-  if (gender && voices.length > 3) {
-    const fRx = /female|woman|samantha|victoria|karen|moira|tessa|susan|zira|jenny|aria|libby|sonia|natasha/i;
-    const mRx = /male|man|daniel|alex|fred|david|mark|guy|ryan|thomas|james|george/i;
-    const rx = gender === 'f' ? fRx : mRx;
-    const matched = voices.filter((v) => rx.test(v.name));
-    if (matched.length) pool = matched;
+  let pool = bestTier(voices);
+  if (gender && voices.length > 1) {
+    const rx = gender === 'f' ? FEMALE_VOICE : MALE_VOICE;
+    const other = gender === 'f' ? MALE_VOICE : FEMALE_VOICE;
+    const matched = voices.filter((v) => rx.test(v.name) && !other.test(v.name));
+    // A matching voice from a clearly worse tier is not worth the match.
+    const tier = bestTier(matched);
+    if (tier.length && voiceScore(tier[0]) >= Math.max(...voices.map(voiceScore)) - 3) pool = tier;
   }
   const voice = pool.length ? pool[h % pool.length] : null;
+  const natural = !!voice && voiceScore(voice) >= 3;
   return {
     voice,
-    pitch: 0.8 + ((h >> 3) % 9) * 0.05, // 0.8 – 1.2
-    rate: 0.95 + ((h >> 7) % 4) * 0.05, // 0.95 – 1.1
+    pitch: natural ? 0.98 + ((h >> 3) % 5) * 0.01 : 0.94 + ((h >> 3) % 7) * 0.02, // ±2% / ±6%
+    rate: 0.98 + ((h >> 7) % 4) * 0.02,                                          // 0.98 – 1.04
   };
+}
+
+// What is written for the eye is not what should be read aloud: emoji and
+// markdown asterisks get spoken as words by some engines.
+function speakable(text) {
+  return String(text)
+    .replace(/\p{Extended_Pictographic}|\uFE0F/gu, '')
+    .replace(/[*_~`#]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
+// For the menu: what this device is actually going to sound like.
+export function voiceQuality() {
+  const voices = englishVoices();
+  if (!voices.length) return 'none';
+  return Math.max(...voices.map(voiceScore)) >= 3 ? 'natural' : 'basic';
 }
 
 const queue = [];
@@ -70,7 +116,9 @@ let speaking = false;
 export function speak(text, characterKey = 'narrator', gender = null) {
   const s = synth();
   if (!s || !isVoiceOn() || !text) return;
-  queue.push({ text: String(text).slice(0, 500), characterKey, gender });
+  const clean = speakable(text);
+  if (!clean) return;
+  queue.push({ text: clean, characterKey, gender });
   pump();
 }
 

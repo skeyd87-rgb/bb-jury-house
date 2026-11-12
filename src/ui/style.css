@@ -1182,3 +1182,7 @@ body.toast-open #version-mark { opacity: 0; }
 @media (max-width: 760px), (max-height: 500px) {
   #hud:has(.dock-menu[open]) > .bc-lower { visibility: hidden; }
 }
+
+/* A prompt chip that does something rather than fills the box. */
+.chat-prompt.act { border-color: var(--gold); color: var(--gold); }
+.chat-prompt.act:hover { background: var(--gold); color: #1B1708; }

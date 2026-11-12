@@ -358,6 +358,59 @@ export class WorldController {
     return !!this.huddle && (this.huddle.a === id || this.huddle.b === id);
   }
 
+  // ---- Somewhere private ------------------------------------------------------
+
+  // The quietest reachable spot for two people: far from everyone else,
+  // not too far to walk. Returns { x, z, room, clear } or null.
+  findQuietSpot(partnerId, earshot = 6) {
+    if (!this.player) return null;
+    const others = [...this.npcs].filter(([id]) => id !== partnerId).map(([, c]) => c.position);
+    let best = null;
+    for (const [name, room] of Object.entries(ROOMS)) {
+      if (name === 'diary') continue;
+      for (let i = 0; i < 14; i++) {
+        const x = room.x + rnd(-room.w / 2 + 1.6, room.w / 2 - 1.6);
+        const z = room.z + rnd(-room.d / 2 + 1.6, room.d / 2 - 1.6);
+        if (hitsWall(x, z, 0.7) || hitsWall(x + 1.1, z, 0.6) || inPool(x, z) || inPool(x + 1.1, z)) continue;
+        const nearest = others.reduce((m, p) => Math.min(m, Math.hypot(p.x - x, p.z - z)), Infinity);
+        const walk = Math.hypot(this.player.position.x - x, this.player.position.z - z);
+        const score = Math.min(nearest, earshot + 5) * 2 - walk * 0.25;
+        if (!best || score > best.score) best = { x, z, room: name, score, clear: nearest > earshot + 0.5 };
+      }
+    }
+    return best;
+  }
+
+  // Walk the player to (x, z) and bring `id` along to stand beside them.
+  // Input is locked for the walk; `privateDone()` says when both have arrived.
+  goPrivate(id, x, z) {
+    const st = this.npcState.get(id);
+    if (!st || !this.player) return false;
+    st.frozen = false;
+    st.approachPlayer = false;
+    st.holdUntil = 0;
+    st.queue = null;
+    st.lead = { x: x + 1.1, z };
+    this.moveQueue = routeTo(this.player.position, new THREE.Vector3(x, 0, z));
+    this.autoWalk = true;
+    this.inputLocked = true;
+    return true;
+  }
+
+  privateDone(id) {
+    const st = this.npcState.get(id);
+    return !this.moveQueue && (!st || !st.lead);
+  }
+
+  // keepLock: a ceremony started mid-walk and owns the input lock now.
+  endPrivateWalk(id, keepLock = false) {
+    const st = this.npcState.get(id);
+    if (st) st.lead = null;
+    this.autoWalk = false;
+    if (!keepLock) this.inputLocked = false;
+    this.moveQueue = null;
+  }
+
   // Online, on a client that is following someone else's simulation: the
   // huddle's spot and readiness come from them, refreshed with every position
   // batch. It lapses by itself a few seconds after the batches stop.
@@ -503,7 +556,7 @@ export class WorldController {
     // --- Player movement
     let moving = false;
     if (this.uiBlocked()) this.keys = {};
-    if (this.player && !this.uiBlocked()) {
+    if (this.player && (!this.uiBlocked() || this.autoWalk)) {
       const dir = new THREE.Vector3();
       const fwd = new THREE.Vector3(Math.sin(this.camAngle + Math.PI), 0, Math.cos(this.camAngle + Math.PI));
       const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
@@ -556,6 +609,23 @@ export class WorldController {
       }
       // Online: a real human is reporting this NPC's position — drive there
       // directly instead of running local wander/approach AI on top of it.
+      if (st.lead) {
+        const far = Math.hypot(st.lead.x - char.position.x, st.lead.z - char.position.z);
+        if (far > 0.45) {
+          if (!st.queue || !st.queue.length) st.queue = routeTo(char.position, new THREE.Vector3(st.lead.x, 0, st.lead.z));
+          const r = followQueue(char, st.queue, NPC_SPEED * 2.2, dt);
+          if (r.stuck || r.done) st.queue = null;
+          // The route can end short of the exact point (it projects out of
+          // furniture). Close enough to talk is close enough.
+          if (r.done && far < 1.6) st.lead = null;
+          updateSwim(char);
+          animateCharacter(char, r.moving, dt, t);
+          continue;
+        }
+        st.lead = null;
+        st.queue = null;
+        st.pauseUntil = t + 4;
+      }
       if ((st.holdUntil || 0) > t && !this.inHuddle(id)) {
         updateSwim(char);
         animateCharacter(char, false, dt, t);

@@ -4,7 +4,7 @@
 import { nameOf, activeIds } from '../game/state.js';
 import { PLAYER_ID } from '../game/cast.js';
 import { phaseLabel } from '../game/season.js';
-import { isVoiceOn, setVoiceOn, voiceSupported, speak, stopSpeaking, dictationSupported, startDictation } from '../audio/voice.js';
+import { isVoiceOn, setVoiceOn, voiceSupported, voiceQuality, speak, stopSpeaking, dictationSupported, startDictation } from '../audio/voice.js';
 
 const hud = () => document.getElementById('hud');
 const overlayRoot = () => document.getElementById('overlay-root');
@@ -202,7 +202,9 @@ export function renderHud(g, handlers) {
   menuActions.append(music);
   if (voiceSupported()) {
     const vb = el('button', 'bb', isVoiceOn() ? '🗣️ Voice On' : '🤐 Voice Off');
-    vb.title = 'Houseguests speak their replies aloud';
+    vb.title = voiceQuality() === 'natural'
+      ? 'Houseguests speak their replies aloud, using this device\'s natural voices'
+      : 'Houseguests speak their replies aloud. This browser only has basic voices; Microsoft Edge and recent iPhones have more natural ones';
     vb.onclick = () => {
       setVoiceOn(!isVoiceOn());
       vb.textContent = isVoiceOn() ? '🗣️ Voice On' : '🤐 Voice Off';
@@ -407,7 +409,13 @@ export function openChatPanel({ title, subtitle, color, isDiary, thread, onSend,
       const b = el('button', 'chat-prompt', '');
       b.type = 'button';
       b.textContent = p.label;
-      b.onclick = () => { input.value = p.text; input.focus(); input.setSelectionRange(p.text.length, p.text.length); };
+      if (p.action) {
+        // Not an opener: something to do (e.g. take the conversation elsewhere).
+        b.classList.add('act');
+        b.onclick = () => p.action();
+      } else {
+        b.onclick = () => { input.value = p.text; input.focus(); input.setSelectionRange(p.text.length, p.text.length); };
+      }
       row.append(b);
     }
     panel.append(row);

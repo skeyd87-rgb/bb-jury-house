@@ -1,6 +1,6 @@
 // Director: boots the world, runs the season, wires UI <-> engine <-> AI.
 
-import { createScene } from './world/scene.js';
+import { createScene, ROOMS } from './world/scene.js';
 import { WorldController, LISTEN_R, SPOT_R } from './world/movement.js';
 import { createCharacter } from './world/characters.js';
 import { createBroadcast } from './ui/broadcast.js';
@@ -1361,8 +1361,12 @@ function openNpcChat(id, opener = null, approachReason = null) {
   world.freezeNpc(id, true);
   world.focusOn(id);
   const hg = g.houseguests.find((h) => h.id === id);
+  const earshotNow = world.nearbyListeners(id, 6);
+  const prompts = chatPrompts(id);
+  // Only offered when it would change something: somebody can hear you.
+  if (earshotNow.length) prompts.unshift({ label: 'Go somewhere private', action: () => takeItPrivate(id) });
   const panel = openChatPanel({
-    prompts: chatPrompts(id),
+    prompts,
     title: hg.name,
     subtitle: `${hg.job}${g.hoh === id ? ' · HoH 👑' : ''}${g.nominees.includes(id) ? ' · Nominated 🎯' : ''}${g.vetoHolder === id ? ' · Veto 🛡️' : ''}`,
     color: hg.color,
@@ -1387,9 +1391,10 @@ function openNpcChat(id, opener = null, approachReason = null) {
     },
   });
   if (opener) panel.addSystemMsg(opener);
-  const earshot = world.nearbyListeners(id, 6);
-  if (earshot.length) {
-    panel.addSystemMsg(`👂 Not private — ${earshot.map((l) => nameOf(g, l.id)).join(', ')} ${earshot.length > 1 ? 'are' : 'is'} within earshot. Move somewhere quieter for a real secret.`);
+  if (earshotNow.length) {
+    panel.addSystemMsg(`👂 Not private — ${earshotNow.map((l) => nameOf(g, l.id)).join(', ')} ${earshotNow.length > 1 ? 'are' : 'is'} within earshot. Use "Go somewhere private" for a real secret.`);
+  } else if (opener && /step away/.test(opener)) {
+    panel.addSystemMsg('Nobody is within earshot.');
   }
   if (approachReason) {
     panel.themSpeak(async () => {
@@ -1625,6 +1630,45 @@ function revealEvictionVotes(votes, n1, n2) {
     };
     setTimeout(step, 900);
   });
+}
+
+// ---------- Somewhere private ----------
+// The two of you walk to the quietest spot in the house and pick the
+// conversation up there. It is automatic — the player does not have to steer —
+// but it is not free: everyone who was in earshot watched you leave together.
+let privateWalk = null;
+function takeItPrivate(id) {
+  if (busy || privateWalk) return;
+  const spot = world.findQuietSpot(id);
+  const witnesses = world.nearbyListeners(id, 6);
+  closeChatPanel(); // unfreezes them and releases the close-up
+  if (!spot || !world.goPrivate(id, spot.x, spot.z)) {
+    openNpcChat(id, 'There is nowhere quieter to go right now.');
+    return;
+  }
+  for (const w of witnesses) {
+    const r = g.social[w.id]?.[PLAYER_ID];
+    if (r) r.threat = Math.min(100, r.threat + 2);
+    g.memory[w.id].gossipHeard.push({
+      text: `saw ${g.playerName} pull ${nameOf(g, id)} aside to talk alone`,
+      aboutId: PLAYER_ID, fromId: w.id, week: g.week, believed: true,
+    });
+  }
+  const started = performance.now();
+  const phase = g.phase;
+  privateWalk = setInterval(() => {
+    const timedOut = performance.now() - started > 16000;
+    const interrupted = busy || g.phase !== phase || !world.npcs.has(id);
+    if (!interrupted && !timedOut && !world.privateDone(id)) return;
+    clearInterval(privateWalk);
+    privateWalk = null;
+    world.endPrivateWalk(id, busy);
+    if (interrupted) return;
+    const label = ROOMS[spot.room]?.label || 'a quieter spot';
+    const seen = witnesses.length ? ` ${witnesses.map((w) => nameOf(g, w.id)).join(', ')} watched you go.` : '';
+    openNpcChat(id, `You and ${nameOf(g, id)} step away to the ${label}.${seen}`);
+    refresh();
+  }, 200);
 }
 
 // Roll eavesdropping for nearby NPCs. Closer = far likelier to overhear.
