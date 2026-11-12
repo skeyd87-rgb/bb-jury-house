@@ -17,6 +17,7 @@ import {
   buildOpenerPrompt,
   buildGroupSystemPrompt,
   buildAnalysisPrompt,
+  stripStamp,
 } from './prompts.js';
 import {
   fallbackChat,
@@ -89,7 +90,7 @@ export async function npcChat(g, npcId, playerMsg) {
     result = fallbackChat(g, npcId, playerMsg);
   }
 
-  const reply = String(result.reply || '...').slice(0, 600);
+  const reply = (stripStamp(result.reply) || '...').slice(0, 600);
   const effects = sanitizeEffects(result.effects, npcIds);
 
   // Record thread
@@ -116,7 +117,7 @@ export async function npcOpener(g, npcId, reason) {
       maxTokens: 400,
     });
     await validateNarrative(g, npcId, PLAYER_ID, r, askClaudeJson);
-    if (r.reply) { reply = String(r.reply).slice(0, 500); setAiStatus(true); }
+    if (r.reply) { reply = stripStamp(r.reply).slice(0, 500) || null; setAiStatus(true); }
   } catch (err) {
     aiFailed(err);
   }

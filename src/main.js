@@ -24,12 +24,13 @@ import {
   groupChat, postGameAnalysis,
 } from './ai/dialogue.js';
 import { onAiStatusChange, getAiStatus, setAiStatus } from './ai/status.js';
+import { stripStamp } from './ai/prompts.js';
 import {
   el, renderHud, resetHud, showToast, clearToast, openChatPanel, closeChatPanel,
   cinematic, cinematicWait, pickHouseguests, cinematicTextInput, confetti, titleScreen,
   openLiveGroupPanel, houseIntelPanel, lowerThird,
 } from './ui/ui.js';
-import { setMood, sting, setMusicEnabled, stopMusic } from './audio/music.js';
+import { setMood, sting, setMusicEnabled, isMusicEnabled, stopMusic } from './audio/music.js';
 import { speak, stopSpeaking, isVoiceOn, setVoiceOn, voiceSupported } from './audio/voice.js';
 import { buildSeasonStats, archiveSeason, loadArchivedSeason, showStatsPage } from './ui/stats.js';
 
@@ -174,6 +175,7 @@ function startOnlineSeason(game) {
   wireOnlineSocialHandlers();
   wireReconnectHandling();
   scheduleHuddles();
+  try { setMusicEnabled(localStorage.getItem(ONLINE_MUSIC_KEY) !== '0'); } catch { /* keep the default: on */ }
   room.onHuddleIntel = (text) => {
     sting('chime');
     showToast(`<b>Overheard.</b> ${escHtml(text)}`, [
@@ -713,6 +715,16 @@ function syncOnlineWorld(game) {
       roomActions.append(back);
     }
   }
+  const music = el('button', 'bb', isMusicEnabled() ? '🔊 Music' : '🔇 Music');
+  music.onclick = (e) => {
+    e.stopPropagation();
+    const on = !isMusicEnabled();
+    setMusicEnabled(on);
+    try { localStorage.setItem(ONLINE_MUSIC_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+    music.textContent = on ? '🔊 Music' : '🔇 Music';
+    if (on && onlineGame?.turn) onlineMood(onlineGame, onlineGame.turn);
+  };
+  roomActions.append(music);
   roomActions.append(leave);
   if (iAmHost()) {
     const end = el('button', 'bb danger', 'End Session');
@@ -847,6 +859,7 @@ function renderOnlineTurn(game, t) {
   if (t.kind !== 'comp') compRunning = false; // never leave it stuck after a comp
   closeOnlineOverlay();
   world.releaseHolds(); // a new turn: nobody is left standing in a conversation that ended
+  onlineMood(game, t);
   if (STAGED_TURNS.includes(t.kind)) {
     closeChatPanel();
     // Re-stage on every ceremony turn: someone may have been evicted or
@@ -1343,10 +1356,35 @@ function setMoodForPhase() {
     week_intro: 'house', social_hoh: 'house', social_veto: 'house',
     veto_lobby: 'house', renom_watch: 'tension', campaigning: 'tension',
     hoh_comp: 'comp', veto_comp: 'comp',
-    nominations: 'tension', veto_ceremony: 'tension', eviction: 'tension',
-    final3: 'tension', finale: 'finale',
+    nominations: 'tension', veto_ceremony: 'tension', eviction: 'eviction',
+    final3: 'tension', final_hoh: 'comp', finale: 'finale',
   };
   setMood(map[g.phase] || 'house');
+}
+
+// A competition just ended. If you won it, the room is yours for a moment:
+// the victory cue plays under the result card. Otherwise the comp music
+// drops straight back to the house.
+function resultMood(winner) {
+  if (!g.settings.musicOn) return;
+  setMood(winner === PLAYER_ID ? 'victory' : 'house');
+}
+
+// Online has no per-save setting, so the music switch lives in the browser.
+const ONLINE_MUSIC_KEY = 'bbjury.musicOnline';
+function onlineMood(game, t) {
+  if (!isMusicEnabled()) return;
+  const me = myEngineId();
+  const k = t.kind;
+  const mood =
+    k === 'comp' ? 'comp'
+    : k === 'comp_result' ? (me && t.winner === me ? 'victory' : 'house')
+    : ['nominate', 'noms_result', 'veto_decision', 'veto_result', 'replacement', 'final3_intro'].includes(k) ? 'tension'
+    : ['vote', 'eviction_result', 'final_cut', 'final_cut_result'].includes(k) ? 'eviction'
+    : k.startsWith('jury_') ? 'finale'
+    : k === 'winner' ? (me && t.winner === me ? 'victory' : 'finale')
+    : 'house';
+  setMood(mood);
 }
 
 // ---------- Conversations ----------
@@ -1371,7 +1409,7 @@ function openNpcChat(id, opener = null, approachReason = null) {
     subtitle: `${hg.job}${g.hoh === id ? ' · HoH 👑' : ''}${g.nominees.includes(id) ? ' · Nominated 🎯' : ''}${g.vetoHolder === id ? ' · Veto 🛡️' : ''}`,
     color: hg.color,
     voice: { key: id, gender: hg.gender },
-    thread: g.threads[id] || [],
+    thread: (g.threads[id] || []).map((t) => ({ ...t, text: stripStamp(t.text) })),
     onSend: async (text) => {
       // Who's in earshot BEFORE the exchange (positions are frozen during chat).
       const listeners = world.nearbyListeners(id, 6);
@@ -2070,6 +2108,7 @@ async function runHohComp() {
   g.compHistory.push({ week: g.week, type: 'hoh', winner, scores });
   logEvent(g, 'hoh', `${nameOf(g, winner)} won HoH.`, [winner]);
   sting(winner === PLAYER_ID ? 'win' : 'reveal');
+  resultMood(winner);
 
   const board = Object.entries(scores)
     .filter(([, s]) => s >= 0)
@@ -2163,6 +2202,7 @@ async function runVetoComp() {
   g.compHistory.push({ week: g.week, type: 'veto', winner, scores });
   logEvent(g, 'veto_win', `${nameOf(g, winner)} won the Power of Veto.`, [winner]);
   sting(winner === PLAYER_ID ? 'win' : 'reveal');
+  resultMood(winner);
 
   const holderIsYou = winner === PLAYER_ID;
   await cinematicWait({
@@ -2462,6 +2502,7 @@ async function runFinalThree() {
   g.hoh = winner;
   logEvent(g, 'final_hoh', `${nameOf(g, winner)} won the Final HoH.`, [winner]);
   sting(winner === PLAYER_ID ? 'win' : 'reveal');
+  resultMood(winner);
 
   let cut;
   if (winner === PLAYER_ID) {
@@ -2718,6 +2759,7 @@ function showWinner(winner, counts, finalists, juryVoteList = []) {
   const playerIsFinalist = finalists.includes(PLAYER_ID);
   const won = winner === PLAYER_ID;
   sting(won ? 'win' : 'reveal');
+  if (g.settings.musicOn) setMood(won ? 'victory' : 'finale');
   if (won) confetti();
 
   const [f1, f2] = finalists;

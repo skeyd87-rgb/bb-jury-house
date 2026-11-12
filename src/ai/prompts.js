@@ -149,12 +149,27 @@ export function buildChatSystemPrompt(g, npcId, viewerId = PLAYER_ID) {
   ].join('\n');
 }
 
+// Remove a leaked history stamp from the start of a line. Applied to every
+// reply before it is shown or stored, and to stored lines before they are
+// shown or sent back, so a save that already has some is cleaned as it goes.
+export function stripStamp(text) {
+  return String(text ?? '').replace(/^(?:\s*\[(?:Week\s+\d+[^\]]*|Older exchange[^\]]*)\]\s*)+/i, '');
+}
+
 export function buildThreadMessages(g, npcId, playerMsg) {
   const thread = g.threads[npcId] || [];
   const msgs = [];
   for (const m of thread.slice(-12)) {
-    const dated = `[${m.week ? `Week ${m.week}, ${m.phase || 'phase unknown'}` : 'Older exchange; date unknown'}] ${m.text}`;
-    msgs.push({ role: m.who === 'you' ? 'user' : 'assistant', content: m.who === 'you' ? dated : JSON.stringify({ reply: dated }) });
+    // When each line was said matters to the model, but the stamp must not be
+    // part of the houseguest's own words: with it inside "reply", the model
+    // copied the pattern and opened new lines with "[Week 1, social_hoh] ...".
+    // The player's lines keep an inline stamp; the houseguest's carry it in a
+    // separate field.
+    const when = m.week ? `Week ${m.week}, ${m.phase || 'phase unknown'}` : 'Older exchange; date unknown';
+    const text = stripStamp(m.text);
+    msgs.push(m.who === 'you'
+      ? { role: 'user', content: `[${when}] ${text}` }
+      : { role: 'assistant', content: JSON.stringify({ when, reply: text }) });
   }
   msgs.push({ role: 'user', content: playerMsg });
   // API requires the first message to be from the user (threads can start

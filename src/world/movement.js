@@ -29,6 +29,43 @@ function flatRing(inner, outer, color, opacity) {
   return m;
 }
 
+// ---- Where people hang out ---------------------------------------------------
+// Houseguests used to pick a random point anywhere in the house, walk to it,
+// wait 3-10 seconds and set off again: eight people in constant motion, which
+// no room full of people looks like, and which made a private word impossible
+// because someone was always walking past.
+//
+// Now a houseguest SETTLES: at a spot people would actually stand (by the
+// sofa, at the island, on the patio), for a minute or three. When that runs
+// out they usually just shift a few steps or drift over to someone in the same
+// room, and only sometimes cross the house. While settled they turn to face
+// whoever is nearby.
+const HANGOUTS = {
+  living: [[-8.8, 3.6], [-3.2, 3.6], [-9.6, 1], [-2.4, 1], [-6, 0.2], [-10, -1.2], [-2, -1.6], [-8, -0.6], [-4, -0.6]],
+  kitchen: [[5.9, 3.95], [7, 3.95], [8.1, 3.95], [3.6, 1], [9.9, 4.4], [12.6, 1.6], [13.2, -2.4], [7.8, -1.6], [3, 5], [15.2, 3], [5, -0.6]],
+  bedroom: [[-9, -6.4], [-6.3, -6.4], [-3.7, -6.4], [-1.2, -6], [-10.6, -5.4]],
+  hoh: [[4.2, -6.9], [9.9, -6.9], [3, -10], [10.6, -10], [7, -5.6]],
+  backyard: [[-9, 10.2], [-12.4, 13], [-5, 13], [-1, 12.6], [2.2, 15.4], [4, 10], [8, 9.3], [12.6, 11], [13, 16], [-3.6, 16.8], [0.5, 9.6]],
+};
+// How much each room draws people. The HoH suite and bedroom are quiet by
+// design — they are where you go to be alone with someone.
+const ROOM_PULL = { living: 3, kitchen: 3, backyard: 3, bedroom: 1.2, hoh: 0.8 };
+let hangoutsChecked = false;
+function hangouts() {
+  if (!hangoutsChecked) {
+    hangoutsChecked = true;
+    for (const [room, list] of Object.entries(HANGOUTS)) {
+      HANGOUTS[room] = list.filter(([x, z]) => !hitsWall(x, z, 0.5) && !inPool(x, z));
+    }
+  }
+  return HANGOUTS;
+}
+const STAY = {
+  afterRoomChange: [70, 200],  // seconds settled after crossing the house
+  afterShift: [35, 95],        // ...after a small move within the room
+  afterTalk: [25, 70],         // lingering where a conversation ended
+};
+
 function nearestRoom(x, z) {
   const direct = roomAt(x, z);
   if (direct) return direct;
@@ -248,7 +285,8 @@ export class WorldController {
       if (!hitsWall(x, z, 0.5)) break;
     }
     char.position.set(x, 0, z);
-    this.npcState.set(char.userData.id, { queue: null, pauseUntil: 0, frozen: false, stuckTime: 0 });
+    // Staggered, so the house does not all get up at the same moment.
+    this.npcState.set(char.userData.id, { queue: null, pauseUntil: this.clock.elapsedTime + rnd(6, 80), frozen: false, stuckTime: 0 });
     this.scene.add(char);
   }
 
@@ -349,7 +387,7 @@ export class WorldController {
     const t = this.clock.elapsedTime;
     for (const id of [this.huddle.a, this.huddle.b]) {
       const st = this.npcState.get(id);
-      if (st) { st.queue = null; st.pauseUntil = t + rnd(0.4, 1.6); }
+      if (st) { st.queue = null; st.pauseUntil = t + rnd(...STAY.afterTalk); }
     }
     this.huddle = null;
   }
@@ -458,7 +496,53 @@ export class WorldController {
     if (!this.stage) return;
     this.stage = null;
     const t = this.clock.elapsedTime;
-    for (const [, st] of this.npcState) { st.queue = null; st.pauseUntil = t + rnd(0.2, 2.5); }
+    // A ceremony breaks up gradually: a few leave at once, most mill about.
+    for (const [, st] of this.npcState) { st.queue = null; st.pauseUntil = t + rnd(2, 45); st.wantRoom = true; }
+  }
+
+  // Where a houseguest goes when a stay runs out. Mostly nowhere far: a few
+  // steps, or over to someone in the same room. Sometimes another room.
+  pickHangout(id, char, st) {
+    const spots = hangouts();
+    const here = nearestRoom(char.position.x, char.position.z);
+    const others = [this.player, ...this.npcs.values()].filter((c) => c && c !== char);
+    const free = (x, z, r = 1.0) => !hitsWall(x, z, 0.5) && !inPool(x, z) &&
+      !others.some((c) => Math.hypot(c.position.x - x, c.position.z - z) < r);
+    const changeRoom = st.wantRoom || Math.random() < 0.38 || !spots[here]?.length;
+    st.wantRoom = false;
+
+    if (!changeRoom) {
+      // Drift over to someone already in this room...
+      if (Math.random() < 0.4) {
+        const mates = [...this.npcs].filter(([oid, c]) => oid !== id && !this.inHuddle(oid) &&
+          nearestRoom(c.position.x, c.position.z) === here && c.position.distanceTo(char.position) > 2);
+        if (mates.length) {
+          const [, mate] = mates[Math.floor(Math.random() * mates.length)];
+          for (let i = 0; i < 6; i++) {
+            const a = Math.random() * Math.PI * 2;
+            const x = mate.position.x + Math.cos(a) * 1.25, z = mate.position.z + Math.sin(a) * 1.25;
+            if (free(x, z, 0.9)) return { x, z, stay: STAY.afterShift };
+          }
+        }
+      }
+      // ...or just shift a few steps.
+      for (let i = 0; i < 8; i++) {
+        const a = Math.random() * Math.PI * 2, d = rnd(1.2, 2.6);
+        const x = char.position.x + Math.cos(a) * d, z = char.position.z + Math.sin(a) * d;
+        if (nearestRoom(x, z) === here && free(x, z)) return { x, z, stay: STAY.afterShift };
+      }
+      return null;
+    }
+
+    // Another room, weighted by how much it draws people.
+    const rooms = Object.keys(spots).filter((r) => r !== here && spots[r].length);
+    let roll = Math.random() * rooms.reduce((s, r) => s + (ROOM_PULL[r] || 1), 0);
+    let room = rooms[0];
+    for (const r of rooms) { roll -= ROOM_PULL[r] || 1; if (roll <= 0) { room = r; break; } }
+    const open = (spots[room] || []).filter(([x, z]) => free(x, z, 1.1));
+    if (!open.length) return null;
+    const [x, z] = open[Math.floor(Math.random() * open.length)];
+    return { x: x + rnd(-0.25, 0.25), z: z + rnd(-0.25, 0.25), stay: STAY.afterRoomChange };
   }
 
   nearestNpc(maxDist = 3.2) {
@@ -624,7 +708,7 @@ export class WorldController {
         }
         st.lead = null;
         st.queue = null;
-        st.pauseUntil = t + 4;
+        st.pauseUntil = t + rnd(...STAY.afterTalk);
       }
       if ((st.holdUntil || 0) > t && !this.inHuddle(id)) {
         updateSwim(char);
@@ -690,13 +774,24 @@ export class WorldController {
         }
       } else {
         if ((!st.queue || !st.queue.length) && t > st.pauseUntil) {
-          const room = ROOMS[roomNames[Math.floor(Math.random() * roomNames.length)]];
-          const dest = new THREE.Vector3(
-            room.x + rnd(-room.w / 2 + 1.2, room.w / 2 - 1.2),
-            0,
-            room.z + rnd(-room.d / 2 + 1.2, room.d / 2 - 1.2)
-          );
-          if (!hitsWall(dest.x, dest.z, 0.7)) st.queue = routeTo(char.position, dest);
+          const dest = this.pickHangout(id, char, st);
+          if (dest) {
+            st.queue = routeTo(char.position, new THREE.Vector3(dest.x, 0, dest.z));
+            st.stayNext = dest.stay;
+          } else {
+            st.pauseUntil = t + rnd(8, 20); // nowhere better right now: stay put
+          }
+        } else if (!st.queue || !st.queue.length) {
+          // Settled: turn toward whoever is standing closest, like a person would.
+          let near = null, nd = 3.4;
+          const consider = (c) => {
+            if (!c || c === char) return;
+            const d = Math.hypot(c.position.x - char.position.x, c.position.z - char.position.z);
+            if (d < nd && d > 0.3) { nd = d; near = c; }
+          };
+          consider(this.player);
+          for (const [, other] of this.npcs) consider(other);
+          if (near) turnToward(char, Math.atan2(near.position.x - char.position.x, near.position.z - char.position.z), dt * 0.35);
         }
         if (st.queue && st.queue.length) {
           // No-progress watchdog: sliding along a wall counts as "moving",
@@ -716,7 +811,9 @@ export class WorldController {
             st.queue = null;
             st.stuckTime = 0;
             st.progTarget = null;
-            st.pauseUntil = t + rnd(r.done ? 3 : 0.5, r.done ? 10 : 2);
+            // Arrived: settle for the stay this move earned. Blocked: wait a
+            // few seconds and think again, rather than marching at a wall.
+            st.pauseUntil = t + (r.done ? rnd(...(st.stayNext || STAY.afterShift)) : rnd(3, 9));
           }
         }
       }
