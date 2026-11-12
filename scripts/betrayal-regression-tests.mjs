@@ -146,7 +146,7 @@ function thePromptStatesWhenNothingHappened() {
   g.hoh = 'you';
   applyNominations(g, 'you', ['flynn', 'gus']);
   const after = describeNpcMind(g, 'flynn');
-  assert(/nominated you: week 1/.test(after), 'a real nomination is missing from the ledger');
+  assert(/nominated you: Week 1, THIS WEEK/.test(after), 'a real nomination is missing from the ledger');
   assert(!/has NOT betrayed you/.test(after), 'prompt still claims a clean record after a nomination');
 }
 
