@@ -15,7 +15,7 @@ import {
   openPromisesBetween,
   logEvent,
 } from './state.js';
-import { personality, recordBetrayalIfAny, markKeptPromises, simulateHouseLife } from './social.js';
+import { personality, recordBetrayalIfAny, markKeptPromises, simulateHouseLife, settleWeekPromises } from './social.js';
 import { captureKnowledge } from './knowledge.js';
 
 export const PHASES = [
@@ -122,10 +122,18 @@ export function decideNominations(g, hohId) {
   return nominees;
 }
 
+// Could the HoH have filled `needed` seats without touching an ally? If not,
+// putting an ally up was forced, and is not a betrayal of the alliance.
+function nominationForced(g, hohId, pool, needed) {
+  const free = pool.filter((id) => !sharedAlliance(g, hohId, id));
+  return free.length < needed;
+}
+
 export function applyNominations(g, hohId, nominees) {
   g.nominees = nominees;
+  const forced = nominationForced(g, hohId, activeIds(g).filter((id) => id !== hohId), nominees.length);
   for (const n of nominees) {
-    recordBetrayalIfAny(g, hohId, 'nominated', n);
+    recordBetrayalIfAny(g, hohId, 'nominated', n, { forced });
     if (n !== PLAYER_ID) {
       const r = rel(g, n, hohId);
       r.trust = clamp(r.trust - 12);
@@ -211,9 +219,15 @@ export function applyVetoSave(g, holderId, savedId) {
 
 // Part 2: HoH names the replacement nominee.
 export function applyReplacement(g, replacementId) {
+  // Eligible replacements: not the HoH, not already up, not the saved
+  // nominee, and not the veto holder unless nobody else is left.
+  const taken = [g.hoh, ...g.nominees, g.vetoUsed?.savedId];
+  let pool = activeIds(g).filter((id) => !taken.includes(id) && id !== g.vetoUsed?.holderId);
+  if (!pool.length) pool = activeIds(g).filter((id) => !taken.includes(id));
+  const forced = nominationForced(g, g.hoh, pool, 1);
   g.nominees.push(replacementId);
   if (g.vetoUsed) g.vetoUsed.replacementId = replacementId;
-  recordBetrayalIfAny(g, g.hoh, 'nominated', replacementId);
+  recordBetrayalIfAny(g, g.hoh, 'nominated', replacementId, { forced });
   if (replacementId !== PLAYER_ID) {
     const r = rel(g, replacementId, g.hoh);
     r.trust = clamp(r.trust - 15);
@@ -308,7 +322,9 @@ export function applyEviction(g, evicted, votes) {
 
   for (const [voter, target] of Object.entries(votes)) {
     if (target === evicted) {
-      recordBetrayalIfAny(g, voter, 'voted_against', evicted);
+      // Allied with both nominees: one of them had to get the vote.
+      const forced = !!survivor && sharedAlliance(g, voter, evicted) && sharedAlliance(g, voter, survivor);
+      recordBetrayalIfAny(g, voter, 'voted_against', evicted, { forced });
     } else {
       markKeptPromises(g, voter, 'voted_keep', target === survivor ? evicted : survivor);
       // Keep-votes warm the survivor toward the voter
@@ -369,6 +385,7 @@ export function nextPhase(g) {
   g.chatTurnsThisPhase = 0;
   const idx = PHASES.indexOf(g.phase);
   if (g.phase === 'eviction') {
+    settleWeekPromises(g); // "this week" promises end with the week
     if (activeIds(g).length <= 3) {
       g.phase = 'final3';
     } else {

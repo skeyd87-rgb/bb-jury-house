@@ -149,6 +149,16 @@ export function renderHud(g, handlers) {
     };
     menuActions.append(vb);
   }
+  if (handlers.graphics) {
+    const gfx = el('button', 'bb', `Graphics: ${handlers.graphics.label()}`);
+    gfx.title = 'High looks best. Balanced and Fast trade effects and sharpness for a smoother frame rate. The game lowers this by itself if it runs slowly.';
+    gfx.onclick = (e) => {
+      e.stopPropagation(); // keep the menu open so the change is visible
+      handlers.graphics.cycle();
+      gfx.textContent = `Graphics: ${handlers.graphics.label()}`;
+    };
+    menuActions.append(gfx);
+  }
   const exit = el('button', 'bb', '🚪 Exit');
   exit.onclick = handlers.onExit;
   menuActions.append(exit);

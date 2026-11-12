@@ -15,7 +15,7 @@ import {
   resolveEviction, applyEviction, nextPhase, evictionDesire, phaseLabel,
 } from './game/season.js';
 import { buildFinaleContext, countJuryVotes, winnerFromJuryVotes, playerPlacement } from './game/finale.js';
-import { chooseApproacher, APPROACH_REASON_TEXT, allianceWillingness, formOfficialAlliance, leaveAlliance, applySpotted } from './game/social.js';
+import { chooseApproacher, APPROACH_REASON_TEXT, allianceWillingness, formOfficialAlliance, leaveAlliance, applySpotted, mentionsHouseguest } from './game/social.js';
 import { pickHuddlePair, huddleIntel, recordIntel } from './game/intel.js';
 import { showHouseRead } from './ui/houseread.js';
 import { randomCompType, COMP_NAMES, runComp } from './game/comps.js';
@@ -1097,6 +1097,10 @@ function refresh() {
     onHouseMeeting: () => groupChatFlow(activeNpcIds(g)),
     onLeaveAlliance: (id) => leaveAllianceFlow(id),
     onExit: () => exitToTitleFlow(),
+    graphics: {
+      label: () => (postfx.quality >= 4 ? 'High' : postfx.quality >= 2 ? 'Balanced' : 'Fast'),
+      cycle: () => { postfx.quality = postfx.quality >= 4 ? 2 : postfx.quality >= 2 ? 0 : 4; },
+    },
     onToggleMusic: () => {
       g.settings.musicOn = !g.settings.musicOn;
       setMusicEnabled(g.settings.musicOn);
@@ -1173,6 +1177,7 @@ function openNpcChat(id, opener = null, approachReason = null) {
       const { reply, effects } = await npcChat(g, id, text);
       if (effects.promiseMade) panel.addSystemMsg(`📋 Promise recorded: "${effects.promiseMade.text}"`);
       if (effects.allianceSignal === 'accept') panel.addSystemMsg(`🤝 ${hg.name} is in. Check your alliances.`);
+      if (effects.allianceSignal === 'propose' && !sharedAlliance(g, id, PLAYER_ID)) panel.addSystemMsg(`🤝 ${hg.name} is offering to work together. Nothing is agreed until you say yes.`);
       if (effects.suspicionOfLie) panel.addSystemMsg(`👀 ${hg.name} didn't seem to buy that...`);
       const overheardBy = applyEavesdrop(id, listeners, text, effects);
       for (const eid of overheardBy) panel.addSystemMsg(`👂 ${nameOf(g, eid)} was close enough to catch that.`);
@@ -1370,12 +1375,14 @@ function applyEavesdrop(withId, listeners, text, effects) {
     const chance = Math.max(0.1, 0.85 - dist * 0.12); // ~0.7 at 1m, ~0.1 at 6m
     if (Math.random() > chance) continue;
     caught.push(id);
-    const aboutTarget = effects.targetDiscussed;
+    // Only "about" someone if the player actually said their name: the AI's
+    // guess at who was discussed is not enough to make a listener an enemy.
+    const aboutTarget = effects.targetDiscussed && mentionsHouseguest(g, text, effects.targetDiscussed) ? effects.targetDiscussed : null;
     const gist = effects.secretShared
       ? effects.secretShared
       : effects.summary || `something to ${nameOf(g, withId)}`;
     g.memory[id].gossipHeard.push({
-      text: `overheard you tell ${nameOf(g, withId)}: "${String(gist).slice(0, 120)}"`,
+      text: `overheard ${g.playerName} tell ${nameOf(g, withId)}: "${String(gist).slice(0, 120)}"`,
       aboutId: aboutTarget || null,
       fromId: id,
       week: g.week,
@@ -1390,7 +1397,7 @@ function applyEavesdrop(withId, listeners, text, effects) {
       r.threat = Math.min(100, r.threat + 8);
       g.memory[id].grudges.push({
         againstId: PLAYER_ID,
-        reason: `I overheard you pushing to target me`,
+        reason: `overheard ${g.playerName} naming me as a target to ${nameOf(g, withId)}`,
         week: g.week,
         severity: 2,
       });
@@ -1566,7 +1573,7 @@ async function groupChatFlow(presetIds = null) {
           r.threat = Math.min(100, r.threat + 5);
           r.trust = Math.max(0, r.trust - 3);
           g.memory[id].gossipHeard.push({
-            text: `caught you whispering with ${nameOf(g, targetId)} in a group — didn't like it`,
+            text: `caught ${g.playerName} whispering with ${nameOf(g, targetId)} in a group — didn't like it`,
             aboutId: PLAYER_ID, fromId: id, week: g.week, believed: true,
           });
         }

@@ -10,7 +10,7 @@ const INTENTS = [
   { key: 'promise_evict', rx: /\b(i'?ll|i will|i'?m going to|i'?m gonna|gonna) [^.!?]{0,14}vote [^.!?]{0,12}(evict|out|against)\b(?![^.!?]{0,6}you\b)/i },
   { key: 'promise_vote', rx: /\b(i'?ll vote (to keep|for) you|you have my vote|voting to keep you|i'?m keeping you|(won'?t|will not|never|not) [^.!?]{0,20}vote against you)\b/i },
   { key: 'promise_safety', rx: /\b(i (won'?t|will not|would never|never) [^.!?]{0,16}(nominate|put you up)|you'?re safe|i'?ll protect|i got you|keep you safe|i promise|i swear|you have my word|my word)\b/i },
-  { key: 'alliance', rx: /\b(alliance|work together|team up|final ?2|final ?two|ride or die|ride together|stick together|us two|with me|we'?re a team)\b/i },
+  { key: 'alliance', rx: /\b(alliance|work together|team up|final ?2|final ?two|ride or die|ride together|stick together|us two|with me|we'?re a team|i'?m in|count me in|let'?s do it)\b/i },
   { key: 'target', rx: /\b(target|put up|nominate|backdoor|get (him|her|them|rid)|evict|take (a )?shot at)\b/i },
   { key: 'ask_vote', rx: /\b(vote for me|keep me|save me|need your vote|have my back)\b/i },
   { key: 'ask_info', rx: /\b(who (are|is|do)|what (do|are) you|any idea|heard anything|what'?s the plan|thoughts on)\b/i },
@@ -21,6 +21,16 @@ const INTENTS = [
 ];
 
 const deniesCommitment = text => /\bI\s+(?:never|did not|didn't|haven't|have not|don't|do not|can't|cannot|won't|will not)\s+(?:\w+\s+){0,3}(?:promise|promised|agree|agreed|commit|committed|work together|join)\b/i.test(text);
+
+// "Is Marcus going to nominate me?" and "I would never target Rae" both
+// contain a name and a target word. Neither is the player pushing a target.
+const NOT_A_PUSH = [
+  /\b(?:not|n'?t|never|wouldn'?t|won'?t|don'?t|refuse to)\b[^.!?]{0,28}\b(?:target|nominat|put|backdoor|evict|vote out|get rid|take (?:a )?shot)/i,
+  /\b(?:target|nominat\w*|evict\w*|backdoor\w*|put(?:ting)?|vote\w*|com(?:e|ing)|go(?:ing)?)\s+(?:out |up |for |after |against )?(?:me|us)\b/i,
+];
+const pushesTarget = (msg) => !NOT_A_PUSH.some((rx) => rx.test(msg));
+
+const WEEK_WORDS = /\b(this week|tonight|for now|this (?:vote|eviction|round|time|ceremony|hoh|nomination))\b/i;
 
 function detectTargetId(g, msg) {
   const lower = msg.toLowerCase();
@@ -75,8 +85,12 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
     case 'promise_vote': {
       bucket = r.trust >= 45 ? 'alliance' : 'ask_info';
       effects.trustDelta = 3;
+      // Carry the scope the player actually gave. "This week" promises settle
+      // at the end of the week (social.js settleWeekPromises); without the
+      // words in the recorded text, every one of them stood all season.
+      const scope = WEEK_WORDS.test(playerMsg) ? ' this week' : '';
       effects.promiseMade = {
-        text: intent === 'promise_safety' ? 'to keep them safe / not nominate them' : 'to vote to keep them',
+        text: (intent === 'promise_safety' ? 'to keep them safe / not nominate them' : 'to vote to keep them') + scope,
         kind: intent === 'promise_safety' ? 'safety' : 'vote',
       };
       effects.summary = 'Player made a promise; noted it.';
@@ -96,11 +110,12 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
     }
     case 'target': {
       bucket = 'target';
-      effects.targetDiscussed = targetId;
-      effects.threatDelta = 2;
-      effects.trustDelta = r.trust > 50 ? 2 : -1;
-      effects.secretShared = targetId ? `wants ${nameOf(g, targetId)} out` : null;
-      effects.summary = targetId ? `Player pushed ${nameOf(g, targetId)} as a target.` : 'Player talked targets.';
+      const pushed = targetId && pushesTarget(playerMsg) ? targetId : null;
+      effects.targetDiscussed = pushed;
+      effects.threatDelta = pushed ? 2 : 0;
+      effects.trustDelta = pushed ? (r.trust > 50 ? 2 : -1) : 0;
+      effects.secretShared = pushed ? `wants ${nameOf(g, pushed)} out` : null;
+      effects.summary = pushed ? `Player pushed ${nameOf(g, pushed)} as a target.` : 'Player talked about nominations without naming a target.';
       break;
     }
     case 'ask_vote': {
@@ -129,11 +144,12 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
       break;
     }
     case 'strategy': {
-      bucket = targetId ? 'target' : 'ask_info';
+      // Mentioning someone while talking game is not naming them as a target.
+      // It used to be filed as a secret about that person, and when it leaked
+      // they held a grudge for being "talked about behind their back".
+      bucket = 'ask_info';
       effects.trustDelta = 1;
-      effects.targetDiscussed = targetId;
-      effects.secretShared = targetId ? `talked strategy around ${nameOf(g, targetId)}` : null;
-      effects.summary = targetId ? `Talked strategy around ${nameOf(g, targetId)}.` : 'Talked general strategy.';
+      effects.summary = targetId ? `Talked strategy; ${nameOf(g, targetId)} came up.` : 'Talked general strategy.';
       break;
     }
     default:

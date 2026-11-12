@@ -14,7 +14,7 @@ import {
   applyEviction, nextPhase, phaseLabel,
 } from '../src/game/season.js';
 import {
-  simulateHouseLife, applyChatEffects, formOfficialAlliance, leaveAlliance, allianceWillingness,
+  simulateHouseLife, applyChatEffects, formOfficialAlliance, leaveAlliance, allianceWillingness, settleWeekPromises,
 } from '../src/game/social.js';
 import { fallbackChat, fallbackDiary } from '../src/ai/fallback.js';
 import {
@@ -453,6 +453,7 @@ export class Room extends Server {
 
   async advanceWeek() {
     const g = this.game;
+    settleWeekPromises(g); // "this week" promises end with the week
     if (activeIds(g).length <= 3) return this.enterFinal3();
     simulateHouseLife(g);
     g.week++;

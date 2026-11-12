@@ -51,8 +51,28 @@ export function describeNpcMind(g, npcId, viewerId = PLAYER_ID) {
     const dir = p.from === viewerId ? `${nameOf(g, viewerId)} promised you` : `You promised ${nameOf(g, viewerId)}`;
     lines.push(`${dir}: "${p.text}" (week ${p.week}, still standing).`);
   }
-  const broken = knowledgeFor(g, npcId).promises.filter((p) => p.status === 'broken' && p.from === viewerId && p.to === npcId);
+  const mine = knowledgeFor(g, npcId).promises.filter((p) => p.from === viewerId && p.to === npcId);
+  const broken = mine.filter((p) => p.status === 'broken');
+  const kept = mine.filter((p) => p.status === 'kept');
   for (const p of broken) lines.push(`${nameOf(g, viewerId)} BROKE this promise to you: "${p.text}" (week ${p.week}). You have not forgotten.`);
+  for (const p of kept.slice(-3)) lines.push(`${nameOf(g, viewerId)} KEPT this promise to you: "${p.text}" (week ${p.week}).`);
+
+  // The ledger. Stating what did NOT happen matters as much as what did: with
+  // only a low trust number and no facts, the model reaches for a betrayal to
+  // explain the feeling.
+  const V = nameOf(g, viewerId);
+  const nomWeeks = (g.events || [])
+    .filter((e) => (e.type === 'nominations' || (e.type === 'veto' && /replacement nominee/.test(e.text))) && e.actors?.[0] === viewerId && e.actors.slice(1).includes(npcId))
+    .map((e) => e.week);
+  lines.push(
+    `LEDGER WITH ${V.toUpperCase()} (engine record — this is the whole truth about betrayals between you): ` +
+    `promises ${V} broke to you: ${broken.length ? broken.length : 'NONE'}. ` +
+    `Promises ${V} kept to you: ${kept.length}. ` +
+    `${V} nominated you: ${nomWeeks.length ? 'week ' + [...new Set(nomWeeks)].join(', week ') : 'NEVER'}. ` +
+    (broken.length || nomWeeks.length || mem.grudges.some((x) => x.againstId === viewerId)
+      ? `You may hold those specific things, and any grudge listed below, against ${V}; do not add to them or embellish them.`
+      : `${V} has NOT betrayed you, lied to you on the record, or broken any promise. You may be wary, cold or unconvinced, but you must not say or imply that ${V} betrayed you, broke their word or turned on you — it did not happen.`)
+  );
 
   const grudges = mem.grudges.filter((x) => x.againstId === viewerId);
   for (const gr of grudges.slice(-4)) lines.push(`Grudge vs ${nameOf(g, viewerId)} (week ${gr.week}, severity ${gr.severity}/3): ${gr.reason}.`);
@@ -61,7 +81,7 @@ export function describeNpcMind(g, npcId, viewerId = PLAYER_ID) {
   for (const b of betrayals) lines.push(`Your interpretation of a betrayal: ${b.what} (week ${b.week}). This does not prove a private vote or motive.`);
 
   const gossip = mem.gossipHeard.slice(-4);
-  for (const gs of gossip) lines.push(`UNVERIFIED RUMOR from ${nameOf(g, gs.fromId) || 'an unknown source'} (week ${gs.week}, ${gs.believed ? 'you currently believe it, but it is NOT proven' : 'you are skeptical'}): ${JSON.stringify(gs.text)}`);
+  for (const gs of gossip) lines.push(`UNVERIFIED RUMOR from ${nameOf(g, gs.fromId) || 'an unknown source'} (week ${gs.week}, ${gs.believed ? 'you currently believe it, but it is NOT proven' : 'you are skeptical'}): ${JSON.stringify(gs.text)}${/\byou\b/i.test(gs.text) ? ` [in this note "you" means ${g.playerName}, not yourself]` : ''}`);
 
   const sums = mem.convoSummaries.filter((s) => s.withId === viewerId).slice(-5);
   if (sums.length) {

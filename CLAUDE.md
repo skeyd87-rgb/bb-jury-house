@@ -27,7 +27,7 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 - `src/ai/claude.js` — direct-from-browser Claude API (`claude-sonnet-5`), key in localStorage `bbjury.apikey`
 - `src/ai/prompts.js` — system prompts incl. the JSON effects contract; `src/ai/fallback.js` — offline engine (same output shape) used when no key / API fails
 - `src/main.js` — director: boots world, runs ceremonies/finale, wires UI↔engine↔AI. `window.__bb` is a debug hook (`.g`, `.openChat(id)`, `.ff([ids])` fast-forward)
-- `src/world/postfx.js` — the composer: MSAA render → GTAO → bloom → tone map → grade. `createScene` returns `render(t)`; nothing calls `renderer.render` directly any more. Quality 3→0 steps down on its own when frames run long (`__bb.postfx.quality`).
+- `src/world/postfx.js` — the composer: render → GTAO (half res) → bloom → tone map → FXAA → grade. `createScene` returns `render(t)`; nothing calls `renderer.render` directly any more. Quality is a five-step ladder (4 High … 0 Fast) trading effects and render resolution for frame time; it steps down by itself when frames average over 24 ms, persists in localStorage `bbjury.gfx`, and is exposed as Menu → Graphics and `__bb.postfx.quality`.
 - `src/world/scene.js` (house) + `src/world/movement.js` (controls, NPC wander, camera, **huddles**, **ceremony staging**, floor rings); `src/ui/ui.js` — all DOM panels; `src/audio/music.js` — synthesized adaptive score
 - **Look: "Live Feed"** — the game is dressed as the broadcast watching it.
   - One palette, in `style.css` `:root`: `--ink` surfaces, brass `--gold` (the show speaking), bone `--text`, `--danger` reserved for block/eviction/betrayal. The same values are baked into `scene.js` (sky, fog, lights, floors, set dressing) and the `cast.js` hues — change one, change the others.
@@ -47,6 +47,15 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 
 ## Invariants to preserve
 
+- **A houseguest may only hold a betrayal against the player if one happened.** `scripts/betrayal-regression-tests.mjs` pins each way the engine used to manufacture one; run it after touching `social.js`, `season.js`, `fallback.js` or `describeNpcMind`. The rules behind it:
+  - A safety promise protects a name only when that name is the *object* of the protection (`isProtectedInText`), never just because it appears in the sentence.
+  - "This week" promises end with the week (`settleWeekPromises`, called from `nextPhase` and the server's `advanceWeek`). Open-ended ones stand.
+  - `recordBetrayalIfAny` only breaks the promise kinds its action can break (`BREAKS`), and takes `{ forced }` when the actor had no non-ally alternative.
+  - Only `allianceSignal: 'accept'` forms an alliance. `'propose'` is the houseguest's offer and needs the player's yes.
+  - `suspicionOfLie` costs trust; it never files a grudge.
+  - An AI-proposed `targetDiscussed` is ignored unless the player said that name (`mentionsHouseguest`).
+  - Memory text that enters a prompt names the player; "you" in a prompt means the houseguest reading it.
+
 - **Intel never moves the game.** Everything in `intel.js` except `recordIntel` must leave `g.social`, `g.promises` and `g.alliances` untouched; `sim.js` `checkIntel` compares them byte-for-byte every simulated week. The only cost of listening is `applySpotted` (social.js), when the player is caught.
 - Huddles (`world.startHuddle` / `endHuddle`, ranges `LISTEN_R`/`SPOT_R`) are single-player only and must end at every phase boundary (`advance()`), when either speaker is frozen for a chat, and on their own timeout.
 - Staged ceremonies: `stageOn()`/`stageOff()` in main.js are idempotent and `advance()` always calls `stageOff()` — a ceremony that throws must not leave the house frozen in a line-up or `body.staging` set (it hides the HUD).
@@ -65,6 +74,9 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 - Group chat is public (all present hear/remember); `/whisper <name>` is private but the rest notice. 1-on-1s can be overheard by physically-near NPCs (`applyEavesdrop` + `world.nearbyListeners`).
 
 ## Rendering rules
+
+- **Performance is bound by passes over the scene, not by pixels alone.** Measured on Intel Iris Xe: every pass (main, shadow, AO normals) redraws everything, so draw calls and houseguest triangles multiply. Hence: the static set is merged by `batchStatic` (only plain opaque, untextured, non-emissive, front-sided standard materials — give an animated prop an emissive, a texture or `userData.dynamic`); houseguests cast shadows from a capsule proxy, not their meshes; the shadow map redraws every other frame; sheen/clearcoat are High-only (`applyMaterialTier`). Adding a point light costs every lit pixel in the house.
+- Timing in a hidden preview pane is unreliable: rAF is throttled and GPU timings vary run to run by 50%. Compare like with like in one run, and do not quote a frame rate from it.
 
 - **Bloom only sees values above 1.0** (the composer is half-float, threshold 1.0). A light source that should glow is a `MeshBasicMaterial` whose colour is multiplied past 1 (bulbs, the HoH neon, the stage ring); anything pale and merely well-lit must stay below it or it blooms into a white blob — the pool rim, umbrella and old white walls all did.
 - **The AO pass redraws the scene with one opaque material.** Anything transparent, alpha-tested or back-faced is hidden while it runs (`overrideVisibility` in postfx.js), or hair cards, glass, water and floor decals occlude as solid slabs. A new see-through object that isn't caught by those tests needs `userData.noAO = true`.

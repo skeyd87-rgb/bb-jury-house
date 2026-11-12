@@ -181,6 +181,11 @@ function neckline(geom, topY, dip, { power = 1.6, backDip = 0.25, sideDip = 0, H
   });
 }
 
+let proxyMat = null;
+function shadowProxyMaterial() {
+  return (proxyMat ||= new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false }));
+}
+
 export function createCharacter(hg) {
   const g = new THREE.Group();
   const b = hg.build || { height: 1, width: 1 };
@@ -704,6 +709,28 @@ export function createCharacter(hg) {
   blob.position.y = 0.014;
   blob.renderOrder = -1;
   g.add(blob);
+
+  // --- Shadow proxy ----------------------------------------------------------
+  // A houseguest is ~55k triangles across ~37 meshes. Casting from all of it
+  // meant drawing every body twice a frame, and nine of them were most of the
+  // shadow pass. The sun shadow is soft and seen from above, so a capsule and
+  // a head cast one that reads the same. The proxy writes neither colour nor
+  // depth in the main pass, and is flagged out of the AO pass.
+  g.traverse((o) => { if (o.isMesh) o.castShadow = false; });
+  const proxyR = 0.2 * W;
+  const proxyTop = headY - 0.12 * H, proxyBottom = 0.1;
+  const proxyBody = new THREE.Mesh(
+    new THREE.CapsuleGeometry(proxyR, Math.max(0.1, proxyTop - proxyBottom - proxyR * 2), 3, 8),
+    shadowProxyMaterial()
+  );
+  proxyBody.position.y = (proxyTop + proxyBottom) / 2;
+  const proxyHead = new THREE.Mesh(new THREE.SphereGeometry(0.135 * H, 8, 6), shadowProxyMaterial());
+  proxyHead.position.y = headY + 0.03 * H;
+  for (const p of [proxyBody, proxyHead]) {
+    p.castShadow = true;
+    p.userData.noAO = true;
+    g.add(p);
+  }
 
   // Names and status (HoH, nominee, veto, approaching) are screen-space
   // nameplates drawn by ui/broadcast.js, not sprites on the rig.

@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createPostFx } from './postfx.js';
 
 function softBox(w, h, d) {
@@ -285,7 +286,13 @@ export function createScene(canvas) {
     for (const fn of fxCallbacks) fn(t);
   }
 
+  // The shadow pass redraws the whole house and everyone in it, so it is the
+  // single most expensive thing per frame. Nothing that casts moves fast
+  // enough to need it at 60 Hz: redraw it every other frame.
+  renderer.shadowMap.autoUpdate = false;
+  let frame = 0;
   function render(t) {
+    if ((frame++ & 1) === 0) renderer.shadowMap.needsUpdate = true;
     postfx.render(t);
   }
 
@@ -368,8 +375,9 @@ function addLights(scene) {
   sun.castShadow = true;
   // The frustum is fitted to the lot rather than a loose 60 x 60, which
   // nearly doubles the texel density of every shadow in the house.
-  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-  sun.shadow.mapSize.set(coarse ? 2048 : 4096, coarse ? 2048 : 4096);
+  // 2048 over the fitted frustum is already ~2.3 cm a texel; 4096 cost four
+  // times the fill for a difference the soft filter blurs away.
+  sun.shadow.mapSize.set(2048, 2048);
   sun.target.position.set(2, 0, 3);
   scene.add(sun.target);
   sun.shadow.camera.left = -24;
@@ -516,8 +524,61 @@ function buildHouse(scene) {
   addBackyard(house);
   addRoomLights(house);
   addArchitecturalDetails(house);
+  batchStatic(house);
 
   scene.add(house);
+}
+
+// The set is ~360 small meshes, nearly all flat-coloured and none of them
+// ever moving. Drawn one by one that is ~360 draw calls in every pass (main,
+// shadow, AO), which on integrated graphics cost more than all the pixels.
+// Bake each one's transform and colour into its vertices and merge them by
+// surface finish: the house becomes a handful of meshes.
+//
+// Only plain opaque, untextured, non-emissive, front-sided standard
+// materials are merged. Everything animated in this file (water, fronds,
+// the feed, lamp shades, glass) fails one of those tests and is left alone —
+// keep it that way if you animate a new prop: give it an emissive, a texture
+// or `userData.dynamic = true`.
+function batchStatic(house) {
+  house.updateMatrixWorld(true);
+  const buckets = new Map();
+  house.traverse((o) => {
+    if (!o.isMesh || o.userData.dynamic) return;
+    const m = o.material;
+    if (!m || Array.isArray(m) || m.type !== 'MeshStandardMaterial') return;
+    if (m.map || m.normalMap || m.emissiveMap || m.transparent || m.alphaTest > 0) return;
+    if (m.side !== THREE.FrontSide || m.emissive.getHex() !== 0 || m.vertexColors) return;
+    const key = [m.roughness.toFixed(1), m.metalness.toFixed(1), o.castShadow ? 1 : 0, o.receiveShadow ? 1 : 0].join('|');
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(o);
+  });
+  for (const [key, meshes] of buckets) {
+    if (meshes.length < 2) continue;
+    const parts = [];
+    for (const o of meshes) {
+      let geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+      geo.applyMatrix4(o.matrixWorld);
+      const n = geo.attributes.position.count;
+      const col = new Float32Array(n * 3);
+      const c = o.material.color;
+      for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
+      // Keep only what every part has, or the merge refuses mixed layouts.
+      const clean = new THREE.BufferGeometry();
+      clean.setAttribute('position', geo.attributes.position);
+      clean.setAttribute('normal', geo.attributes.normal);
+      clean.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      parts.push(clean);
+    }
+    const merged = mergeGeometries(parts, false);
+    if (!merged) continue;
+    const [rough, metal, cast, receive] = key.split('|').map(Number);
+    const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: rough, metalness: metal }));
+    mesh.castShadow = !!cast;
+    mesh.receiveShadow = !!receive;
+    for (const o of meshes) { o.removeFromParent(); o.geometry.dispose(); o.material.dispose(); }
+    house.add(mesh);
+  }
 }
 
 function addTo(house) {
@@ -611,12 +672,10 @@ function addLivingRoom(house) {
   );
   picture.position.set(0, 1.25, 0.05);
   tv.add(picture);
-  const tvGlow = new THREE.PointLight(0x6FA8C8, 2.2, 6);
-  tvGlow.position.set(0, 1.3, 0.9);
-  tv.add(tvGlow);
+  // No light of its own: every point light is paid for by every pixel in the
+  // house, and the picture is already the brightest thing on that wall.
   let feedAt = -1;
   fxCallbacks.push((t) => {
-    tvGlow.intensity = 2.0 + Math.sin(t * 3.1) * 0.35 + Math.sin(t * 7.7) * 0.2;
     if (t - feedAt < 0.2) return;
     feedAt = t;
     const w = feed.width, h = feed.height;

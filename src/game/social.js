@@ -33,15 +33,11 @@ export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYE
   // Talking to an ally counts as maintenance (staves off alliance decay).
   touchAlliances(g, npcId, chatterId);
 
-  if (effects.suspicionOfLie) {
-    r.trust = clamp(r.trust - 6);
-    g.memory[npcId].grudges.push({
-      againstId: chatterId,
-      reason: 'caught what felt like a lie',
-      week: g.week,
-      severity: 1,
-    });
-  }
+  // A hunch costs a little trust and nothing else. It used to file a grudge
+  // ("caught what felt like a lie") with no fact behind it; that grudge then
+  // sat in the houseguest's memory as proof of dishonesty and resurfaced
+  // weeks later as an accusation of a betrayal that never happened.
+  if (effects.suspicionOfLie) r.trust = clamp(r.trust - 4);
 
   if (effects.promiseMade && effects.promiseMade.text) {
     const text = String(effects.promiseMade.text).slice(0, 160);
@@ -78,8 +74,19 @@ export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYE
 
   if (effects.allianceProposal && effects.allianceProposal.accepted) {
     formOfficialAlliance(g, npcId, effects.allianceProposal.name, effects.allianceProposal.memberIds || [], chatterId);
-  } else if (effects.allianceSignal === 'accept' || effects.allianceSignal === 'propose') {
+  } else if (effects.allianceSignal === 'accept') {
+    // Only "accept" — the houseguest agreeing to something the player asked
+    // for. "propose" is the houseguest making an offer: forming an alliance on
+    // that alone bound the player to a deal they never agreed to, and a later
+    // vote against that houseguest was then recorded as betraying it.
     maybeFormPlayerAlliance(g, npcId, chatterId);
+  }
+
+  // The AI layer proposes who was "discussed as a target". Only believe it
+  // when the player actually said that person's name; otherwise a leak or an
+  // eavesdrop turns a passing remark into "you were coming after me".
+  if (effects.targetDiscussed && !mentionsHouseguest(g, playerMsg, effects.targetDiscussed)) {
+    effects = { ...effects, targetDiscussed: null };
   }
 
   if (effects.secretShared) {
@@ -114,13 +121,64 @@ function promiseRecipients(g, npcId, chatterId, text, promiseMade) {
   const fromPayload = explicit.filter((id) => ids.includes(id));
   if (fromPayload.length) return [...new Set(fromPayload)];
 
-  const lower = text.toLowerCase();
-  const named = ids.filter((id) => {
-    if (id === chatterId) return false;
-    const name = nameOf(g, id).toLowerCase();
-    return name && new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(lower);
-  });
+  // No explicit list: read the text, but only count a name that is the
+  // OBJECT of the protection ("won't nominate Rae", "Rae and Bev are safe").
+  // Any name in the sentence used to count, so "you're safe, I'm going after
+  // Marcus" recorded a safety promise to Marcus — and nominating him, exactly
+  // as stated, was then scored as breaking it.
+  const named = ids.filter((id) => id !== chatterId && isProtectedInText(text, nameOf(g, id)));
   return named.length ? [...new Set(named)] : [npcId];
+}
+
+const NAME_LIST = (name) => `(?:\\w+(?:,| and|,? &)\\s+){0,3}${escapeRegExp(name)}`;
+export function isProtectedInText(text, name) {
+  if (!name) return false;
+  const n = NAME_LIST(name);
+  const patterns = [
+    // "won't nominate / put up / target / backdoor / touch NAME"
+    `(?:won'?t|will not|would never|wouldn'?t|never|not going to|not gonna|am not|i'?m not)[^.!?;]{0,24}(?:nominat\\w*|put(?:ting)?|target\\w*|backdoor\\w*|touch\\w*|go(?:ing)? after)\\s+(?:up\\s+)?${n}\\b`,
+    // "NAME is / are / stays safe"
+    `\\b${n}(?:\\s+and\\s+\\w+)?\\s+(?:is|are|stays?|will be|'?s)\\s+(?:totally |completely |100% )?safe\\b`,
+    // "keep / protect NAME", "safety for NAME"
+    `(?:keep(?:ing)?|protect(?:ing)?|sav(?:e|ing))\\s+${n}\\b(?!\\s+(?:on the block|up))`,
+    `safety (?:for|to)\\s+${n}\\b`,
+  ];
+  return patterns.some((p) => new RegExp(p, 'i').test(text));
+}
+
+// Did the speaker actually name this houseguest?
+export function mentionsHouseguest(g, text, id) {
+  const name = nameOf(g, id);
+  return !!name && new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(String(text || ''));
+}
+
+// "This week" promises end with the week. Without this every "you're safe this
+// week" stood for the rest of the season, so nominating that houseguest a
+// month later was scored — and remembered, and thrown back at the finale — as
+// a broken promise. Called once per week at rollover (season.js nextPhase).
+const WEEK_SCOPED = /\b(this week|tonight|for now|this (?:vote|eviction|round|time|ceremony|hoh|nomination)|week \d+)\b/i;
+export function settleWeekPromises(g) {
+  for (const p of g.promises) {
+    if (p.status !== 'open' || !WEEK_SCOPED.test(p.text || '')) continue;
+    if (p.kind === 'safety') {
+      // Still open at the end of the week means they were never nominated by
+      // the promiser: the promise was honoured.
+      p.status = 'kept';
+      p.settledWeek = g.week;
+      if (p.to !== PLAYER_ID && g.social[p.to]?.[p.from] && !g.evicted.includes(p.to)) {
+        const r = rel(g, p.to, p.from);
+        r.trust = clamp(r.trust + 6);
+        r.bond = clamp(r.bond + 3);
+      }
+      logEvent(g, 'promise_kept', `${nameOf(g, p.from)} kept a promise to ${nameOf(g, p.to)} ("${p.text}").`, [p.from, p.to]);
+    } else if (p.kind === 'vote') {
+      // A kept or broken vote is settled at the eviction itself. Still open
+      // here means it never came up (they were not on the block, or the
+      // promiser had no vote): nothing to judge.
+      p.status = 'void';
+      p.settledWeek = g.week;
+    }
+  }
 }
 
 function escapeRegExp(text) {
@@ -283,17 +341,27 @@ function pickAllianceName(g) {
 // ---- Betrayal detection ----------------------------------------------------
 // Called by season.js at nomination/veto/vote resolution.
 
-export function recordBetrayalIfAny(g, actorId, action, victimId) {
+// Which promises an action can break. Nominating someone does not break a
+// promise about how you will VOTE; the old single list did, so a kept "you
+// have my vote" could still be scored as broken.
+const BREAKS = {
+  nominated: ['safety', 'final2', 'alliance'],
+  voted_against: ['vote', 'safety', 'final2', 'alliance'],
+  didnt_use_veto: ['safety'],
+};
+
+// opts.forced: the actor had no other legal choice (every alternative was
+// also an ally). Being in an alliance is then not a betrayal — somebody had
+// to go up, or one of two allies had to get the vote. A specific promise is
+// still a promise, so those break regardless.
+export function recordBetrayalIfAny(g, actorId, action, victimId, opts = {}) {
   // action: 'nominated' | 'voted_against' | 'didnt_use_veto'
+  const kinds = BREAKS[action] || BREAKS.nominated;
   const relevant = g.promises.filter(
-    (p) =>
-      p.status === 'open' &&
-      p.from === actorId &&
-      p.to === victimId &&
-      (p.kind === 'safety' || p.kind === 'vote' || p.kind === 'final2' || p.kind === 'alliance')
+    (p) => p.status === 'open' && p.from === actorId && p.to === victimId && kinds.includes(p.kind)
   );
   const broke = relevant.length > 0;
-  const allied = sharedAlliance(g, actorId, victimId);
+  const allied = sharedAlliance(g, actorId, victimId) && !opts.forced;
   if (!broke && !allied) return false;
 
   for (const p of relevant) p.status = 'broken';
@@ -386,7 +454,7 @@ export function simulateHouseLife(g, rand = Math.random) {
       const listener = pick(npcs.filter((n) => n !== teller), rand);
       secret.leaked = true;
       g.memory[listener].gossipHeard.push({
-        text: `${nameOf(g, teller)} says you told them: "${secret.text}"`,
+        text: `${nameOf(g, teller)} says ${nameOf(g, secret.fromId || PLAYER_ID)} told them: "${secret.text}"`,
         aboutId: PLAYER_ID,
         fromId: teller,
         week: g.week,
@@ -399,7 +467,7 @@ export function simulateHouseLife(g, rand = Math.random) {
         r.bond = clamp(r.bond - 10);
         g.memory[listener].grudges.push({
           againstId: PLAYER_ID,
-          reason: `heard from ${nameOf(g, teller)} that you were talking about them behind their back`,
+          reason: `heard from ${nameOf(g, teller)} that ${nameOf(g, secret.fromId || PLAYER_ID)} named me as a target behind my back`,
           week: g.week,
           severity: 2,
         });
@@ -447,7 +515,7 @@ export function applySpotted(g, a, b) {
     r.threat = clamp(r.threat + 5);
     r.trust = clamp(r.trust - 4);
     g.memory[id].gossipHeard.push({
-      text: `caught you hovering while I was talking to ${nameOf(g, id === a ? b : a)}`,
+      text: `caught ${nameOf(g, PLAYER_ID)} hovering while I was talking to ${nameOf(g, id === a ? b : a)}`,
       aboutId: PLAYER_ID, fromId: id, week: g.week, believed: true,
     });
   }
