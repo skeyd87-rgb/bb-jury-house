@@ -201,7 +201,20 @@ function startOnlineSeason(game) {
   // The server reports whether each reply was actually AI-generated or the
   // offline fallback — feeds the same tiny indicator single-player uses.
   room.onAiStatus = (usedAi) => setAiStatus(usedAi);
-  room.onTakeoverNotice = (text) => showToast(text);
+  room.onTakeoverNotice = (text) => showToast(escHtml(text));
+  // Someone wants a houseguest whose player is offline. Usually it is that
+  // same person on another browser; a seated player has to say so.
+  room.onTakeoverRequest = (msg) => {
+    sting('knock');
+    showToast(`<b>${escHtml(msg.byName)}</b> wants to take over <b>${escHtml(msg.seatName)}</b>, whose player is offline. Allow it?`, [
+      { label: 'Allow', style: 'gold', onClick: () => room.send('takeoverResponse', { reqId: msg.reqId, allow: true }) },
+      { label: 'Decline', style: '', onClick: () => room.send('takeoverResponse', { reqId: msg.reqId, allow: false }) },
+    ]);
+  };
+  if (room.lostIdentity) {
+    room.lostIdentity = false;
+    showToast('This browser no longer had its saved login for this room, so you came in as a new arrival. Use <b>Take Over</b> to ask for your houseguest back.');
+  }
   handleOnlineTurn(game);
 }
 
@@ -221,7 +234,9 @@ async function openOnlineChat(targetId) {
   if (onlineOverlay || compRunning) return; // don't interrupt a ceremony/comp
   const hg = onlineGame.houseguests.find((h) => h.id === targetId);
   if (!hg || onlineGame.evicted.includes(targetId)) return;
-  const isHuman = !!(onlineGame.humanSeats && onlineGame.humanSeats[targetId]);
+  // A person only counts as one while they are connected; while they are away
+  // the AI plays their houseguest, in conversation as everywhere else.
+  const isHuman = !!(onlineGame.humanSeats && onlineGame.humanSeats[targetId]) && !seatOffline(onlineGame, targetId);
   if (world.inHuddle(targetId)) world.endHuddle(); // you walked up and broke it off (for you)
   // An AI houseguest stops for the conversation on every screen, not just this one.
   if (!isHuman) { world.holdNpc(targetId, true); room.send('npcHold', { id: targetId, on: true }); }
@@ -239,7 +254,7 @@ async function openOnlineChat(targetId) {
   }
   const panel = openChatPanel({
     title: hg.name,
-    subtitle: `${hg.job}${isHuman ? ' · 🧑 human' : ' · 🤖 AI'}${onlineGame.hoh === targetId ? ' · HoH 👑' : ''}${onlineGame.nominees?.includes(targetId) ? ' · Nominated 🎯' : ''}`,
+    subtitle: `${hg.job}${isHuman ? ' · 🧑 human' : seatOffline(onlineGame, targetId) ? ' · 🤖 AI (player away)' : ' · 🤖 AI'}${onlineGame.hoh === targetId ? ' · HoH 👑' : ''}${onlineGame.nominees?.includes(targetId) ? ' · Nominated 🎯' : ''}`,
     color: hg.color,
     voice: { key: targetId, gender: hg.gender },
     thread,
@@ -420,6 +435,20 @@ function openDiaryOnline() {
 
 // A spectator (joined after the season started) can take over any still-active
 // houseguest nobody has claimed — AI covered them until now.
+// Houseguests this player could step into: anyone the AI is playing, plus
+// anyone whose player is offline (asking for those needs another player's OK
+// — see handleClaimLiveSeat on the server). The offline ones used to be left
+// out entirely, so a player who lost their login could not even ask.
+function seatOffline(game, id) {
+  const seats = room?.lastState?.seats || {};
+  return !!(game.humanSeats && game.humanSeats[id]) && !seats[id === PLAYER_ID ? 'newcomer' : id]?.connected;
+}
+function takeoverCandidates(game, offlineOnly = false) {
+  const me = myEngineId();
+  return onlineActiveIds(game).filter((id) => id !== me &&
+    (seatOffline(game, id) || (!offlineOnly && !(game.humanSeats && game.humanSeats[id]))));
+}
+
 function takeOverFlowOnline(eligibleIds) {
   // Unlike the other online flows, spectators have no turn-critical overlay
   // of their own to protect — comps/results/ceremonies are all happening to
@@ -432,8 +461,9 @@ function takeOverFlowOnline(eligibleIds) {
   closeOnlineOverlay();
   pickHouseguests(onlineRenderGame(onlineGame), {
     kicker: 'Take Over', title: 'Choose a houseguest to play as',
-    bodyHtml: `<p class="muted">AI has been playing them so far — you take over from here.</p>`,
+    bodyHtml: `<p class="muted">You take over from the AI. A houseguest marked offline belongs to a player who dropped out — if that was you, pick them and another player will be asked to confirm.</p>`,
     ids: eligibleIds, count: 1, confirmLabel: 'Take Over', cancelable: true,
+    meta: (id) => (seatOffline(onlineGame, id) ? 'Player offline — needs approval' : (onlineGame.houseguests.find((h) => h.id === id)?.job || '')),
   }).then(async (picked) => {
     if (!picked || !picked.length) return;
     const id = picked[0];
@@ -625,7 +655,7 @@ function syncOnlineWorld(game) {
   const roomActions = el('div', 'dock-popover');
   roomMenu.append(roomActions);
   if (isSpectator()) {
-    const eligible = onlineActiveIds(game).filter((id) => !(game.humanSeats && game.humanSeats[id]));
+    const eligible = takeoverCandidates(game);
     if (eligible.length) {
       const to = el('button', 'bb gold', 'Take Over a Houseguest');
       to.onclick = () => takeOverFlowOnline(eligible);
@@ -672,6 +702,17 @@ function syncOnlineWorld(game) {
       { label: 'Stay', style: 'primary', onClick: () => c.close() },
     ]);
   };
+  // Already seated, but an offline player's houseguest is free to ask for:
+  // the way back for someone who rejoined as a new arrival.
+  if (meId) {
+    const offline = takeoverCandidates(game, true);
+    if (offline.length) {
+      const back = el('button', 'bb', 'Reclaim a houseguest');
+      back.title = 'Switch to a houseguest whose player is offline. Another player confirms.';
+      back.onclick = () => takeOverFlowOnline(offline);
+      roomActions.append(back);
+    }
+  }
   roomActions.append(leave);
   if (iAmHost()) {
     const end = el('button', 'bb danger', 'End Session');
@@ -765,7 +806,14 @@ function onlineSocialStrap(game) {
   return bar;
 }
 
+let seatedAs = null;
 function handleOnlineTurn(game) {
+  // This player now controls a different houseguest (an approved reclaim).
+  // The world was built around the old one; rebuilding from a clean load is
+  // far safer than re-rigging avatars in place. Rejoin lands on the new seat.
+  const nowAs = game?.myEngineId || null;
+  if (seatedAs && nowAs && nowAs !== seatedAs) { location.reload(); return; }
+  if (nowAs) seatedAs = nowAs;
   onlineGame = game;
   if (!game || game.phase === 'lobby') return;
   maybeUpgradeSpectator(game);
@@ -827,7 +875,7 @@ function renderOnlineTurn(game, t) {
   // so it's safe to allow even while everything else on screen is blocked.
   const spectatorTakeOverAction = () => {
     if (!isSpectator()) return [];
-    const eligible = onlineActiveIds(game).filter((id) => !(game.humanSeats && game.humanSeats[id]));
+    const eligible = takeoverCandidates(game);
     if (!eligible.length) return [];
     return [{ label: '🎮 Take Over a Houseguest', style: 'gold', onClick: () => takeOverFlowOnline(eligible) }];
   };

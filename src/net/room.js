@@ -25,12 +25,35 @@ export function getPlayerId() {
   return id;
 }
 
-function getPlayerToken() {
-  return localStorage.getItem(TOKEN_KEY) || '';
+// Each room issues its own token for a player id. They used to be kept in ONE
+// slot, so joining any second room overwrote the first room's token and that
+// room then refused the player for good ("bad_token") — with no way back in.
+// Now: one { pid, token } per room code. The old single slot is still read
+// once as a fallback, so a seat held from before this change is not lost.
+const IDS_KEY = 'bbjury.roomIds';
+function roomIds() {
+  try { return JSON.parse(localStorage.getItem(IDS_KEY) || '{}') || {}; } catch { return {}; }
 }
-
-function setPlayerToken(token) {
-  if (token) localStorage.setItem(TOKEN_KEY, token);
+function saveRoomId(code, entry) {
+  const all = roomIds();
+  if (entry) all[code] = { ...entry, at: Date.now() };
+  else delete all[code];
+  // Keep the most recent 20 rooms.
+  const keep = Object.entries(all).sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, 20);
+  try { localStorage.setItem(IDS_KEY, JSON.stringify(Object.fromEntries(keep))); } catch { /* storage unavailable */ }
+}
+function identityFor(code) {
+  const saved = roomIds()[code];
+  if (saved?.pid) return { pid: saved.pid, token: saved.token || '' };
+  return { pid: getPlayerId(), token: localStorage.getItem(TOKEN_KEY) || '' };
+}
+// The room will not accept what we hold (token lost or overwritten). There
+// is no recovering that identity, so take a fresh one for THIS room only and
+// come in as a new arrival; the old seat can be asked for from inside.
+function freshIdentityFor(code) {
+  const pid = 'p_' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
+  saveRoomId(code, { pid, token: '' });
+  return pid;
 }
 
 const CODE_CHARS = 'ACDEFGHJKMNPQRSTUVWXYZ2345679'; // no ambiguous chars
@@ -112,12 +135,15 @@ export class Room {
 
   connect(code, name) {
     this.code = code;
+    this._name = name;
     this._authenticated = false;
+    const identity = identityFor(code);
+    this.playerId = identity.pid;
     this.socket = new PartySocket({ host: PARTY_HOST, party: 'room', room: code });
 
     this.socket.addEventListener('open', () => {
       this._wasConnected = true;
-      this.send('hello', { playerId: this.playerId, token: getPlayerToken(), name });
+      this.send('hello', { playerId: this.playerId, token: identity.token, name });
       this.onOpen && this.onOpen();
     });
     this.socket.addEventListener('message', (e) => {
@@ -130,12 +156,23 @@ export class Room {
       if (typeof msg.usedAi === 'boolean') this.onAiStatus && this.onAiStatus(msg.usedAi);
       if (msg.type === 'auth') {
         this._authenticated = true;
-        if (msg.playerId === this.playerId) setPlayerToken(msg.token);
+        if (msg.playerId === this.playerId) saveRoomId(this.code, { pid: this.playerId, token: msg.token });
+        this._authRetried = false;
       } else if (msg.type === 'authError') {
-        localStorage.removeItem(TOKEN_KEY);
-        this._explicitDisconnect = true;
         this._authenticated = false;
-        this.socket && this.socket.close();
+        const dead = this.socket;
+        if (this._authRetried) {
+          // A fresh identity was refused too: give up rather than loop.
+          this._explicitDisconnect = true;
+          dead && dead.close();
+        } else {
+          this._authRetried = true;
+          this.lostIdentity = true; // the UI explains why you came back as a newcomer
+          freshIdentityFor(this.code);
+          this._explicitDisconnect = true; // closing the refused socket is deliberate
+          dead && dead.close();
+          this.connect(this.code, this._name);
+        }
       } else if (msg.type === 'state') {
         this.lastState = msg.state;
         if (this._authenticated) this.onState && this.onState(msg.state);
@@ -183,6 +220,8 @@ export class Room {
         this.onHuddleIntel && this.onHuddleIntel(msg.text);
       } else if (msg.type === 'huddleSpotted') {
         this.onHuddleSpotted && this.onHuddleSpotted(msg);
+      } else if (msg.type === 'takeoverRequest') {
+        this.onTakeoverRequest && this.onTakeoverRequest(msg);
       } else if (msg.type === 'takeoverNotice') {
         this.onTakeoverNotice && this.onTakeoverNotice(msg.text);
       }

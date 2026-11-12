@@ -166,6 +166,25 @@ async function testSpoofedHostCannotEndSession() {
   if (killed) throw new Error('spoofed host id ended the room');
 }
 
+// A houseguest whose player is away is played by the AI — including when you
+// talk to them. They used to be treated as present: the message was relayed
+// to nobody and no reply ever came.
+async function testAwayPlayersHouseguestStillAnswers() {
+  const { host, rae } = await setupSocialRoom('BB-A');
+  send(host, { type: 'chat', targetId: 'rae', text: 'Hi, how are you holding up?' });
+  const relayed = await waitFor(host, (m) => m.type === 'chatReply' && m.npcId === 'rae');
+  if (relayed.text !== null) throw new Error('a connected human was answered by the AI');
+  rae.ws.close();
+  await delay(800);
+  host.messages.length = 0;
+  send(host, { type: 'chat', targetId: 'rae', text: 'Hi, how are you holding up?' });
+  const reply = await waitFor(host, (m) => m.type === 'chatReply' && m.npcId === 'rae', 20000);
+  closeAll(host);
+  if (!reply.text || typeof reply.text !== 'string') throw new Error("an away player's houseguest did not answer");
+}
+
+// An offline player's seat is never handed over on request alone: a seated
+// player who is online is asked, and declining (or ignoring) leaves it alone.
 async function testDisconnectedSeatCannotBeStolen() {
   const { code, host, rae } = await setupStartedRoom('BB-D');
   rae.ws.close();
@@ -174,11 +193,59 @@ async function testDisconnectedSeatCannotBeStolen() {
   await waitFor(attacker, (m) => m.type === 'auth');
   await waitFor(attacker, (m) => m.type === 'state');
   send(attacker, { type: 'claimLiveSeat', seatId: 'rae', name: 'StolenRae' });
-  await delay(500);
-  const hostState = latest(host, 'state')?.state;
-  const stolen = hostState?.seats?.rae?.occupantName === 'StolenRae';
+  const ask = await waitFor(host, (m) => m.type === 'takeoverRequest');
+  await delay(300);
+  const beforeAnswer = latest(host, 'state')?.state?.seats?.rae?.occupantName === 'StolenRae';
+  send(attacker, { type: 'takeoverResponse', reqId: ask.reqId, allow: true }); // approving your own request
+  await delay(300);
+  const selfApproved = latest(host, 'state')?.state?.seats?.rae?.occupantName === 'StolenRae';
+  send(host, { type: 'takeoverResponse', reqId: ask.reqId, allow: false });
+  await waitFor(attacker, (m) => m.type === 'takeoverNotice' && /declined/.test(m.text));
+  await delay(300);
+  const afterDecline = latest(host, 'state')?.state?.seats?.rae?.occupantName === 'StolenRae';
   closeAll(host, attacker);
-  if (stolen) throw new Error('disconnected human seat was stolen');
+  if (beforeAnswer) throw new Error('seat handed over before anyone approved');
+  if (selfApproved) throw new Error('the requester approved their own takeover');
+  if (afterDecline) throw new Error('seat handed over after the request was declined');
+}
+
+// The real case: the same person back on another browser. A seated player
+// approves and they get their houseguest back, name and all.
+async function testApprovedReclaimHandsTheSeatOver() {
+  const { code, host, rae } = await setupStartedRoom('BB-K');
+  rae.ws.close();
+  await delay(800);
+  const back = openClient(code, 'RaeAgain', `raeagain_${code}`);
+  await waitFor(back, (m) => m.type === 'auth');
+  await waitFor(back, (m) => m.type === 'state');
+  send(back, { type: 'claimLiveSeat', seatId: 'rae', name: '' });
+  const ask = await waitFor(host, (m) => m.type === 'takeoverRequest');
+  send(host, { type: 'takeoverResponse', reqId: ask.reqId, allow: true });
+  await waitFor(back, (m) => m.type === 'game' && m.game?.myEngineId === 'rae');
+  const seat = latest(host, 'state')?.state?.seats?.rae;
+  closeAll(host, back);
+  if (!seat?.connected) throw new Error('reclaimed seat is not shown as connected');
+}
+
+// Alone in the room, there is nobody to ask and nobody to wrong.
+async function testLoneReturnerGetsTheirSeatWithoutApproval() {
+  const code = makeRoomCode('BB-O');
+  const first = openClient(code, 'Solo', `solo_${code}`);
+  await waitFor(first, (m) => m.type === 'auth');
+  await waitFor(first, (m) => m.type === 'state');
+  send(first, { type: 'claimSeat', seatId: 'newcomer' });
+  await delay(200);
+  send(first, { type: 'startSeason', clientTime: Date.now() });
+  await waitTurn(first, 'week_ready');
+  first.ws.close();
+  await delay(800);
+  const again = openClient(code, 'SoloAgain', `soloagain_${code}`);
+  await waitFor(again, (m) => m.type === 'auth');
+  await waitFor(again, (m) => m.type === 'state');
+  send(again, { type: 'claimLiveSeat', seatId: 'newcomer', name: '' });
+  const got = await waitFor(again, (m) => m.type === 'game' && m.game?.myEngineId === 'you');
+  closeAll(again);
+  if (!got) throw new Error('a lone returning player could not get their seat back');
 }
 
 async function testLegitimateReconnectRestoresSeat() {
@@ -372,7 +439,10 @@ const tests = [
   testNoPrivateIdsInGame,
   testSpoofedPidCannotReleaseSeat,
   testSpoofedHostCannotEndSession,
+  testAwayPlayersHouseguestStillAnswers,
   testDisconnectedSeatCannotBeStolen,
+  testApprovedReclaimHandsTheSeatOver,
+  testLoneReturnerGetsTheirSeatWithoutApproval,
   testLegitimateReconnectRestoresSeat,
   testLateCompTakeoverGetsNotice,
   testApiChatRejectsUnauthenticatedOriginlessPost,

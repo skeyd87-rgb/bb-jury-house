@@ -917,8 +917,11 @@ export class Room extends Server {
     if (!g || !text) return;
     if (!activeIds(g).includes(targetId) || targetId === chatterId) return;
 
-    // Human target: relay the message to them (they reply from their own chat).
-    if (this.isHuman(targetId)) {
+    // Human target who is ONLINE: relay the message to them (they reply from
+    // their own chat). A player who is away is covered by the AI everywhere
+    // else in the game; here they used to be treated as present, so a message
+    // to them went nowhere and nobody ever answered.
+    if (this.isActiveHuman(targetId)) {
       if (!g.mpHumanThreads) g.mpHumanThreads = {};
       const hKey = this.humanThreadKey(chatterId, targetId);
       const hThread = g.mpHumanThreads[hKey] || (g.mpHumanThreads[hKey] = []);
@@ -1015,7 +1018,7 @@ export class Room extends Server {
       const secret = wm[2];
       for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: senderId, name: nameOf(g, senderId), text: `🤫 (whispers to ${nameOf(g, targetId)}) ${secret}` });
       let whisperReply = null;
-      if (this.isHuman(targetId)) {
+      if (this.isActiveHuman(targetId)) {
         this.sendToEngine(targetId, { type: 'groupWhisper', groupId, from: senderId, fromName: nameOf(g, senderId), text: secret });
       } else {
         const r = await serverNpcChat(g, targetId, secret, senderId, [], this.effectiveApiKey);
@@ -1042,7 +1045,7 @@ export class Room extends Server {
     grp.log.push({ who: 'you', id: senderId, text });
     for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: senderId, name: nameOf(g, senderId), text });
 
-    const aiMembers = grp.members.filter((m) => !this.isHuman(m));
+    const aiMembers = grp.members.filter((m) => !this.isActiveHuman(m)); // an away player is voiced by the AI
     let result;
     try {
       result = await serverGroupChat(g, aiMembers, senderId, text, grp.log, this.effectiveApiKey);
@@ -1220,7 +1223,28 @@ export class Room extends Server {
   // claimed by any human (mid-season — the lobby-only claimSeat is for
   // before the season starts). AI covers everyone until someone claims them,
   // exactly like a Newcomer or cast seat left unclaimed at lobby time.
-  async handleClaimLiveSeat(pid, seatId, customName) {
+  // Who may approve handing an offline player's seat to `pid`: the host if
+  // they are online and seated, otherwise any other online seated player.
+  takeoverApprover(pid) {
+    const s = this.state;
+    const ok = (id) => id && id !== pid && s.players[id]?.online && s.players[id]?.seatId;
+    if (ok(s.hostPlayerId)) return s.hostPlayerId;
+    return Object.keys(s.players).find(ok) || null;
+  }
+
+  async handleTakeoverResponse(pid, reqId, allow) {
+    const req = this.takeoverRequests?.[reqId];
+    if (!req || req.approver !== pid) return;
+    delete this.takeoverRequests[reqId];
+    if (Date.now() - req.at > 10 * 60 * 1000) return;
+    if (!allow) {
+      this.sendToPid(req.pid, { type: 'takeoverNotice', text: 'Your request to take over that houseguest was declined.' });
+      return;
+    }
+    await this.handleClaimLiveSeat(req.pid, req.seatId, req.customName, true);
+  }
+
+  async handleClaimLiveSeat(pid, seatId, customName, approved = false) {
     const g = this.game;
     const s = this.state;
     if (!g || s.phase !== 'playing') return;
@@ -1230,9 +1254,34 @@ export class Room extends Server {
     if (!activeIds(g).includes(engineId)) return; // evicted/gone — nothing to take over
     if (this.isActiveHuman(engineId)) return; // someone's already actively playing them
     const currentOwner = s.humanSeats?.[engineId] || null;
-    if (currentOwner && currentOwner !== pid) {
-      this.sendToPid(pid, { type: 'takeoverNotice', text: 'That seat already belongs to a disconnected player. They can rejoin with the same room code.' });
+    if (currentOwner && currentOwner !== pid && !approved) {
+      // The seat belongs to someone who is offline. Usually that someone is
+      // the person asking — back on a different browser, or after their saved
+      // login was lost — and there is no way to prove it. So ask a person:
+      // any other seated player who is online decides. If nobody else is
+      // online there is no one to wrong and no one to ask, so it is granted.
+      const approver = this.takeoverApprover(pid);
+      if (!approver) return this.handleClaimLiveSeat(pid, seatId, customName, true);
+      const reqId = 'tk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      this.takeoverRequests = this.takeoverRequests || {};
+      this.takeoverRequests[reqId] = { pid, seatId, customName, approver, at: Date.now() };
+      this.sendToPid(approver, {
+        type: 'takeoverRequest', reqId,
+        seatName: nameOf(g, engineId), byName: s.players[pid]?.name || 'Someone',
+      });
+      this.sendToPid(pid, { type: 'takeoverNotice', text: `${nameOf(g, engineId)} belongs to a player who is offline. Asked ${s.players[approver]?.name || 'another player'} to let you take over.` });
       return;
+    }
+    if (currentOwner && currentOwner !== pid) {
+      // Approved hand-over: the old owner no longer holds this seat.
+      if (s.players[currentOwner]) s.players[currentOwner].seatId = null;
+    }
+    // Moving from another seat: let go of it (the AI picks it up).
+    const prevSeat = s.players[pid]?.seatId;
+    if (prevSeat && prevSeat !== seatId) {
+      const prevEngine = this.seatToEngineId(prevSeat);
+      if (s.humanSeats?.[prevEngine] === pid) delete s.humanSeats[prevEngine];
+      if (s.seats[prevSeat]) { s.seats[prevSeat].occupant = null; s.seats[prevSeat].occupantName = null; s.seats[prevSeat].connected = false; }
     }
     if (!s.humanSeats) s.humanSeats = {};
     s.humanSeats[engineId] = pid;
@@ -1351,6 +1400,11 @@ export class Room extends Server {
       case 'claimLiveSeat': {
         const pid = this.connToPlayer.get(connection.id);
         if (pid) await this.handleClaimLiveSeat(pid, msg.seatId, msg.name);
+        return;
+      }
+      case 'takeoverResponse': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleTakeoverResponse(pid, String(msg.reqId || ''), !!msg.allow);
         return;
       }
 
