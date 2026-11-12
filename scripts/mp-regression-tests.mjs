@@ -342,7 +342,28 @@ async function testNpcPositionsRelayButNeverMoveAHuman() {
   if (echoed) throw new Error('the sender got its own batch back');
 }
 
+async function testLeavingAHumanChatTellsOnlyTheOtherPerson() {
+  const { code, host, rae } = await setupSocialRoom('BB-Q');
+  const watcher = openClient(code, 'Watcher', `watch_${code}`);
+  await waitFor(watcher, (m) => m.type === 'game');
+  send(host, { type: 'chatPresence', targetId: 'rae', open: true });
+  const opened = await waitFor(rae, (m) => m.type === 'chatPresence' && m.open === true);
+  send(host, { type: 'chatPresence', targetId: 'rae', open: false });
+  const left = await waitFor(rae, (m) => m.type === 'chatPresence' && m.open === false);
+  send(host, { type: 'chatPresence', targetId: 'marcus', open: false }); // an AI seat: nobody to tell
+  await delay(300);
+  const hostEcho = host.messages.some((m) => m.type === 'chatPresence');
+  const watcherSaw = watcher.messages.some((m) => m.type === 'chatPresence');
+  const count = rae.messages.filter((m) => m.type === 'chatPresence').length;
+  closeAll(host, rae, watcher);
+  if (opened.from !== 'you' || left.from !== 'you' || !left.fromName) throw new Error('presence did not name who left');
+  if (hostEcho) throw new Error('the person leaving was told about themselves');
+  if (watcherSaw) throw new Error('a third party was told about a private conversation');
+  if (count !== 2) throw new Error(`expected 2 presence messages, got ${count}`);
+}
+
 const tests = [
+  testLeavingAHumanChatTellsOnlyTheOtherPerson,
   testNpcPositionsRelayButNeverMoveAHuman,
   testHouseReadIsPrivateTieredAndBlindToHumans,
   testHuddleIntelGoesOnlyToTheListener,

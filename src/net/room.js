@@ -173,6 +173,8 @@ export class Room {
       } else if (msg.type === 'roomClosed') {
         this._explicitDisconnect = true; // host ended it — don't try to reconnect
         this.onRoomClosed && this.onRoomClosed(msg.reason);
+      } else if (msg.type === 'chatPresence') {
+        this.onChatPresence && this.onChatPresence(msg.from, msg.fromName, msg.open);
       } else if (msg.type === 'npcPos') {
         this.onNpcPos && this.onNpcPos(msg);
       } else if (msg.type === 'npcHold') {

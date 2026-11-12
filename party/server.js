@@ -1536,6 +1536,16 @@ export class Room extends Server {
         for (const c of this.getConnections()) if (c.id !== connection.id) c.send(payload);
         return;
       }
+      case 'chatPresence': {
+        // One human opened or closed their side of a 1-on-1 with another
+        // human. Told only to that other person.
+        const pid = this.connToPlayer.get(connection.id);
+        const from = pid ? this.engineForPlayer(pid) : null;
+        const target = typeof msg.targetId === 'string' ? msg.targetId : null;
+        if (!from || !target || target === from || !this.game || !this.isHuman(target)) return;
+        this.sendToEngine(target, { type: 'chatPresence', from, fromName: nameOf(this.game, from), open: !!msg.open });
+        return;
+      }
       case 'npcHold': {
         const pid = this.connToPlayer.get(connection.id);
         if (!pid || !this.engineForPlayer(pid) || typeof msg.id !== 'string') return;

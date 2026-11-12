@@ -181,6 +181,15 @@ function startOnlineSeason(game) {
       { label: 'OK', style: '', onClick: () => {} },
     ]);
   };
+  // The other person opened or closed their side of a conversation with us.
+  // Without this, leaving was silent: their panel stayed open on the other
+  // screen with nothing to say nobody was there any more.
+  room.onChatPresence = (from, fromName, open) => {
+    if (openChatTargetId !== from || !openChatPanelRef) return;
+    openChatPanelRef.addSystemMsg(open
+      ? `${fromName} is in the conversation.`
+      : `${fromName} left the conversation. You can still leave them a message.`);
+  };
   room.onNpcPos = (msg) => receiveNpcBatch(msg);
   room.onNpcHold = (id, on) => world.holdNpc(id, on);
   room.onHuddleSpotted = (msg) => {
@@ -216,6 +225,7 @@ async function openOnlineChat(targetId) {
   if (world.inHuddle(targetId)) world.endHuddle(); // you walked up and broke it off (for you)
   // An AI houseguest stops for the conversation on every screen, not just this one.
   if (!isHuman) { world.holdNpc(targetId, true); room.send('npcHold', { id: targetId, on: true }); }
+  else room.send('chatPresence', { targetId, open: true });
   world.freezeNpc(targetId, true);
   world.focusOn(targetId);
   // Human-human chat has real shared history server-side (unlike an AI
@@ -245,6 +255,7 @@ async function openOnlineChat(targetId) {
       world.freezeNpc(targetId, false);
       world.clearFocus();
       if (!isHuman) { world.holdNpc(targetId, false); room.send('npcHold', { id: targetId, on: false }); }
+      else room.send('chatPresence', { targetId, open: false });
       if (openChatTargetId === targetId) { openChatTargetId = null; openChatPanelRef = null; }
     },
   });
