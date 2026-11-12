@@ -130,6 +130,22 @@ const SCENARIOS = [
 ];
 SCENARIOS.find((s) => s.npc === 'flynnless').npc = 'nash';
 
+// Reported: Rae (HoH, the player's Day One ally) came over to check in; the
+// player lied that Bev was coming after her; the reply was the offline
+// writer's "How are you holding up? We can take a minute away from game talk."
+// A claim about a third houseguest is ordinary game talk. It must get a real
+// answer — believing it, doubting it, asking for proof — never be dropped.
+SCENARIOS.push({
+  name: 'rumour about a third houseguest (player lies that Bev is after the HoH)',
+  npc: 'rae', game: () => season({ hoh: 'rae' }),
+  open: "Hey, figured I'd come find you since you're my Day One. Just wanted to check in before I lock anything in — how are you feeling about the house right now?",
+  lines: [
+    { say: "I'm feeling okay but you know that Bev is coming after you right", must: [[/bev|(she|her)/i, 'should respond to the claim about Bev']], mustNot: [[/take a minute away from game talk/i, 'ignored the claim']] },
+    { say: 'she told me herself, she wants you out next week', must: [[/bev|(she|her)/i, 'should stay on the subject']] },
+    { say: "I think marcus and zoe are working together too", mustNot: [NO_INVENTED_BETRAYAL] },
+  ],
+});
+
 // ---- Run -------------------------------------------------------------------------
 const tally = { lines: 0, clean: 0, corrected: 0, replaced: 0, flagged: 0 };
 const flags = [];
@@ -137,14 +153,21 @@ for (const sc of SCENARIOS) {
   if (filter && !sc.name.toLowerCase().includes(filter.toLowerCase())) continue;
   const g = sc.game();
   console.log(`\n## ${sc.name}  (talking to ${sc.npc})`);
+  if (sc.open) { (g.threads[sc.npc] ||= []).push({ who: 'them', text: sc.open, week: g.week, phase: g.phase }); console.log(`  (${sc.npc} opened: ${sc.open})`); }
   for (const line of sc.lines) {
     tally.lines++;
     const before = calls;
     let result, how;
+    const held = [];   // what the fact-check said about each draft it refused
+    const spy = async (opts) => {
+      const out = await ask(opts);
+      if (out && typeof out.valid === 'boolean' && out.valid === false) held.push(`${out.reason} [${out.evidence}]`);
+      return out;
+    };
     try {
       result = await groundedChat({
         g, speakerId: sc.npc, listenerId: 'you', utterance: line.say,
-        system: buildChatSystemPrompt(g, sc.npc), messages: buildThreadMessages(g, sc.npc, line.say), askJson: ask,
+        system: buildChatSystemPrompt(g, sc.npc), messages: buildThreadMessages(g, sc.npc, line.say), askJson: spy,
       });
       how = calls - before > 2 ? 'corrected' : 'clean';
     } catch (e) {
@@ -162,6 +185,7 @@ for (const sc of SCENARIOS) {
     console.log(`YOU: ${line.say}`);
     console.log(`  ${how === 'replaced' ? 'OFFLINE' : 'AI'}${how === 'corrected' ? ' (after one correction)' : ''}: ${reply}`);
     if (how === 'replaced') console.log(`  replaced because: ${result.why}`);
+    for (const h of held) console.log(`  fact-check held a draft back: ${h}`);
     if (result.effects?.npcPromise) console.log(`  recorded promise by ${sc.npc}: "${result.effects.npcPromise.text}"`);
     if (problems.length) { tally.flagged++; flags.push({ scenario: sc.name, say: line.say, reply, problems }); console.log(`  FLAG: ${problems.join('; ')}`); }
     (g.threads[sc.npc] ||= []).push({ who: 'you', text: line.say, week: g.week, phase: g.phase }, { who: 'them', text: reply, week: g.week, phase: g.phase });

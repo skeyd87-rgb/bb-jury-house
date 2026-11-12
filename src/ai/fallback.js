@@ -11,6 +11,7 @@ const INTENTS = [
   { key: 'promise_evict', rx: /\b(i'?ll|i will|i'?m going to|i'?m gonna|gonna) [^.!?]{0,14}vote [^.!?]{0,12}(evict|out|against)\b(?![^.!?]{0,6}you\b)/i },
   { key: 'promise_vote', rx: /\b(i'?ll vote (to keep|for) you|you have my vote|voting to keep you|i'?m keeping you|(won'?t|will not|never|not) [^.!?]{0,20}vote against you)\b/i },
   { key: 'promise_safety', rx: /\b(i (won'?t|will not|would never|never) [^.!?]{0,16}(nominate|put you up)|you'?re safe|i'?ll protect|i got you|keep you safe|i promise|i swear|you have my word|my word)\b/i },
+  { key: 'rumor', rx: /\b(coming after|gunning for|out to get|wants? (you|me|him|her|them|us) (out|gone)|is after (you|me)|(told|said to) me (she|he|they|herself|himself)|throwing (you|me) under)\b/i },
   { key: 'ask_safety', rx: /\b(am i safe|are we good|keep me off the block|don'?t (put me up|nominate me)|n'?t (putting|going to put|gonna put) me up|where'?s your head (at )?for nominations)\b/i },
   { key: 'alliance', rx: /\b(alliance|work together|team up|final ?2|final ?two|ride or die|ride together|stick together|us two|with me|we'?re a team|i'?m in|count me in|let'?s do it)\b/i },
   { key: 'target', rx: /\b(target|put up|nominate|backdoor|get (him|her|them|rid)|evict|take (a )?shot at)\b/i },
@@ -174,6 +175,28 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
       effects.secretShared = pushed ? `wants ${nameOf(g, pushed)} out` : null;
       effects.summary = pushed ? `Player pushed ${nameOf(g, pushed)} as a target.` : 'Player talked about nominations without naming a target.';
       break;
+    }
+    // "Bev is coming after you." Whether it is true or the player made it up,
+    // it is the most useful thing anyone has said to this houseguest today,
+    // and the old engine filed it under small talk ("How are you holding up?").
+    // They respond to it, by name, according to how far they trust the player
+    // and what they already think of the person named. It is kept as an
+    // unverified claim the player made — the engine does not take it as fact.
+    case 'rumor': {
+      const who = targetId ? nameOf(g, targetId) : null;
+      effects.bondDelta = 0;
+      // Not stored as a secret: a warning is not the player naming a target, and
+      // a leaked secret about someone is held against the player.
+      effects.summary = who ? `Player claimed ${who} is coming after them.` : 'Player passed on a warning without naming anyone.';
+      if (!who) return { reply: "Who? If you're going to tell me someone is coming for me, give me a name and tell me how you know.", effects };
+      const view = rel(g, npcId, targetId);
+      if (r.trust < 45) {
+        effects.threatDelta = 1;
+        return { reply: `${who}? Why are you the one telling me this? What do you get out of me believing it?`, effects };
+      }
+      effects.trustDelta = 1;
+      if (view.trust < 45) return { reply: `That tracks. I haven't trusted ${who} for a while. What exactly did you hear, and who from?`, effects };
+      return { reply: `${who}? That surprises me. Did you hear it from ${who} directly, or is this secondhand? I'm not acting on a rumor.`, effects };
     }
     // The two questions that matter most are answered from what this
     // houseguest is actually going to do, and a yes is a recorded promise
