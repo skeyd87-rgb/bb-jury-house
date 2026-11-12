@@ -358,6 +358,23 @@ export class WorldController {
     return !!this.huddle && (this.huddle.a === id || this.huddle.b === id);
   }
 
+  // Online, on a client that is following someone else's simulation: the
+  // huddle's spot and readiness come from them, refreshed with every position
+  // batch. It lapses by itself a few seconds after the batches stop.
+  setRemoteHuddle(h) {
+    this.huddle = { a: h.a, b: h.b, x: h.x, z: h.z, ready: !!h.ready, until: this.clock.elapsedTime + 6, remote: true };
+  }
+
+  // Online: someone, somewhere, is talking to this houseguest. They stand
+  // still on every screen until released (or the hold lapses).
+  holdNpc(id, on) {
+    const st = this.npcState.get(id);
+    if (st) { st.holdUntil = on ? this.clock.elapsedTime + 180 : 0; if (on) st.queue = null; }
+  }
+  releaseHolds() {
+    for (const [, st] of this.npcState) st.holdUntil = 0;
+  }
+
   // ---- Ceremonies: everyone to the living room -----------------------------
 
   beginStage(ids) {
@@ -464,6 +481,12 @@ export class WorldController {
     st.netUntil = this.clock.elapsedTime + 2.5;
   }
 
+  // Online: which houseguests are being played by a connected person right
+  // now. Everyone else is the AI's to move.
+  setHumans(ids) {
+    for (const [id, st] of this.npcState) st.human = ids.has(id);
+  }
+
   // Cinematic close-up on an NPC's face during conversation.
   focusOn(id) {
     this.focusNpcId = id;
@@ -533,11 +556,26 @@ export class WorldController {
       }
       // Online: a real human is reporting this NPC's position — drive there
       // directly instead of running local wander/approach AI on top of it.
-      if (st.net && t < (st.netUntil || 0)) {
+      if ((st.holdUntil || 0) > t && !this.inHuddle(id)) {
+        updateSwim(char);
+        animateCharacter(char, false, dt, t);
+        continue;
+      }
+      // A seat with a connected person in it (st.human, set from the room
+      // roster) is theirs alone: it goes where they last reported and stays
+      // there. It used to fall back to AI wandering 2.5 s after the last
+      // update — and updates only come while they move, so anyone who stood
+      // still was seen strolling off on everybody else's screen.
+      if (st.human || (st.net && t < (st.netUntil || 0))) {
         const beforeX = char.position.x, beforeZ = char.position.z;
-        char.position.x += (st.net.x - char.position.x) * Math.min(1, dt * 8);
-        char.position.z += (st.net.z - char.position.z) * Math.min(1, dt * 8);
-        turnToward(char, st.net.rotY, dt);
+        if (st.net) {
+          // Far behind (just joined, or a ceremony moved them): snap, don't glide through walls.
+          const gap = Math.hypot(st.net.x - char.position.x, st.net.z - char.position.z);
+          const k = gap > 6 ? 1 : Math.min(1, dt * 8);
+          char.position.x += (st.net.x - char.position.x) * k;
+          char.position.z += (st.net.z - char.position.z) * k;
+          turnToward(char, st.net.rotY, dt);
+        }
         const netMoving = Math.hypot(char.position.x - beforeX, char.position.z - beforeZ) > 0.001;
         updateSwim(char);
         animateCharacter(char, netMoving, dt, t);
@@ -628,7 +666,7 @@ export class WorldController {
       const h = this.huddle;
       const sa = this.npcState.get(h.a), sb = this.npcState.get(h.b);
       if (!sa || !sb || t > h.until || sa.frozen || sb.frozen) this.endHuddle();
-      else h.ready = !!(sa.huddleHere && sb.huddleHere);
+      else if (!h.remote) h.ready = !!(sa.huddleHere && sb.huddleHere);
     }
 
     // --- Floor feedback

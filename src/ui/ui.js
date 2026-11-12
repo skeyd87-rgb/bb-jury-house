@@ -66,6 +66,54 @@ export function lowerThird() {
   return el('div', 'bc-lower');
 }
 
+// ---------- HUD layout ----------
+// The lower third (house intel + the online strap) and the dock share the
+// bottom of the screen. Their positions used to be fixed numbers that assumed
+// how many rows the dock wrapped to; every button added since broke that on
+// some screen. Measure instead: if the two would collide, the lower third
+// sits on top of the dock, and it never grows taller than the gap under the
+// slate. Open menus are nudged back inside the viewport the same way.
+function layoutHud() {
+  const lower = document.querySelector('#hud > .bc-lower');
+  const dock = document.querySelector('#hud > .hud-buttons');
+  if (lower) {
+    lower.style.bottom = '';
+    lower.style.maxHeight = '';
+    if (dock) {
+      const a = lower.getBoundingClientRect(), d = dock.getBoundingClientRect();
+      const sideBySide = a.right + 12 <= d.left || d.right + 12 <= a.left;
+      if (!sideBySide && d.height) lower.style.bottom = `${Math.round(window.innerHeight - d.top + 10)}px`;
+    }
+    const slate = document.querySelector('#hud > .hud-top')?.getBoundingClientRect();
+    const bottom = lower.getBoundingClientRect().bottom;
+    const room = bottom - ((slate?.bottom ?? 0) + 12);
+    if (room > 60) lower.style.maxHeight = `${Math.round(room)}px`;
+  }
+  for (const pop of document.querySelectorAll('.dock-menu[open] > .dock-popover')) {
+    pop.style.transform = '';
+    const r = pop.getBoundingClientRect();
+    const dx = r.right > window.innerWidth - 8 ? window.innerWidth - 8 - r.right : r.left < 8 ? 8 - r.left : 0;
+    if (dx) pop.style.transform = `translateX(${Math.round(dx)}px)`;
+  }
+}
+let layoutQueued = false;
+function queueHudLayout() {
+  if (layoutQueued) return;
+  layoutQueued = true;
+  // A microtask, not a frame: a hidden tab does not run frames, and the HUD
+  // would sit overlapped until it was shown.
+  queueMicrotask(() => { layoutQueued = false; layoutHud(); });
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('resize', queueHudLayout);
+  document.addEventListener('toggle', (e) => { if (e.target?.matches?.('.dock-menu, .house-intel')) queueHudLayout(); }, true);
+  const watchHud = () => {
+    const h = document.getElementById('hud');
+    if (h) new MutationObserver(queueHudLayout).observe(h, { childList: true, subtree: true });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', watchHud); else watchHud();
+}
+
 // The toast lives inside #hud, and the HUD is rebuilt from scratch on every
 // refresh (online: on every snapshot, which any player's action triggers).
 // Lift a live toast out before the wipe and put it back after, or an alliance

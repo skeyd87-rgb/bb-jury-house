@@ -1514,6 +1514,35 @@ export class Room extends Server {
         if (pid) await this.handleDiary(pid, msg.text);
         return;
       }
+      case 'npcPos': {
+        // Ephemeral, like 'pos': one client simulates the AI houseguests and
+        // the rest play it back. Not game state — nothing here is trusted or
+        // stored, only bounded and passed on.
+        const pid = this.connToPlayer.get(connection.id);
+        if (!pid || !this.engineForPlayer(pid) || !Array.isArray(msg.list)) return;
+        const list = [];
+        for (const row of msg.list.slice(0, 12)) {
+          if (!Array.isArray(row) || typeof row[0] !== 'string') continue;
+          const x = Number(row[1]), z = Number(row[2]), rotY = Number(row[3]);
+          if (!isFinite(x) || !isFinite(z) || !isFinite(rotY)) continue;
+          if (this.isActiveHuman(row[0])) continue; // a person's body is theirs
+          list.push([row[0].slice(0, 16), x, z, rotY]);
+        }
+        const mh = msg.h;
+        const h = mh && typeof mh.a === 'string' && typeof mh.b === 'string' && isFinite(Number(mh.x)) && isFinite(Number(mh.z))
+          ? { a: mh.a.slice(0, 16), b: mh.b.slice(0, 16), x: Number(mh.x), z: Number(mh.z), ready: !!mh.ready }
+          : null;
+        const payload = JSON.stringify({ type: 'npcPos', list, h });
+        for (const c of this.getConnections()) if (c.id !== connection.id) c.send(payload);
+        return;
+      }
+      case 'npcHold': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (!pid || !this.engineForPlayer(pid) || typeof msg.id !== 'string') return;
+        const payload = JSON.stringify({ type: 'npcHold', id: msg.id.slice(0, 16), on: !!msg.on });
+        for (const c of this.getConnections()) if (c.id !== connection.id) c.send(payload);
+        return;
+      }
       case 'huddleRequest': {
         const pid = this.connToPlayer.get(connection.id);
         if (pid) this.handleHuddleRequest(pid);

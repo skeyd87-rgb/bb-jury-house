@@ -1122,3 +1122,63 @@ body.staging #hud { opacity: 0; pointer-events: none; }
   .bc-plate .bc-tag.talk, .votes-list .v.ev-in { animation: none; }
   #listen-meter { transition: none; }
 }
+
+/* =====================================================================
+   0.5.1 — nothing sits on top of anything else.
+   The lower third's height above the dock is measured (ui.js layoutHud),
+   not assumed; these rules cover what CSS can decide by itself.
+   ===================================================================== */
+
+/* House intel scrolls inside its own box instead of running up the screen. */
+#hud > .bc-lower { overflow: hidden; }
+#hud > .bc-lower > .house-intel { overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+
+/* Menus are solid and on top: text behind them must not read through. */
+.dock-popover { background: var(--ink-2); z-index: 9; max-width: calc(100vw - 16px); }
+.dock-menu:last-child > .dock-popover { left: auto; right: 0; }
+
+/* The toast is the top-right corner while it is up: the clock and the room
+   code step aside instead of showing through it. */
+body.toast-open #bc-tc,
+body.toast-open #room-code-badge,
+body.toast-open #version-mark { opacity: 0; }
+#bc-tc, #room-code-badge, #version-mark { transition: opacity 0.2s ease; }
+
+/* A conversation owns the right-hand column on a wide screen. The clock and
+   room code sat inside its header, and a toast landed across its title. */
+@media (min-width: 761px) and (min-height: 501px) {
+  body:has(#chat-panel) #bc-tc,
+  body:has(#chat-panel) #room-code-badge,
+  body:has(#chat-panel) #version-mark { opacity: 0; }
+  body:has(#chat-panel) .toast {
+    right: calc(min(410px, 38vw) + 48px + var(--safe-right));
+    max-width: min(520px, calc(100vw - min(410px, 38vw) - 96px));
+  }
+  body:has(#chat-panel) #listen-meter { left: calc((100vw - min(410px, 38vw) - 24px) / 2); }
+  /* ...and the dock moves out from under it. */
+  body:has(#chat-panel) .hud-buttons:not(.online-persistent-buttons),
+  body:has(#chat-panel) .hud-buttons.online-persistent-buttons {
+    right: calc(min(410px, 38vw) + 48px + var(--safe-right));
+    max-width: calc(100vw - min(410px, 38vw) - 96px);
+  }
+}
+
+/* Phone: the chat is a bottom sheet. Everything it would cover is hidden
+   rather than left half-visible behind it. */
+@media (max-width: 760px), (max-height: 500px) {
+  body:has(#chat-panel) #hud > .bc-lower,
+  body:has(#chat-panel) #hud > .hud-buttons { visibility: hidden; }
+  .toast { left: 12px; right: 12px; width: auto; max-width: none; }
+}
+
+/* With a conversation open on a wide screen the toast drops under the slate:
+   beside the panel there is not always room for both. */
+@media (min-width: 761px) and (min-height: 501px) {
+  body:has(#chat-panel) .toast {
+    top: calc(150px + var(--safe-top)); left: calc(30px + var(--safe-left)); right: auto;
+  }
+}
+/* Phone: an open menu replaces the lower third instead of covering it. */
+@media (max-width: 760px), (max-height: 500px) {
+  #hud:has(.dock-menu[open]) > .bc-lower { visibility: hidden; }
+}

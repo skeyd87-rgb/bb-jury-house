@@ -324,7 +324,26 @@ async function testHuddlesOnlyDuringFreeRoam() {
   if (huddle) throw new Error('a huddle started outside a free-roam window');
 }
 
+async function testNpcPositionsRelayButNeverMoveAHuman() {
+  const { host, rae } = await setupSocialRoom('BB-M');
+  send(rae, { type: 'npcPos', list: [['marcus', 3.5, -1, 0.5], ['you', 9, 9, 0], ['gus', 'x', 1, 0], ['zoe', 1, 2, 3]], h: { a: 'marcus', b: 'zoe', x: 1, z: 2, ready: true } });
+  const batch = await waitFor(host, (m) => m.type === 'npcPos');
+  send(host, { type: 'npcHold', id: 'marcus', on: true });
+  const hold = await waitFor(rae, (m) => m.type === 'npcHold');
+  await delay(200);
+  const echoed = rae.messages.some((m) => m.type === 'npcPos');
+  closeAll(host, rae);
+  const ids = batch.list.map((r) => r[0]);
+  if (!ids.includes('marcus') || !ids.includes('zoe')) throw new Error('AI positions were not relayed: ' + ids);
+  if (ids.includes('you')) throw new Error("a batch was allowed to move another human's houseguest");
+  if (ids.includes('gus')) throw new Error('a malformed row was relayed');
+  if (!batch.h || batch.h.a !== 'marcus' || !batch.h.ready) throw new Error('huddle spot was not relayed');
+  if (hold.id !== 'marcus' || hold.on !== true) throw new Error('conversation hold was not relayed');
+  if (echoed) throw new Error('the sender got its own batch back');
+}
+
 const tests = [
+  testNpcPositionsRelayButNeverMoveAHuman,
   testHouseReadIsPrivateTieredAndBlindToHumans,
   testHuddleIntelGoesOnlyToTheListener,
   testHuddlesOnlyDuringFreeRoam,

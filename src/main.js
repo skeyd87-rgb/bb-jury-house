@@ -181,6 +181,8 @@ function startOnlineSeason(game) {
       { label: 'OK', style: '', onClick: () => {} },
     ]);
   };
+  room.onNpcPos = (msg) => receiveNpcBatch(msg);
+  room.onNpcHold = (id, on) => world.holdNpc(id, on);
   room.onHuddleSpotted = (msg) => {
     sting('knock');
     showToast(`<b>${escHtml(msg.aName)}</b> and <b>${escHtml(msg.bName)}</b> go quiet the second they see you. They noticed.`);
@@ -212,6 +214,8 @@ async function openOnlineChat(targetId) {
   if (!hg || onlineGame.evicted.includes(targetId)) return;
   const isHuman = !!(onlineGame.humanSeats && onlineGame.humanSeats[targetId]);
   if (world.inHuddle(targetId)) world.endHuddle(); // you walked up and broke it off (for you)
+  // An AI houseguest stops for the conversation on every screen, not just this one.
+  if (!isHuman) { world.holdNpc(targetId, true); room.send('npcHold', { id: targetId, on: true }); }
   world.freezeNpc(targetId, true);
   world.focusOn(targetId);
   // Human-human chat has real shared history server-side (unlike an AI
@@ -240,6 +244,7 @@ async function openOnlineChat(targetId) {
     onClose: () => {
       world.freezeNpc(targetId, false);
       world.clearFocus();
+      if (!isHuman) { world.holdNpc(targetId, false); room.send('npcHold', { id: targetId, on: false }); }
       if (openChatTargetId === targetId) { openChatTargetId = null; openChatPanelRef = null; }
     },
   });
@@ -491,11 +496,67 @@ function updateTurnTimer(deadline) {
   turnTimerInterval = setInterval(tick, 1000);
 }
 
+// ---- AI houseguest positions ------------------------------------------------
+// Each client used to walk the AI houseguests by itself, so no two screens
+// agreed on where anyone was. Now exactly one client — the "driver" — runs
+// that simulation and broadcasts it a few times a second; everyone else
+// plays it back. The driver is the connected human with the lowest seat id:
+// every client can work that out from the same roster, so there is no
+// election, and if the driver leaves the next one takes over within a tick.
+// If the batches stop (driver gone, or a room server too old to relay them),
+// a follower's houseguests fall back to walking locally after 2.5 s.
+function seatOfEngine(id) { return id === PLAYER_ID ? 'newcomer' : id; }
+function drivingClient() {
+  const me = myEngineId();
+  if (!me || !onlineGame) return false;
+  const seats = room?.lastState?.seats || {};
+  const live = Object.keys(onlineGame.humanSeats || {}).filter((id) => seats[seatOfEngine(id)]?.connected).sort();
+  return !live.length || live[0] === me;
+}
+let npcBatchSentAt = 0;
+let npcBatchSeenAt = 0;
+function sendNpcBatch(now) {
+  if (now - npcBatchSentAt < 200 || !drivingClient()) return;
+  npcBatchSentAt = now;
+  const list = [];
+  for (const [id, char] of world.npcs) {
+    if (world.npcState.get(id)?.human) continue;
+    list.push([id, +char.position.x.toFixed(2), +char.position.z.toFixed(2), +char.rotation.y.toFixed(2)]);
+  }
+  const h = world.huddle && !world.huddle.remote
+    ? { a: world.huddle.a, b: world.huddle.b, x: +world.huddle.x.toFixed(2), z: +world.huddle.z.toFixed(2), ready: !!world.huddle.ready }
+    : null;
+  room.send('npcPos', { list, h });
+}
+function receiveNpcBatch(msg) {
+  if (drivingClient()) return; // two drivers for a moment during a hand-over: trust our own
+  npcBatchSeenAt = performance.now();
+  for (const [id, x, z, rotY] of msg.list || []) world.setNetTarget(id, x, z, rotY);
+  const sh = onlineGame?.turn?.kind === 'social' ? onlineGame.huddle : null;
+  const h = msg.h;
+  if (h && sh && sh.a === h.a && sh.b === h.b && sh.id !== spentHuddleId && !isSpectator()) {
+    world.setRemoteHuddle(h);
+    onlineHuddleId = sh.id;
+  } else if (world.huddle?.remote) {
+    world.endHuddle();
+  }
+}
+const followingDriver = () => !drivingClient() && performance.now() - npcBatchSeenAt < 3000;
+
+// Seat connection changes arrive on the lobby-state channel, not with a game
+// snapshot, so this is also called from the periodic online tick.
+function refreshHumans(game) {
+  const seats = room?.lastState?.seats || {};
+  world.setHumans(new Set(Object.keys(game?.humanSeats || {}).filter((id) => seats[id === PLAYER_ID ? 'newcomer' : id]?.connected)));
+}
+
 function syncOnlineWorld(game) {
   // Remove evicted houseguests from the 3D house.
   for (const id of game.evicted) {
     if (world.npcs.has(id)) world.removeNpc(id);
   }
+  // Seats with a connected person in them are moved only by that person.
+  refreshHumans(game);
   // Renames (Take Over, a late claim) need no repaint: nameplates read names
   // from the game state every frame (ui/broadcast.js).
   // HUD: week / phase / who's HoH & nominated.
@@ -726,6 +787,7 @@ const STAGED_TURNS = ['nominate', 'noms_result', 'veto_decision', 'veto_result',
 function renderOnlineTurn(game, t) {
   if (t.kind !== 'comp') compRunning = false; // never leave it stuck after a comp
   closeOnlineOverlay();
+  world.releaseHolds(); // a new turn: nobody is left standing in a conversation that ended
   if (STAGED_TURNS.includes(t.kind)) {
     closeChatPanel();
     // Re-stage on every ceremony turn: someone may have been evicted or
@@ -1145,7 +1207,10 @@ function animate() {
     const now = performance.now();
     const p = world.player.position;
     const moved = !lastPosSent || Math.hypot(p.x - lastPosSent.x, p.z - lastPosSent.z) > 0.08;
-    if (now - lastPosSentAt > 150 && moved) {
+    // While moving: ~7 a second. Standing still: once a second, so someone
+    // who joins or reconnects learns where we are without us having to move.
+    sendNpcBatch(now);
+    if ((moved && now - lastPosSentAt > 150) || now - lastPosSentAt > 1000) {
       lastPosSentAt = now;
       lastPosSent = { x: p.x, z: p.z };
       room.sendPos(p.x, p.z, world.player.rotation.y);
@@ -1336,6 +1401,7 @@ function syncOnlineHuddle(game) {
     return;
   }
   if (h.id === onlineHuddleId || h.id === spentHuddleId || isSpectator()) return;
+  if (followingDriver()) return; // the driver picks the spot; it arrives with the position batch
   if (!world.npcs.has(h.a) || !world.npcs.has(h.b)) return;
   world.endHuddle();
   if (world.startHuddle(h.a, h.b)) onlineHuddleId = h.id; // no free spot: retried on the next tick
@@ -1345,6 +1411,7 @@ function scheduleHuddles() {
   clearInterval(huddleTimer);
   huddleTimer = setInterval(() => {
     if (onlineMode) {
+      if (onlineGame) refreshHumans(onlineGame);
       if (!room || !onlineGame || isSpectator() || onlineGame.turn?.kind !== 'social') return;
       syncOnlineHuddle(onlineGame);
       if (!onlineGame.huddle && !onlineOverlay && Math.random() < 0.45) room.send('huddleRequest');
