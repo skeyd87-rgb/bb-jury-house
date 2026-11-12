@@ -5,11 +5,13 @@
 import { castById, PLAYER_ID } from '../game/cast.js';
 import { knowledgeFor, evidenceFor } from '../game/knowledge.js';
 import { rel, nameOf, activeIds } from '../game/state.js';
+import { nominationPlan, evictionDesire } from '../game/season.js';
 
 const INTENTS = [
   { key: 'promise_evict', rx: /\b(i'?ll|i will|i'?m going to|i'?m gonna|gonna) [^.!?]{0,14}vote [^.!?]{0,12}(evict|out|against)\b(?![^.!?]{0,6}you\b)/i },
   { key: 'promise_vote', rx: /\b(i'?ll vote (to keep|for) you|you have my vote|voting to keep you|i'?m keeping you|(won'?t|will not|never|not) [^.!?]{0,20}vote against you)\b/i },
   { key: 'promise_safety', rx: /\b(i (won'?t|will not|would never|never) [^.!?]{0,16}(nominate|put you up)|you'?re safe|i'?ll protect|i got you|keep you safe|i promise|i swear|you have my word|my word)\b/i },
+  { key: 'ask_safety', rx: /\b(am i safe|are we good|keep me off the block|don'?t (put me up|nominate me)|n'?t (putting|going to put|gonna put) me up|where'?s your head (at )?for nominations)\b/i },
   { key: 'alliance', rx: /\b(alliance|work together|team up|final ?2|final ?two|ride or die|ride together|stick together|us two|with me|we'?re a team|i'?m in|count me in|let'?s do it)\b/i },
   { key: 'target', rx: /\b(target|put up|nominate|backdoor|get (him|her|them|rid)|evict|take (a )?shot at)\b/i },
   { key: 'ask_vote', rx: /\b(vote for me|keep me|save me|need your vote|have my back)\b/i },
@@ -118,11 +120,37 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
       effects.summary = pushed ? `Player pushed ${nameOf(g, pushed)} as a target.` : 'Player talked about nominations without naming a target.';
       break;
     }
+    // The two questions that matter most are answered from what this
+    // houseguest is actually going to do, and a yes is a recorded promise
+    // that binds them (effects.npcPromise). The old replies were vague
+    // regardless of the truth.
+    case 'ask_safety': {
+      effects.bondDelta = 0;
+      effects.summary = 'Player asked whether they are safe this week.';
+      if (g.hoh !== npcId || g.nominees.length) {
+        return { reply: "That isn't mine to promise. I'm not the one making nominations.", effects };
+      }
+      const inPlan = nominationPlan(g, npcId).includes(chatterId);
+      if (inPlan) return { reply: "Nothing is locked in, and I'm not going to promise you something I might not do.", effects };
+      if (r.trust < 50) return { reply: "You're not where my head is at right now. I'm not making promises, though.", effects };
+      effects.trustDelta = 1;
+      effects.npcPromise = { text: 'not to nominate you this week', kind: 'safety' };
+      effects.summary = 'Promised the player safety this week.';
+      return { reply: "You're not my target this week. I won't put you up. You have my word.", effects };
+    }
     case 'ask_vote': {
-      bucket = r.trust >= 50 ? 'alliance' : 'deny';
       effects.trustDelta = 1;
       effects.summary = 'Player asked for their vote/support.';
-      break;
+      const onBlock = g.nominees.length === 2 && g.nominees.includes(chatterId);
+      const votes = onBlock && g.hoh !== npcId && !g.nominees.includes(npcId);
+      if (!votes) { bucket = r.trust >= 50 ? 'alliance' : 'deny'; break; }
+      const other = g.nominees.find((n) => n !== chatterId);
+      const d = evictionDesire(g, npcId, chatterId, other, () => 0.5); // > 0: wants the player out
+      if (d > 7) return { reply: "I can't promise you that. I'd rather be straight with you than lie to your face.", effects };
+      if (d > -7 || r.trust < 50) return { reply: "I haven't decided. Give me a reason to keep you.", effects };
+      effects.npcPromise = { text: 'to vote to keep you this week', kind: 'vote' };
+      effects.summary = 'Promised the player their vote this week.';
+      return { reply: "You have my vote this week. I'm voting to keep you.", effects };
     }
     case 'ask_info': {
       bucket = 'ask_info';

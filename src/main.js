@@ -1415,6 +1415,7 @@ function openNpcChat(id, opener = null, approachReason = null) {
       const listeners = world.nearbyListeners(id, 6);
       const { reply, effects } = await npcChat(g, id, text);
       if (effects.promiseMade) panel.addSystemMsg(`📋 Promise recorded: "${effects.promiseMade.text}"`);
+      if (effects.npcPromise) panel.addSystemMsg(`📋 ${hg.name} gave you their word: "${effects.npcPromise.text}"`);
       if (effects.allianceSignal === 'accept') panel.addSystemMsg(`🤝 ${hg.name} is in. Check your alliances.`);
       if (effects.allianceSignal === 'propose' && !sharedAlliance(g, id, PLAYER_ID)) panel.addSystemMsg(`🤝 ${hg.name} is offering to work together. Nothing is agreed until you say yes.`);
       if (effects.suspicionOfLie) panel.addSystemMsg(`👀 ${hg.name} didn't seem to buy that...`);

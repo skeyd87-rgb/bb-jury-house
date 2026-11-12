@@ -16,7 +16,7 @@
 
 import { PLAYER_ID } from './cast.js';
 import { activeIds, rel, nameOf, sharedAlliance } from './state.js';
-import { nominationDesire, evictionDesire } from './season.js';
+import { nominationDesire, evictionDesire, nominationPlan } from './season.js';
 
 // The decision functions add noise on every call. A read should be the
 // houseguest's lean right now, not one roll of the dice, so reads pass a flat
@@ -163,7 +163,10 @@ export function huddleIntel(g, a, b, rand = Math.random, viewerId = PLAYER_ID) {
   const targets = topTargets(g, speaker, [listener]);
 
   if (g.hoh === speaker && g.phase === 'social_hoh' && targets.length >= 2) {
-    const [t1, t2] = targets;
+    // The HoH's actual plan (rolled once and kept — season.js nominationPlan),
+    // not a guess at it: what you overhear is what happens unless someone
+    // changes the HoH's mind before the ceremony.
+    const [t1, t2] = nominationPlan(g, speaker).map((id) => ({ id }));
     add(75, 'plan', `noms:${g.week}:${speaker}`,
       `${S} told ${L} the plan: ${who(t1.id)} and ${who(t2.id)} on the block. Nothing is locked until the ceremony.`,
       t1.id);

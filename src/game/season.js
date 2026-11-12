@@ -99,7 +99,64 @@ export function nominationDesire(g, hohId, targetId, rand = Math.random) {
   return d;
 }
 
+// ---- The nomination plan ------------------------------------------------------
+// An HoH used to roll their nominations at the ceremony itself, sampling from
+// their top four with noise. Everything said before that — to the player, in
+// an overheard huddle — described their top two, which matched both actual
+// nominees only 30% of the time (measured over 400 seasons). They said one
+// thing and did another for no reason anyone could see.
+//
+// Now the roll happens ONCE, the first time anyone needs to know the plan
+// (a conversation, a huddle, the ceremony), and that is the plan. It only
+// changes if the HoH is genuinely moved: a planned nominee they have warmed
+// to (or promised safety) drops out for whoever is next, and someone they
+// have turned sharply against can take the weaker nominee's place. Still
+// nothing deterministic — the dice are simply thrown before the talking
+// rather than after it.
+const FLAT = () => 0.5;
+const SWAY_OFF = 14;  // a planned nominee whose desire fell this far is spared
+const SWAY_ON = 22;   // an outsider this far above the weaker nominee replaces them
+
+export function nominationPlan(g, hohId) {
+  const pool = activeIds(g).filter((id) => id !== hohId);
+  if (pool.length <= 2) return pool;
+  const flat = (id) => nominationDesire(g, hohId, id, FLAT);
+  let plan = g.nomPlan;
+  if (!plan || plan.week !== g.week || plan.hoh !== hohId || plan.nominees.length !== 2 || plan.nominees.some((n) => !pool.includes(n))) {
+    const nominees = rollNominations(g, hohId);
+    // basis: how the HoH felt about EVERYONE when the plan was made. A change of
+    // plan is judged against this, never against the roll itself — the roll can
+    // pass over a stronger candidate, and that is not a reason to un-roll it.
+    g.nomPlan = { week: g.week, hoh: hohId, nominees, basis: Object.fromEntries(pool.map((n) => [n, flat(n)])) };
+    return [...nominees];
+  }
+  const outsiders = () => pool.filter((id) => !plan.nominees.includes(id)).map((id) => ({ id, d: flat(id) })).sort((a, b) => b.d - a.d);
+  for (let i = 0; i < plan.nominees.length; i++) {
+    const n = plan.nominees[i];
+    const now = flat(n);
+    const next = outsiders()[0];
+    if (next && now < (plan.basis[n] ?? now) - SWAY_OFF && next.d > now) {
+      plan.nominees[i] = next.id;
+      plan.basis[n] = now;          // re-based: they would have to fall out of favour again
+      plan.basis[next.id] = next.d;
+    }
+  }
+  const weaker = plan.nominees.map((id) => ({ id, d: flat(id) })).sort((a, b) => a.d - b.d)[0];
+  // Someone the HoH has turned sharply against since making the plan.
+  const rising = outsiders().filter((o) => o.d > (plan.basis[o.id] ?? o.d) + SWAY_ON && o.d > weaker.d)[0];
+  if (rising) {
+    plan.nominees[plan.nominees.indexOf(weaker.id)] = rising.id;
+    plan.basis[weaker.id] = weaker.d;
+    plan.basis[rising.id] = rising.d;
+  }
+  return [...plan.nominees];
+}
+
 export function decideNominations(g, hohId) {
+  return nominationPlan(g, hohId);
+}
+
+function rollNominations(g, hohId) {
   const pool = activeIds(g).filter((id) => id !== hohId);
   const ranked = pool
     .map((id) => ({ id, d: nominationDesire(g, hohId, id) }))

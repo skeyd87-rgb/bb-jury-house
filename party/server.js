@@ -899,6 +899,7 @@ export class Room extends Server {
       allianceProposal: e.allianceProposal && typeof e.allianceProposal === 'object'
         ? { accepted: !!e.allianceProposal.accepted, name: e.allianceProposal.name ? String(e.allianceProposal.name).slice(0, 40) : null, memberIds: Array.isArray(e.allianceProposal.memberIds) ? e.allianceProposal.memberIds.filter((id) => ids.includes(id)) : [] }
         : null,
+      npcPromise: e.npcPromise && e.npcPromise.text ? { text: String(e.npcPromise.text).slice(0, 160), kind: String(e.npcPromise.kind || 'safety') } : null,
       summary: e.summary ? String(e.summary).slice(0, 200) : null,
     };
   }
@@ -958,7 +959,8 @@ export class Room extends Server {
     this.broadcastGame(); // in case effects touched alliances/promises (personalized panels)
     connection.send(JSON.stringify({
       type: 'chatReply', npcId: targetId, text: reply, usedAi: !!result.usedAi,
-      note: fx.promiseMade ? `📋 Promise recorded: "${fx.promiseMade.text}"`
+      note: fx.npcPromise ? `📋 ${nameOf(g, targetId)} gave you their word: "${fx.npcPromise.text}"`
+        : fx.promiseMade ? `📋 Promise recorded: "${fx.promiseMade.text}"`
         : (fx.allianceProposal?.accepted || fx.allianceSignal === 'accept') ? `🤝 ${nameOf(g, targetId)} is in.`
         : fx.allianceSignal === 'propose' ? `🤝 ${nameOf(g, targetId)} is offering to work together. Nothing is agreed until you say yes.`
         : fx.suspicionOfLie ? `👀 ${nameOf(g, targetId)} didn't seem to buy that…` : null,

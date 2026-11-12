@@ -72,6 +72,21 @@ export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYE
     }
   }
 
+  // The houseguest made a sincere commitment to the person they are talking
+  // to. It is recorded exactly like a player's promise, with the houseguest as
+  // the one bound: the nomination and vote maths already hold a promiser back
+  // in proportion to their loyalty, and breaking it is a public betrayal. Until
+  // this existed nothing a houseguest said tied them to anything.
+  if (effects.npcPromise && effects.npcPromise.text) {
+    const text = String(effects.npcPromise.text).slice(0, 160);
+    const kind = ['safety', 'vote', 'alliance', 'final2'].includes(effects.npcPromise.kind) ? effects.npcPromise.kind : 'safety';
+    const dup = g.promises.some((p) => p.status === 'open' && p.from === npcId && p.to === chatterId && p.kind === kind && p.week === g.week);
+    if (!dup) {
+      g.promises.push({ id: 'p' + (g.promises.length + 1), from: npcId, to: chatterId, text, kind, targetId: null, week: g.week, status: 'open' });
+      logEvent(g, 'promise', `${nameOf(g, npcId)} promised ${chatterId === PLAYER_ID ? 'you' : nameOf(g, chatterId)}: "${text}"`, [npcId, chatterId]);
+    }
+  }
+
   if (effects.allianceProposal && effects.allianceProposal.accepted) {
     formOfficialAlliance(g, npcId, effects.allianceProposal.name, effects.allianceProposal.memberIds || [], chatterId);
   } else if (effects.allianceSignal === 'accept') {

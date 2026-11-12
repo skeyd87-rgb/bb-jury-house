@@ -47,6 +47,7 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 
 ## Invariants to preserve
 
+- **A houseguest does what they said they would, unless something changed their mind.** `scripts/consistency-regression-tests.mjs` pins it. The HoH's nominations are rolled ONCE per week into `g.nomPlan` (`nominationPlan` in season.js) the first time anything reads them; `decideNominations`, overheard huddles and the houseguest's own prompt (`describeDecisions`) all read that plan. It moves only against its `basis` (how the HoH felt about everyone when it was made): `SWAY_OFF` spares a nominee, `SWAY_ON` brings an outsider in. Never compare against the roll itself — the roll can pass over a stronger candidate, and that made the plan flip on the second read. A houseguest's sincere commitment arrives as `effects.npcPromise` and is stored as an ordinary promise with the houseguest as `from`, which the desire functions already honour by loyalty.
 - **A houseguest may only hold a betrayal against the player if one happened.** `scripts/betrayal-regression-tests.mjs` pins each way the engine used to manufacture one; run it after touching `social.js`, `season.js`, `fallback.js` or `describeNpcMind`. The rules behind it:
   - A safety promise protects a name only when that name is the *object* of the protection (`isProtectedInText`), never just because it appears in the sentence.
   - "This week" promises end with the week (`settleWeekPromises`, called from `nextPhase` and the server's `advanceWeek`). Open-ended ones stand.

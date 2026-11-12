@@ -70,6 +70,7 @@ function sanitizeEffects(raw, npcIds) {
               : [],
           }
         : null,
+    npcPromise: e.npcPromise && e.npcPromise.text ? { text: String(e.npcPromise.text).slice(0, 160), kind: String(e.npcPromise.kind || 'safety') } : null,
     summary: e.summary ? String(e.summary).slice(0, 200) : null,
   };
 }

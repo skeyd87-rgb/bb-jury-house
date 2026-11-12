@@ -11,6 +11,35 @@ import {
   sharedAlliance,
   openPromisesBetween,
 } from '../game/state.js';
+import { nominationPlan, evictionDesire } from '../game/season.js';
+
+// What this houseguest is going to do this week, from the engine. Without it
+// the model improvised intentions from a trust number, and then the engine
+// did something else: an HoH would tell you that you were safe and nominate
+// you an hour later.
+function describeDecisions(g, npcId, viewerId) {
+  const V = nameOf(g, viewerId);
+  const lines = [];
+  if (g.hoh === npcId && !g.nominees.length && ['social_hoh', 'nominations'].includes(g.phase)) {
+    const plan = nominationPlan(g, npcId);
+    if (plan.length === 2) {
+      lines.push(`Your nomination plan right now: ${plan.map((id) => nameOf(g, id)).join(' and ')}. ${plan.includes(viewerId) ? `That INCLUDES ${V}, the person you are talking to.` : `${V} is NOT in your plan.`}`);
+    }
+  }
+  if (g.nominees.length === 2 && g.hoh !== npcId && !g.nominees.includes(npcId)) {
+    const [n1, n2] = g.nominees;
+    const d = evictionDesire(g, npcId, n1, n2, () => 0.5);
+    lines.push(Math.abs(d) < 7
+      ? `Your vote: genuinely undecided between ${nameOf(g, n1)} and ${nameOf(g, n2)}.`
+      : `Your vote as it stands: to evict ${nameOf(g, d > 0 ? n1 : n2)}.`);
+  }
+  if (!lines.length) return [];
+  return [
+    'YOUR DECISIONS THIS WEEK (this is what you will actually do unless this conversation genuinely changes your mind):',
+    ...lines,
+    `You may keep these to yourself, be vague, or lie about them like any player. But do not SINCERELY promise ${V} the opposite of a decision above. If you do make a sincere commitment to ${V} — safety, your vote, an alliance — report it in effects.npcPromise: you will be held to it, and breaking it is a betrayal the whole house sees.`,
+  ];
+}
 
 export function describeGameContext(g, npcId) {
   const lines = [];
@@ -74,6 +103,11 @@ export function describeNpcMind(g, npcId, viewerId = PLAYER_ID) {
       : `${V} has NOT betrayed you, lied to you on the record, or broken any promise. You may be wary, cold or unconvinced, but you must not say or imply that ${V} betrayed you, broke their word or turned on you — it did not happen.`)
   );
 
+  for (const p of knowledgeFor(g, npcId).promises.filter((x) => x.from === npcId && x.to === viewerId && x.status === 'broken')) {
+    lines.push(`YOU broke this promise to ${nameOf(g, viewerId)}: "${p.text}" (week ${p.week}). They have every right to bring it up; do not deny it.`);
+  }
+  lines.push(...describeDecisions(g, npcId, viewerId));
+
   const grudges = mem.grudges.filter((x) => x.againstId === viewerId);
   for (const gr of grudges.slice(-4)) lines.push(`Grudge vs ${nameOf(g, viewerId)} (week ${gr.week}, severity ${gr.severity}/3): ${gr.reason}.`);
 
@@ -122,11 +156,12 @@ Respond ONLY with a JSON object, no other text:
     "secretShared": null or "<sensitive info the player just confided, one line>",
     "targetDiscussed": null or "<id of houseguest the player pushed as a target: marcus|rae|zoe|flynn|gus|tessa|nash|bev>",
     "allianceProposal": null or {"accepted": true|false, "name": "<alliance name — invent one in character if the player didn't>", "memberIds": ["<ids of OTHER houseguests the player wants included, besides you>"]},
+    "npcPromise": null or {"text": "<what YOU just sincerely committed to the player, in plain words, including 'this week' if that is the scope>", "kind": "safety"|"vote"|"alliance"|"final2"},
     "summary": "<one-line third-person summary of this exchange for your memory>"
   }
 }
 Use allianceProposal (not just allianceSignal) when the player proposes a SPECIFIC alliance — especially one with multiple members or a name. Set accepted based on your genuine willingness, considering your trust in the player AND in every proposed member.
-Rules for effects: only record promiseMade if the player clearly committed to something. Promise kinds — "safety": they won't nominate someone; "vote": they'll vote to KEEP you; "vote_evict": they'll vote OUT a third person (always set targetId); "alliance": an alliance / final-N loyalty pledge; "final2": a final-two deal; "info": they'll share information. For safety promises, set protectedIds to the exact houseguest ids protected by the promise. If the player says "you are safe", protectedIds is your id. If they name other people ("Rae and Bev are safe"), protectedIds is those named ids, not everyone who heard it. Only set allianceSignal to "accept" if YOU are genuinely willing given your trust level and existing loyalties. suspicionOfLie only when there is a real contradiction with your memory above.`;
+Rules for effects: only record promiseMade if the player clearly committed to something. Promise kinds — "safety": they won't nominate someone; "vote": they'll vote to KEEP you; "vote_evict": they'll vote OUT a third person (always set targetId); "alliance": an alliance / final-N loyalty pledge; "final2": a final-two deal; "info": they'll share information. For safety promises, set protectedIds to the exact houseguest ids protected by the promise. If the player says "you are safe", protectedIds is your id. If they name other people ("Rae and Bev are safe"), protectedIds is those named ids, not everyone who heard it. Only set allianceSignal to "accept" if YOU are genuinely willing given your trust level and existing loyalties. suspicionOfLie only when there is a real contradiction with your memory above. npcPromise only for a commitment YOU sincerely made in this reply ("safety": you will not nominate them; "vote": you will vote to keep them) — not for vague warmth, not for a lie you are telling, and never one that contradicts YOUR DECISIONS THIS WEEK unless you have truly changed your mind.`;
 
 export function buildChatSystemPrompt(g, npcId, viewerId = PLAYER_ID) {
   const c = castById(npcId);
