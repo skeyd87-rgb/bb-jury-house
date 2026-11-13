@@ -413,6 +413,38 @@ function jurorPersonality(jurorId) {
   return c ? c.personality : { loyalty: 50, bitterness: 50, compSkill: 50, socialSkill: 50, chaos: 50, strategic: 50 };
 }
 
+// A public record, said by `speakerId` to `listenerId`.
+function spokenRecord(g, record, listenerId, speakerId) {
+  const wk = `In week ${record.week}`;
+  const name = (id) => (id === listenerId ? 'you' : id === speakerId ? 'me' : nameOf(g, id));
+  const list = (ids) => {
+    const n = ids.map(name);
+    // "me and Marcus" reads naturally; "Marcus and me" also fine — keep "me" first only when present.
+    return n.length > 1 ? `${n.slice(0, -1).join(', ')} and ${n.at(-1)}` : n[0] || 'someone';
+  };
+  const t = record.targetIds || [];
+  switch (record.kind) {
+    case 'nominations': return `${wk} you nominated ${list(t)}.`;
+    case 'replacement': return `${wk} you named ${list(t)} as the replacement nominee.`;
+    case 'veto_used': return `${wk} you used the veto to save ${list(t)}.`;
+    case 'veto_unused': return `${wk} you held the veto and chose not to use it.`;
+    case 'veto_win': return `${wk} you won the veto.`;
+    case 'hoh': case 'final_hoh': return `${wk} you won Head of Household.`;
+    case 'final_cut': return `At the final three you chose to evict ${list(t)}.`;
+    case 'promise': {
+      const said = String(record.text.match(/: ("[^]*?")\. Recorded status/)?.[1] || '').replace(/^"|"$/g, '');
+      const how = record.status === 'broken' ? 'and you broke it' : record.status === 'kept' ? 'and you kept it' : '';
+      return `${wk} you made ${name(t[0])} a promise${said ? ` — "${said}" —` : ''} ${how}.`.replace(/\s+\./, '.');
+    }
+    default: {
+      // Unknown kind: fall back to the record's own words with the names swapped.
+      let s = record.text;
+      for (const id of [listenerId, speakerId]) s = s.replace(new RegExp(`\\b${nameOf(g, id)}\\b`, 'g'), name(id));
+      return `${wk}: ${s}`;
+    }
+  }
+}
+
 export function fallbackJurorQuestion(g, jurorId, finalists) {
   const k = knowledgeFor(g, jurorId);
   const refs = {};
@@ -421,7 +453,10 @@ export function fallbackJurorQuestion(g, jurorId, finalists) {
     const personal = evidence.filter(e => e.actorId === fid && e.targetIds.includes(jurorId) && !['rumor', 'statement'].includes(e.kind));
     const record = personal.find(e => e.kind === 'promise' && e.status === 'broken') || personal.at(-1) || evidence.filter(e => e.actorId === fid && !['rumor', 'statement'].includes(e.kind)).at(-1);
     refs[index] = record ? [record.id] : [];
-    if (record) return `In week ${record.week}: ${record.text} What were you trying to achieve, and why should that earn my vote?`;
+    // The record is written in the third person ("Sam nominated Zoe and
+    // Marcus."). Read out as it stands, Zoe asked Sam about "Sam" and "Zoe".
+    // A juror says "you" and "me".
+    if (record) return `${spokenRecord(g, record, fid, jurorId)} What were you trying to achieve, and why should that earn my vote?`;
     const rumor = k.rumors.find(r => r.aboutId === fid);
     if (rumor) {
       refs[index] = [rumor.id];

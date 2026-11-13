@@ -209,6 +209,26 @@ export function buildChatSystemPrompt(g, npcId, viewerId = PLAYER_ID) {
   ].join('\n');
 }
 
+// Anything a houseguest or juror says on screen. The jury prompts hand the
+// model record ids ("[event:3]") to cite in a separate field, and it sometimes
+// wrote them into the sentence as well: "…chose not to use it week one
+// [event:0][event:1][event:2]". Ids and stamps are bookkeeping; strip them.
+// Also ends on a whole sentence: a reply cut off by its length cap used to be
+// shown mid-word ("…that counted for something every").
+export function cleanSpoken(text, max = 600) {
+  let s = stripStamp(text)
+    .replace(/\s*[\[(](?:event|comp|promise|rumor|statement)s?[:#][^\])]*[\])]/gi, '')
+    .replace(/\s+([,.;!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (s.length > max) s = s.slice(0, max);
+  if (s && !/[.!?…"”')]$/.test(s)) {
+    const cut = Math.max(s.lastIndexOf('. '), s.lastIndexOf('! '), s.lastIndexOf('? '), s.lastIndexOf('.'), s.lastIndexOf('!'), s.lastIndexOf('?'));
+    s = cut > s.length * 0.4 ? s.slice(0, cut + 1) : `${s}…`;
+  }
+  return s;
+}
+
 // Remove a leaked history stamp from the start of a line. Applied to every
 // reply before it is shown or stored, and to stored lines before they are
 // shown or sent back, so a save that already has some is cleaned as it goes.
@@ -295,6 +315,7 @@ export function buildJurorQuestionPrompt(g, jurorId, finalists) {
     `KNOWLEDGE BOUNDARY: You only know the supplied eviction snapshot. Later events and private ballots are unknown. Finalist answers are claims to evaluate, not additions to the record.`,
     `Your bitterness level: ${j.bitterness}/100. High bitterness = pointed, personal questions. Low = respectful, game-focused.`,
     GROUNDING_RULE,
+    `Evidence ids (like event:3) go ONLY in the evidenceForF1/evidenceForF2 arrays. Never write an id, bracketed or not, inside a question: you are a person speaking aloud. Say "in week one, when you nominated me", never "[event:1]".`,
     `Write ONE question addressed to EACH finalist. Each factual premise must cite the supplied evidence IDs in evidenceForF1/evidenceForF2. A rumor must be worded as something you heard from its source, followed by an opportunity to dispute it. If no relevant evidence exists, ask an open question without an accusation. Do not treat feelings or alleged votes as facts. Respond ONLY with JSON:`,
     `{"questionForF1": "<question for ${nameOf(g, f1)}>", "questionForF2": "<question for ${nameOf(g, f2)}>", "toneNote": "<one word: bitter|respectful|hurt|playful|cold>", "evidenceForF1": ["<evidence id>"], "evidenceForF2": ["<evidence id>"]}`,
   ].join('\n');
@@ -319,6 +340,7 @@ export function buildJurorVotePrompt(g, jurorId, finalists, qa) {
     `${nameOf(g, f2)} answered: "${qa.f2Answer}"`,
     `Weigh: did their answer actually address your grievance/question? Did it feel honest by your standards? Then their game, then your heart.`,
     GROUNDING_RULE,
+    `Evidence ids go ONLY in the evidenceIds array, never inside the reasoning text.`,
     `Explain the vote using supplied evidence and the quality of their answers. Do not invent an event to make the explanation specific. Cite evidence IDs in evidenceIds when invoking history. When no history is available, explain your judgment of their answers without an accusation. 2-3 sentences.`,
     `Respond ONLY with JSON: {"vote": "${f1}"|"${f2}", "reasoning": "<2-3 sentences citing real events>", "answerQuality": {"${f1}": <0-10>, "${f2}": <0-10>}, "evidenceIds": ["<evidence id>"]}`,
   ].join('\n');
@@ -334,6 +356,7 @@ export function buildOpponentAnswerPrompt(g, opponentId, jurorId, question) {
     `YOUR VERIFIED RECORD AND ATTRIBUTED CLAIMS:\n${formatEvidence(g, opponentId)}`,
     `The juror question is a claim, not proof. Correct a false premise politely, then explain the choices you actually made.`,
     GROUNDING_RULE,
+    `Keep it to 2-3 complete sentences and finish the last one. Never write a record id in your answer.`,
     `Answer persuasively in character, 2-3 sentences, owning your game. Respond ONLY with JSON: {"reply": "..."}`,
   ].join('\n');
 }

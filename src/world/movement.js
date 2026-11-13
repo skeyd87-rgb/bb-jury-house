@@ -473,7 +473,10 @@ export class WorldController {
     const slots = new Map();
     const n = ids.length;
     ids.forEach((id, i) => {
-      const a = n > 1 ? (-1 + (2 * i) / (n - 1)) * 1.25 : 0; // spread across ~145 degrees
+      // A full house fans across ~145 degrees; two finalists stand together,
+      // not at opposite ends of the same arc.
+      const span = Math.min(1.25, 0.26 * (n - 1) + 0.1);
+      const a = n > 1 ? (-1 + (2 * i) / (n - 1)) * span : 0;
       const x = STAGE.x + Math.sin(a) * STAGE.r;
       const z = STAGE.z - Math.cos(a) * STAGE.r * 0.82;
       slots.set(id, { x, z, rotY: Math.atan2(STAGE.x - x, STAGE.z + 4 - z) });

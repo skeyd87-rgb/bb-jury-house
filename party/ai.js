@@ -6,8 +6,7 @@
 import {
   buildChatSystemPrompt, buildThreadMessages,
   buildJurorQuestionPrompt, buildOpponentAnswerPrompt, buildJurorVotePrompt,
-  buildGroupSystemPrompt, buildDiarySystemPrompt,
-} from '../src/ai/prompts.js';
+  buildGroupSystemPrompt, buildDiarySystemPrompt, cleanSpoken } from '../src/ai/prompts.js';
 import {
   fallbackChat, fallbackJurorQuestion, fallbackJurorVote, fallbackGroupChat, fallbackDiary,
 } from '../src/ai/fallback.js';
@@ -61,7 +60,7 @@ export async function serverJurorQuestion(g, jurorId, finalists, apiKey) {
       ], 600);
       const json = extractJson(text);
       await validateNarrative(g, jurorId, finalists, json, auditor(apiKey), { citations: ['evidenceForF1', 'evidenceForF2'] });
-      if (json && json.questionForF1 && json.questionForF2) return { ...json, usedAi: true };
+      if (json && json.questionForF1 && json.questionForF2) return { ...json, questionForF1: cleanSpoken(json.questionForF1, 420), questionForF2: cleanSpoken(json.questionForF2, 420), usedAi: true };
     } catch (err) {
       // fall through to the built-in engine
     }
@@ -78,7 +77,7 @@ export async function serverOpponentAnswer(g, opponentId, jurorId, question, api
       ], 300);
       const json = extractJson(text);
       await validateNarrative(g, opponentId, jurorId, json, auditor(apiKey), { utterance: question });
-      if (json && json.reply) return { reply: String(json.reply).slice(0, 500), usedAi: true };
+      if (json && json.reply) return { reply: cleanSpoken(json.reply, 650), usedAi: true };
     } catch (err) {
       // fall through
     }
@@ -96,7 +95,7 @@ export async function serverJurorVote(g, jurorId, finalists, qa, apiKey) {
       const json = extractJson(text);
       await validateNarrative(g, jurorId, finalists, json, auditor(apiKey), { qa, citations: ['evidenceIds'] });
       if (json && json.vote && finalists.includes(json.vote)) {
-        return { vote: json.vote, reasoning: String(json.reasoning || '').slice(0, 300), usedAi: true };
+        return { vote: json.vote, reasoning: cleanSpoken(json.reasoning || '', 380), usedAi: true };
       }
     } catch (err) {
       // fall through

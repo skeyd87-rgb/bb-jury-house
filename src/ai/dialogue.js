@@ -18,6 +18,7 @@ import {
   buildGroupSystemPrompt,
   buildAnalysisPrompt,
   stripStamp,
+  cleanSpoken,
 } from './prompts.js';
 import {
   fallbackChat,
@@ -239,7 +240,7 @@ export async function npcSpeech(g, npcId, kind, extra = {}) {
       maxTokens: 250,
     });
     await validateNarrative(g, npcId, PLAYER_ID, r, askClaudeJson, { authorizedAction: { kind, ...extra } });
-    if (r.reply) { setAiStatus(true); return String(r.reply).slice(0, 400); }
+    if (r.reply) { setAiStatus(true); return cleanSpoken(r.reply, 420); }
   } catch (err) {
     aiFailed(err);
   }
@@ -254,7 +255,10 @@ export async function jurorQuestion(g, jurorId, finalists) {
       maxTokens: 600,
     });
     await validateNarrative(g, jurorId, finalists, r, askClaudeJson, { citations: ['evidenceForF1', 'evidenceForF2'] });
-    if (r.questionForF1 && r.questionForF2) { setAiStatus(true); return r; }
+    if (r.questionForF1 && r.questionForF2) {
+      setAiStatus(true);
+      return { ...r, questionForF1: cleanSpoken(r.questionForF1, 420), questionForF2: cleanSpoken(r.questionForF2, 420) };
+    }
   } catch (err) {
     aiFailed(err);
   }
@@ -266,10 +270,10 @@ export async function opponentJuryAnswer(g, opponentId, jurorId, question) {
     const r = await askClaudeJson({
       system: buildOpponentAnswerPrompt(g, opponentId, jurorId, question),
       messages: [{ role: 'user', content: 'Answer the juror now.' }],
-      maxTokens: 300,
+      maxTokens: 450,
     });
     await validateNarrative(g, opponentId, jurorId, r, askClaudeJson, { utterance: question });
-    if (r.reply) { setAiStatus(true); return String(r.reply).slice(0, 500); }
+    if (r.reply) { setAiStatus(true); return cleanSpoken(r.reply, 650); }
   } catch (err) {
     aiFailed(err);
   }
@@ -287,7 +291,7 @@ export async function jurorVote(g, jurorId, finalists, qa) {
     await validateNarrative(g, jurorId, finalists, r, askClaudeJson, { qa, citations: ['evidenceIds'] });
     if (r.vote && finalists.includes(r.vote)) {
       setAiStatus(true);
-      return { vote: r.vote, reasoning: String(r.reasoning || '').slice(0, 300) };
+      return { vote: r.vote, reasoning: cleanSpoken(r.reasoning || '', 380) };
     }
   } catch (err) {
     aiFailed(err);

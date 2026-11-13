@@ -1218,6 +1218,7 @@ window.__bb = {
   world,
   postfx,
   tickHuddle: () => updateHuddle(),
+  finale: () => runFinale(),
   refresh: () => refresh(),
   advance: () => advance(),
   openChat: (id, opener, reason) => openNpcChat(id, opener, reason),
@@ -2573,6 +2574,29 @@ async function runFinale() {
     continueLabel: playerIsFinalist ? 'Face the Jury' : 'Begin Jury Questioning',
   });
 
+  // The finale is a two-shot: the finalists in the living room, on the wide
+  // ceremony camera. Left alone, the camera kept following wherever the
+  // player's avatar had last been standing, at whatever zoom they had left it.
+  world.clearFocus();
+  world.beginStage(finalists);
+
+  // ---- Everything the jury will say is prepared in the background -----------
+  // Each question, answer and vote is an AI call plus its fact-check. Done one
+  // at a time, in order, that was a wait before every single card and a long
+  // silence before the votes. They are started now, a few at a time, and each
+  // card simply waits for its own piece — usually already there by the time
+  // you have read the one before it.
+  const run = taskPool(3);
+  const npcJurors = jurors.filter((j) => !(j === PLAYER_ID && !playerIsFinalist));
+  const questionOf = {}, answerOf = {}, voteOf = {};
+  for (const j of npcJurors) {
+    questionOf[j] = run(() => jurorQuestion(g, j, finalists));
+    for (const f of finalists) {
+      if (f === PLAYER_ID) continue;
+      answerOf[`${j}:${f}`] = questionOf[j].then((q) => run(() => opponentJuryAnswer(g, f, j, f === f1 ? q.questionForF1 : q.questionForF2)));
+    }
+  }
+
   const qaByJuror = {};
   for (const j of jurors) {
     const jHg = g.houseguests.find((h) => h.id === j);
@@ -2585,8 +2609,11 @@ async function runFinale() {
         placeholder: 'Example: Explain the move you made that deserves my vote...',
         submitLabel: 'Ask the Final 2',
       });
-      const f1Answer = await opponentJuryAnswer(g, f1, PLAYER_ID, question);
-      const f2Answer = await opponentJuryAnswer(g, f2, PLAYER_ID, question);
+      const [f1Answer, f2Answer] = await waitingCard(
+        Promise.all([opponentJuryAnswer(g, f1, PLAYER_ID, question), opponentJuryAnswer(g, f2, PLAYER_ID, question)]),
+        'Your Jury Question', 'The Final 2 consider their answers…');
+      speak(f1Answer, f1, g.houseguests.find((h) => h.id === f1)?.gender);
+      speak(f2Answer, f2, g.houseguests.find((h) => h.id === f2)?.gender);
       await cinematicWait({
         kicker: 'Your Jury Question',
         title: 'The Final 2 answer you',
@@ -2594,58 +2621,48 @@ async function runFinale() {
         bodyHtml: `<p><b>${nameOf(g, f1)}:</b> "${f1Answer}"</p><p><b>${nameOf(g, f2)}:</b> "${f2Answer}"</p>`,
         continueLabel: lastJuror ? 'The Jury Votes' : 'Next Juror',
       });
+      stopSpeaking();
       qaByJuror[j] = { questionForF1: question, questionForF2: question, f1Answer, f2Answer };
       saveGame(g);
       continue;
     }
 
-    const q = await jurorQuestion(g, j, finalists);
-    speak(q.questionForF1, j, jHg?.gender);
-
-    let f1Answer;
-    if (f1 === PLAYER_ID) {
-      f1Answer = await cinematicTextInput({
-        kicker: `Juror: ${nameOf(g, j)} (${q.toneNote || 'measured'})`,
-        title: `${nameOf(g, j)} asks you:`,
-        quote: `"${q.questionForF1}"`,
-        placeholder: 'Own your game. This answer decides a vote...',
-        submitLabel: 'Deliver Answer',
-      });
-    } else {
-      f1Answer = await opponentJuryAnswer(g, f1, j, q.questionForF1);
-      await cinematicWait({
-        kicker: `Juror: ${nameOf(g, j)}`,
-        title: `${nameOf(g, j)} asks ${nameOf(g, f1)}:`,
-        quote: `"${q.questionForF1}"`,
-        bodyHtml: `<p><b>${nameOf(g, f1)}:</b> "${f1Answer}"</p>`,
-        continueLabel: 'Next Answer',
-      });
+    const q = await waitingCard(questionOf[j], `Juror: ${nameOf(g, j)}`, `${nameOf(g, j)} stands to speak…`);
+    const answers = {};
+    for (const f of finalists) {
+      const question = f === f1 ? q.questionForF1 : q.questionForF2;
+      const last = f === f2;
+      // Whatever is spoken belongs to the card on screen: it starts when the
+      // card appears and is cut when the card goes. An answer used to be
+      // queued after its card had closed, so it played over the next juror.
+      if (f === PLAYER_ID) {
+        speak(question, j, jHg?.gender);
+        answers[f] = await cinematicTextInput({
+          kicker: `Juror: ${nameOf(g, j)} (${q.toneNote || 'measured'})`,
+          title: `${nameOf(g, j)} asks you:`,
+          quote: `"${question}"`,
+          placeholder: 'Own your game. This answer decides a vote...',
+          submitLabel: 'Deliver Answer',
+        });
+      } else {
+        const answer = await waitingCard(answerOf[`${j}:${f}`], `Juror: ${nameOf(g, j)}`, `${nameOf(g, f)} considers the question…`);
+        answers[f] = answer;
+        speak(question, j, jHg?.gender);
+        speak(answer, f, g.houseguests.find((h) => h.id === f)?.gender);
+        await cinematicWait({
+          kicker: `Juror: ${nameOf(g, j)}`,
+          title: `${nameOf(g, j)} ${f === f1 ? 'asks' : 'turns to'} ${nameOf(g, f)}${f === f1 ? ':' : ':'}`,
+          quote: `"${question}"`,
+          bodyHtml: `<p><b>${nameOf(g, f)}:</b> "${answer}"</p>`,
+          continueLabel: !last ? 'Next Answer' : lastJuror ? 'The Jury Votes' : 'Next Juror',
+        });
+      }
+      stopSpeaking();
     }
-    stopSpeaking();
-
-    let f2Answer;
-    speak(q.questionForF2, j, jHg?.gender);
-    if (f2 === PLAYER_ID) {
-      f2Answer = await cinematicTextInput({
-        kicker: `Juror: ${nameOf(g, j)} (${q.toneNote || 'measured'})`,
-        title: `${nameOf(g, j)} asks you:`,
-        quote: `"${q.questionForF2}"`,
-        placeholder: 'Own your game. This answer decides a vote...',
-        submitLabel: 'Deliver Answer',
-      });
-    } else {
-      f2Answer = await opponentJuryAnswer(g, f2, j, q.questionForF2);
-      await cinematicWait({
-        kicker: `Juror: ${nameOf(g, j)}`,
-        title: `${nameOf(g, j)} turns to ${nameOf(g, f2)}:`,
-        quote: `"${q.questionForF2}"`,
-        bodyHtml: `<p><b>${nameOf(g, f2)}:</b> "${f2Answer}"</p>`,
-        continueLabel: lastJuror ? 'The Jury Votes' : 'Next Juror',
-      });
-    }
-    stopSpeaking();
-    if (f2 !== PLAYER_ID) speak(f2Answer, f2);
-    qaByJuror[j] = { questionForF1: q.questionForF1, questionForF2: q.questionForF2, f1Answer, f2Answer };
+    qaByJuror[j] = { questionForF1: q.questionForF1, questionForF2: q.questionForF2, f1Answer: answers[f1], f2Answer: answers[f2] };
+    // This juror has heard both answers: they can make up their mind while
+    // the next one is still asking.
+    voteOf[j] = run(() => jurorVote(g, j, finalists, qaByJuror[j]));
     saveGame(g);
   }
   stopSpeaking();
@@ -2664,14 +2681,44 @@ async function runFinale() {
         meta: (id) => `${nameOf(g, id)} - finalist`,
       });
       votes.push({ juror: j, vote, reasoning: `My vote is for ${nameOf(g, vote)}. They gave me the better answer and earned the win from where I sat.` });
-    } else {
-      const v = await jurorVote(g, j, finalists, qaByJuror[j]);
-      votes.push({ juror: j, ...v });
     }
   }
+  const cast = await waitingCard(Promise.all(npcJurors.map((j) => voteOf[j])), 'The Jury Votes', 'The jurors lock in their keys…');
+  npcJurors.forEach((j, i) => votes.push({ juror: j, ...cast[i] }));
+  votes.sort((a, b) => jurors.indexOf(a.juror) - jurors.indexOf(b.juror));
 
   // Reveal one by one
   await revealJuryVotes(votes, finalists);
+}
+
+// Run at most `n` async jobs at once. The jury's lines are prepared in the
+// background; all at once they would blow through the server's per-minute
+// limit and every one past it would fall to the offline writer.
+function taskPool(n) {
+  let active = 0;
+  const waiting = [];
+  const next = () => {
+    if (active >= n || !waiting.length) return;
+    active++;
+    const { job, resolve, reject } = waiting.shift();
+    job().then(resolve, reject).finally(() => { active--; next(); });
+  };
+  return (job) => new Promise((resolve, reject) => { waiting.push({ job, resolve, reject }); next(); });
+}
+
+// Await something that is being prepared. If it is not ready almost at once,
+// say so on a card instead of leaving a frozen screen.
+async function waitingCard(promise, kicker, title) {
+  let card = null;
+  const timer = setTimeout(() => {
+    card = cinematic({ kicker, title, bodyHtml: '<p class="muted">One moment.</p>' });
+  }, 450);
+  try {
+    return await promise;
+  } finally {
+    clearTimeout(timer);
+    if (card) card.close();
+  }
 }
 
 function revealJuryVotes(votes, finalists) {
@@ -2756,6 +2803,7 @@ function revealJuryVotes(votes, finalists) {
 }
 
 function showWinner(winner, counts, finalists, juryVoteList = []) {
+  world.endStage();
   stopMusic();
   const playerIsFinalist = finalists.includes(PLAYER_ID);
   const won = winner === PLAYER_ID;
