@@ -152,9 +152,12 @@ test('offline answer assessment does not reward repeating more words',()=>{
   const b=fallbackJurorVote(g,'bev',['you','rae'],{...qa,f1Answer:qa.f1Answer.repeat(20)}).answerQuality.you;assert.equal(a,b);
 });
 test('Diary Room has zero social/record side effects and no additional factual-audit call',async()=>{
-  const g=vetoGame(), before=JSON.stringify({...g,diary:[]});
+  // The diary's own text (g.diary, and its copy in the season transcript) is the
+  // only thing the Diary Room may write. Everything else must be byte-identical.
+  const g=vetoGame(), strip=(x)=>JSON.stringify({...x,diary:[],transcript:[]}), before=strip(g);
   await mocked({reply:'How do you feel about that decision?'},{valid:true},async calls=>{
-    await diaryChat(g,'I want to reflect.');assert.equal(JSON.stringify({...g,diary:[]}),before);assert.equal(calls.length,1);
+    await diaryChat(g,'I want to reflect.');assert.equal(strip(g),before);assert.equal(calls.length,1);
+    assert.ok((g.transcript||[]).length===2&&g.transcript.every(t=>t.k==='diary'&&t.with==='diary'),'the Diary Room wrote something other than diary lines to the transcript');
     const again=JSON.stringify(g);await serverDiaryChat(g,'you',g.diary,'test-key');assert.equal(JSON.stringify(g),again);
   });
 });

@@ -221,6 +221,12 @@ export function renderHud(g, handlers) {
     };
     menuActions.append(gfx);
   }
+  if (handlers.onExport) {
+    const ex = el('button', 'bb', 'Export season');
+    ex.title = 'Save or share a full record of this season: conversations, comps, votes, promises';
+    ex.onclick = handlers.onExport;
+    menuActions.append(ex);
+  }
   const exit = el('button', 'bb', '🚪 Exit');
   exit.onclick = handlers.onExit;
   menuActions.append(exit);
@@ -731,7 +737,7 @@ export function confetti() {
 
 // ---------- Title screen ----------
 
-export function titleScreen({ hasSave, onNew, onContinue, archivedStats, onShowStats, onOnline }) {
+export function titleScreen({ hasSave, onNew, onContinue, archivedStats, onShowStats, onOnline, exportLabel, onExport }) {
   const wrap = el('div', 'title-screen season-title');
   wrap.id = 'title-screen';
   const card = el('div', 'title-card');
@@ -776,6 +782,11 @@ export function titleScreen({ hasSave, onNew, onContinue, archivedStats, onShowS
     const ob = el('button', 'bb', 'Play with friends ↗');
     ob.onclick = () => { wrap.remove(); onOnline(); };
     onlineRow.append(ob);
+    if (exportLabel && onExport) {
+      const xb = el('button', 'bb', exportLabel);
+      xb.onclick = () => onExport();
+      onlineRow.append(xb);
+    }
     card.append(onlineRow);
   }
   wrap.append(card);

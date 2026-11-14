@@ -175,6 +175,19 @@ export function openPromisesBetween(g, a, b) {
   );
 }
 
+// The full transcript: every line said to or by the player, in order, for the
+// season record (game/record.js). `g.threads` keeps only the last 24 lines per
+// houseguest because that is all a prompt needs; this keeps the season.
+//   who: 'you' | a houseguest id | 'dr' (Diary Room) | 'note' (a game notice)
+//   withId: the houseguest, 'diary', or 'group:a,b,c'
+//   ai: true = the AI wrote it, false = the offline writer, undefined = n/a
+export function logLine(g, who, withId, text, kind = 'chat', ai) {
+  const entry = { w: g.week, p: g.phase, k: kind, with: withId, who, t: String(text ?? '').slice(0, 800) };
+  if (ai !== undefined) entry.a = ai ? 1 : 0;
+  (g.transcript ||= []).push(entry);
+  if (g.transcript.length > 4000) g.transcript.splice(0, g.transcript.length - 4000);
+}
+
 export function logEvent(g, type, text, actors = []) {
   g.events.push({ week: g.week, phase: g.phase, type, text, actors });
 }

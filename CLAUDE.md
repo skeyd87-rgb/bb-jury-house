@@ -74,7 +74,8 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 - Room identity is per room code (`bbjury.roomIds` in room.js): each room issues its own token for a player id, so one shared slot gets overwritten by the next room joined.
 - The room server is a separate Cloudflare Worker (`npx wrangler deploy`), not part of the GitHub Pages deploy. Anything under `src/game/` or `party/` reaches online games only after that redeploy. The client must keep working against an older server: treat `game.houseRead` and `game.huddle` as optional.
 
-- Diary Room must have **zero** game-state side effects.
+- Diary Room must have **zero** game-state side effects. It writes its own text to `g.diary` and to the season transcript (`g.transcript`, kind `diary`) and nothing else.
+- **The season record** (`src/game/record.js`, exported through `src/ui/export.js`) is built from the save alone. Anything a player might later need to show someone — a line of dialogue, a game notice in a chat, the finale — has to be written to the save when it happens: dialogue through `logLine` (state.js; `g.threads` is capped at 24 lines per houseguest for prompts and is NOT the record), the finale into `g.finale`. Each houseguest line carries whether the AI or the offline writer produced it.
 - Jury notes are snapshotted at eviction (`snapshotJuryNotes`) — jurors judge from what they knew then.
 - Nothing decision-level is deterministic: comps, noms, votes, jury all include noise/weighted sampling.
 - Fallback and Claude paths must return the same `{ reply, effects }` shape; `sanitizeEffects()` is the only entry to state.

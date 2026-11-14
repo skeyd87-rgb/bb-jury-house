@@ -5,6 +5,7 @@
 import { askClaudeJson } from './claude.js';
 import { validateNarrative, groundedChat } from './grounding.js';
 import { rememberExchange } from '../game/knowledge.js';
+import { logLine } from '../game/state.js';
 import { setAiStatus } from './status.js';
 import {
   buildChatSystemPrompt,
@@ -79,6 +80,7 @@ function sanitizeEffects(raw, npcIds) {
 export async function npcChat(g, npcId, playerMsg) {
   const npcIds = g.houseguests.map((h) => h.id);
   let result;
+  let fromAi = true;
   try {
     result = await groundedChat({
       g, speakerId: npcId, listenerId: PLAYER_ID, utterance: playerMsg,
@@ -89,6 +91,7 @@ export async function npcChat(g, npcId, playerMsg) {
     setAiStatus(true);
   } catch (err) {
     aiFailed(err);
+    fromAi = false;
     result = fallbackChat(g, npcId, playerMsg);
   }
 
@@ -99,6 +102,8 @@ export async function npcChat(g, npcId, playerMsg) {
   if (!g.threads[npcId]) g.threads[npcId] = [];
   g.threads[npcId].push({ who: 'you', text: playerMsg, week: g.week, phase: g.phase });
   g.threads[npcId].push({ who: 'them', text: reply, week: g.week, phase: g.phase });
+  logLine(g, 'you', npcId, playerMsg);
+  logLine(g, npcId, npcId, reply, 'chat', fromAi);
   g.threads[npcId] = g.threads[npcId].slice(-24);
 
   // Apply effects + memory summary
@@ -123,7 +128,9 @@ export async function npcOpener(g, npcId, reason) {
   } catch (err) {
     aiFailed(err);
   }
+  const openerFromAi = !!reply;
   if (!reply) reply = fallbackOpener(g, npcId, reason);
+  logLine(g, npcId, npcId, reply, 'chat', openerFromAi);
   if (!g.threads[npcId]) g.threads[npcId] = [];
   g.threads[npcId].push({ who: 'them', text: reply, week: g.week, phase: g.phase });
   g.threads[npcId] = g.threads[npcId].slice(-24);
@@ -134,6 +141,7 @@ export async function npcOpener(g, npcId, reason) {
 export async function groupChat(g, memberIds, playerMsg, history) {
   let result = null;
   let failure = null;
+  let groupFromAi = true;
   try {
     const msgs = history.slice(-14).map((m) => ({
       role: m.who === 'you' ? 'user' : 'assistant',
@@ -154,6 +162,7 @@ export async function groupChat(g, memberIds, playerMsg, history) {
   }
   if (!result || !Array.isArray(result.replies)) {
     aiFailed(failure);
+    groupFromAi = false;
     result = fallbackGroupChat(g, memberIds, playerMsg);
   } else {
     setAiStatus(true);
@@ -163,6 +172,9 @@ export async function groupChat(g, memberIds, playerMsg, history) {
     .filter((r) => memberIds.includes(r.id) && r.reply)
     .slice(0, 3)
     .map((r) => ({ id: r.id, reply: String(r.reply).slice(0, 400) }));
+
+  logLine(g, 'you', `group:${memberIds.join(',')}`, playerMsg, 'group');
+  for (const r of replies) logLine(g, r.id, `group:${memberIds.join(',')}`, r.reply, 'group', groupFromAi);
 
   // Apply per-member effects (public conversation: everyone forms an opinion)
   const npcIds = g.houseguests.map((h) => h.id);
@@ -214,6 +226,7 @@ export async function postGameAnalysis(g, stats) {
 
 export async function diaryChat(g, playerMsg) {
   g.diary.push({ who: 'you', text: playerMsg, week: g.week, phase: g.phase });
+  logLine(g, 'you', 'diary', playerMsg, 'diary');
   let result;
   try {
     const msgs = g.diary.slice(-10).map((m) => ({
@@ -228,6 +241,7 @@ export async function diaryChat(g, playerMsg) {
   }
   const reply = String(result.reply || '...').slice(0, 400);
   g.diary.push({ who: 'them', text: reply, week: g.week, phase: g.phase });
+  logLine(g, 'dr', 'diary', reply, 'diary');
   g.diary = g.diary.slice(-30);
   return reply;
 }

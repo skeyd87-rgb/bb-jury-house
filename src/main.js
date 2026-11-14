@@ -18,6 +18,9 @@ import { buildFinaleContext, countJuryVotes, winnerFromJuryVotes, playerPlacemen
 import { chooseApproacher, APPROACH_REASON_TEXT, allianceWillingness, formOfficialAlliance, leaveAlliance, applySpotted, mentionsHouseguest } from './game/social.js';
 import { pickHuddlePair, huddleIntel, recordIntel, houseReadView } from './game/intel.js';
 import { showHouseRead } from './ui/houseread.js';
+import { buildSeasonRecord, recordFilename } from './game/record.js';
+import { showExport, keepLastRecord, lastRecord } from './ui/export.js';
+import { logLine } from './game/state.js';
 import { randomCompType, COMP_NAMES, runComp } from './game/comps.js';
 import {
   npcChat, diaryChat, npcSpeech, jurorQuestion, opponentJuryAnswer, jurorVote, npcOpener,
@@ -110,6 +113,13 @@ function showTitle() {
       setMoodForPhase();
     },
     onOnline: () => openMultiplayer(),
+    exportLabel: loadGame() ? 'Export saved season' : lastRecord() ? 'Export last season' : null,
+    onExport: () => {
+      const saved = loadGame();
+      if (saved) return showExport(buildSeasonRecord(saved, { version: __APP_VERSION__ }), recordFilename(saved), 'the saved season');
+      const last = lastRecord();
+      if (last) showExport(last.text, last.filename, 'your last finished season');
+    },
   });
 }
 showTitle();
@@ -1307,6 +1317,10 @@ function refresh() {
     onHouseMeeting: () => groupChatFlow(activeNpcIds(g)),
     onLeaveAlliance: (id) => leaveAllianceFlow(id),
     onExit: () => exitToTitleFlow(),
+    onExport: () => {
+      if (busy || document.querySelector('.cinematic')) return;
+      showExport(buildSeasonRecord(g, { version: __APP_VERSION__ }), recordFilename(g));
+    },
     graphics: {
       label: () => (postfx.quality >= 4 ? 'High' : postfx.quality >= 2 ? 'Balanced' : 'Fast'),
       cycle: () => { postfx.quality = postfx.quality >= 4 ? 2 : postfx.quality >= 2 ? 0 : 4; },
@@ -1415,13 +1429,15 @@ function openNpcChat(id, opener = null, approachReason = null) {
       // Who's in earshot BEFORE the exchange (positions are frozen during chat).
       const listeners = world.nearbyListeners(id, 6);
       const { reply, effects } = await npcChat(g, id, text);
-      if (effects.promiseMade) panel.addSystemMsg(`📋 Promise recorded: "${effects.promiseMade.text}"`);
+      if (effects.promiseMade) { panel.addSystemMsg(`📋 Promise recorded: "${effects.promiseMade.text}"`); logLine(g, 'note', id, `Promise recorded (you → ${hg.name}): "${effects.promiseMade.text}"`); }
+      if (effects.npcPromise) logLine(g, 'note', id, `${hg.name} gave their word: "${effects.npcPromise.text}"`);
+      if (effects.suspicionOfLie) logLine(g, 'note', id, `${hg.name} did not seem to buy that.`);
       if (effects.npcPromise) panel.addSystemMsg(`📋 ${hg.name} gave you their word: "${effects.npcPromise.text}"`);
       if (effects.allianceSignal === 'accept') panel.addSystemMsg(`🤝 ${hg.name} is in. Check your alliances.`);
       if (effects.allianceSignal === 'propose' && !sharedAlliance(g, id, PLAYER_ID)) panel.addSystemMsg(`🤝 ${hg.name} is offering to work together. Nothing is agreed until you say yes.`);
       if (effects.suspicionOfLie) panel.addSystemMsg(`👀 ${hg.name} didn't seem to buy that...`);
       const overheardBy = applyEavesdrop(id, listeners, text, effects);
-      for (const eid of overheardBy) panel.addSystemMsg(`👂 ${nameOf(g, eid)} was close enough to catch that.`);
+      for (const eid of overheardBy) { panel.addSystemMsg(`👂 ${nameOf(g, eid)} was close enough to catch that.`); logLine(g, 'note', id, `${nameOf(g, eid)} overheard that.`); }
       refresh();
       return reply;
     },
@@ -2686,6 +2702,8 @@ async function runFinale() {
   const cast = await waitingCard(Promise.all(npcJurors.map((j) => voteOf[j])), 'The Jury Votes', 'The jurors lock in their keys…');
   npcJurors.forEach((j, i) => votes.push({ juror: j, ...cast[i] }));
   votes.sort((a, b) => jurors.indexOf(a.juror) - jurors.indexOf(b.juror));
+  g.finale = { finalists, qa: qaByJuror, votes };
+  saveGame(g);
 
   // Reveal one by one
   await revealJuryVotes(votes, finalists);
@@ -2835,6 +2853,11 @@ function showWinner(winner, counts, finalists, juryVoteList = []) {
     place: getOrdinal(playerPlacement(g)),
   });
   archiveSeason(stats);
+  // The finished season stays exportable after New Season clears the save.
+  g.finale = { ...(g.finale || { finalists, votes: juryVoteList }), winner };
+  saveGame(g);
+  const recordText = buildSeasonRecord(g, { version: __APP_VERSION__ });
+  keepLastRecord(recordText, recordFilename(g));
 
   const c = cinematic({
     kicker: 'Season Finale',
@@ -2852,6 +2875,7 @@ function showWinner(winner, counts, finalists, juryVoteList = []) {
   c.setActions([
     { label: '📊 Season Stats', style: 'primary', onClick: () => showStatsPage(stats) },
     { label: '🧠 Post-Game Analysis', style: 'primary', onClick: () => showAnalysis(stats) },
+    { label: 'Export season', style: 'primary', onClick: () => showExport(recordText, recordFilename(g)) },
     { label: 'New Season', style: 'gold', onClick: () => { clearSave(); location.reload(); } },
   ]);
 }
