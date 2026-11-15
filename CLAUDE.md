@@ -14,6 +14,8 @@ npm run build    # production build
 
 **Live replay: `npm run replay`** (`scripts/live-replay.mjs`) runs scripted conversations against the real model and the real fact-check through the deployed server, and reports how many replies arrived as written, after one correction, or replaced by the offline writer, plus any that contradict the record. Run it after ANY change to `src/ai/prompts.js`, `grounding.js` or `fallback.js` — the mocked suites return whatever they are told and cannot see what the model actually does (three shipped bugs were only visible this way). About 30–50 AI calls on the server key per full run; `npm run replay -- week` runs only scenarios whose name contains "week". Add a scenario for every dialogue bug a player reports.
 
+**Jury replay: `npm run replay:jury`** (`scripts/jury-replay.mjs [reps] [condition]`) builds three full seasons with the real engine and has the live AI jurors vote on each: a cutthroat finalist who owns their game, the same finalist dodging, and a clean coaster. It prints every juror's vote and reasoning and how many votes fell to the offline formula. First run (2026-11-15, 3 finales each): owning 62% of votes, dodging 19%, clean 71% — and 54% of all AI votes were discarded by the fact-check and replaced by the formula, which is the thing to fix before reading much into the split. About 126 AI calls at the default.
+
 Headless logic test: open `/test.html` in a browser — runs 60 simulated seasons via `src/test/sim.js` and prints stats/errors as JSON. Run this after changing anything in `src/game/`.
 
 ## Architecture
