@@ -10,7 +10,7 @@ import {
 import {
   fallbackChat, fallbackJurorQuestion, fallbackJurorVote, fallbackGroupChat, fallbackDiary,
 } from '../src/ai/fallback.js';
-import { validateNarrative, groundedChat } from '../src/ai/grounding.js';
+import { validateNarrative, groundedChat, groundedAsk, resolveFinalist } from '../src/ai/grounding.js';
 import { extractJson } from '../src/ai/claude.js';
 
 const MODEL = 'claude-sonnet-5';
@@ -55,11 +55,12 @@ export async function serverNpcChat(g, npcId, playerMsg, chatterId, thread, apiK
 export async function serverJurorQuestion(g, jurorId, finalists, apiKey) {
   if (apiKey) {
     try {
-      const text = await callClaude(apiKey, buildJurorQuestionPrompt(g, jurorId, finalists), [
-        { role: 'user', content: 'Ask your questions now.' },
-      ], 600);
-      const json = extractJson(text);
-      await validateNarrative(g, jurorId, finalists, json, auditor(apiKey), { citations: ['evidenceForF1', 'evidenceForF2'] });
+      const json = await groundedAsk({
+        g, speakerId: jurorId, listenerId: finalists, askJson: auditor(apiKey), maxTokens: 600,
+        system: buildJurorQuestionPrompt(g, jurorId, finalists), prompt: 'Ask your questions now.',
+        usable: (d) => !!(String(d.questionForF1 || '').trim() && String(d.questionForF2 || '').trim()),
+        options: { citations: ['evidenceForF1', 'evidenceForF2'] },
+      });
       if (json && json.questionForF1 && json.questionForF2) return { ...json, questionForF1: cleanSpoken(json.questionForF1, 420), questionForF2: cleanSpoken(json.questionForF2, 420), usedAi: true };
     } catch (err) {
       // fall through to the built-in engine
@@ -72,11 +73,12 @@ export async function serverJurorQuestion(g, jurorId, finalists, apiKey) {
 export async function serverOpponentAnswer(g, opponentId, jurorId, question, apiKey) {
   if (apiKey) {
     try {
-      const text = await callClaude(apiKey, buildOpponentAnswerPrompt(g, opponentId, jurorId, question), [
-        { role: 'user', content: 'Answer the juror now.' },
-      ], 300);
-      const json = extractJson(text);
-      await validateNarrative(g, opponentId, jurorId, json, auditor(apiKey), { utterance: question });
+      const json = await groundedAsk({
+        g, speakerId: opponentId, listenerId: jurorId, askJson: auditor(apiKey), maxTokens: 450,
+        system: buildOpponentAnswerPrompt(g, opponentId, jurorId, question), prompt: 'Answer the juror now.',
+        usable: (d) => !!String(d.reply || '').trim(),
+        options: { utterance: question },
+      });
       if (json && json.reply) return { reply: cleanSpoken(json.reply, 650), usedAi: true };
     } catch (err) {
       // fall through
@@ -89,11 +91,13 @@ export async function serverOpponentAnswer(g, opponentId, jurorId, question, api
 export async function serverJurorVote(g, jurorId, finalists, qa, apiKey) {
   if (apiKey) {
     try {
-      const text = await callClaude(apiKey, buildJurorVotePrompt(g, jurorId, finalists, qa), [
-        { role: 'user', content: 'Cast your vote now.' },
-      ], 600);
-      const json = extractJson(text);
-      await validateNarrative(g, jurorId, finalists, json, auditor(apiKey), { qa, citations: ['evidenceIds'] });
+      const json = await groundedAsk({
+        g, speakerId: jurorId, listenerId: finalists, askJson: auditor(apiKey), maxTokens: 600,
+        system: buildJurorVotePrompt(g, jurorId, finalists, qa), prompt: 'Cast your vote now.',
+        prepare: (d) => { d.vote = resolveFinalist(g, d.vote, finalists) ?? d.vote; },
+        usable: (d) => finalists.includes(d.vote),
+        options: { qa, citations: ['evidenceIds'] },
+      });
       if (json && json.vote && finalists.includes(json.vote)) {
         return { vote: json.vote, reasoning: cleanSpoken(json.reasoning || '', 380), usedAi: true };
       }

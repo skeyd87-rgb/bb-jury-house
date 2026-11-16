@@ -3,7 +3,7 @@
 // it, and maintains threads/summaries.
 
 import { askClaudeJson } from './claude.js';
-import { validateNarrative, groundedChat } from './grounding.js';
+import { validateNarrative, groundedChat, groundedAsk, resolveFinalist } from './grounding.js';
 import { rememberExchange } from '../game/knowledge.js';
 import { logLine } from '../game/state.js';
 import { setAiStatus } from './status.js';
@@ -263,12 +263,12 @@ export async function npcSpeech(g, npcId, kind, extra = {}) {
 
 export async function jurorQuestion(g, jurorId, finalists) {
   try {
-    const r = await askClaudeJson({
-      system: buildJurorQuestionPrompt(g, jurorId, finalists),
-      messages: [{ role: 'user', content: 'Ask your questions now.' }],
-      maxTokens: 600,
+    const r = await groundedAsk({
+      g, speakerId: jurorId, listenerId: finalists, askJson: askClaudeJson, maxTokens: 600,
+      system: buildJurorQuestionPrompt(g, jurorId, finalists), prompt: 'Ask your questions now.',
+      usable: (d) => !!(String(d.questionForF1 || '').trim() && String(d.questionForF2 || '').trim()),
+      options: { citations: ['evidenceForF1', 'evidenceForF2'] },
     });
-    await validateNarrative(g, jurorId, finalists, r, askClaudeJson, { citations: ['evidenceForF1', 'evidenceForF2'] });
     if (r.questionForF1 && r.questionForF2) {
       setAiStatus(true);
       return { ...r, questionForF1: cleanSpoken(r.questionForF1, 420), questionForF2: cleanSpoken(r.questionForF2, 420) };
@@ -281,12 +281,12 @@ export async function jurorQuestion(g, jurorId, finalists) {
 
 export async function opponentJuryAnswer(g, opponentId, jurorId, question) {
   try {
-    const r = await askClaudeJson({
-      system: buildOpponentAnswerPrompt(g, opponentId, jurorId, question),
-      messages: [{ role: 'user', content: 'Answer the juror now.' }],
-      maxTokens: 450,
+    const r = await groundedAsk({
+      g, speakerId: opponentId, listenerId: jurorId, askJson: askClaudeJson, maxTokens: 450,
+      system: buildOpponentAnswerPrompt(g, opponentId, jurorId, question), prompt: 'Answer the juror now.',
+      usable: (d) => !!String(d.reply || '').trim(),
+      options: { utterance: question },
     });
-    await validateNarrative(g, opponentId, jurorId, r, askClaudeJson, { utterance: question });
     if (r.reply) { setAiStatus(true); return cleanSpoken(r.reply, 650); }
   } catch (err) {
     aiFailed(err);
@@ -296,13 +296,13 @@ export async function opponentJuryAnswer(g, opponentId, jurorId, question) {
 
 export async function jurorVote(g, jurorId, finalists, qa) {
   try {
-    const r = await askClaudeJson({
-      system: buildJurorVotePrompt(g, jurorId, finalists, qa),
-      messages: [{ role: 'user', content: 'Cast your vote now.' }],
-      maxTokens: 600,
-      temperature: 1.0,
+    const r = await groundedAsk({
+      g, speakerId: jurorId, listenerId: finalists, askJson: askClaudeJson, maxTokens: 600, temperature: 1.0,
+      system: buildJurorVotePrompt(g, jurorId, finalists, qa), prompt: 'Cast your vote now.',
+      prepare: (d) => { d.vote = resolveFinalist(g, d.vote, finalists) ?? d.vote; },
+      usable: (d) => finalists.includes(d.vote),
+      options: { qa, citations: ['evidenceIds'] },
     });
-    await validateNarrative(g, jurorId, finalists, r, askClaudeJson, { qa, citations: ['evidenceIds'] });
     if (r.vote && finalists.includes(r.vote)) {
       setAiStatus(true);
       return { vote: r.vote, reasoning: cleanSpoken(r.reasoning || '', 380) };

@@ -48,8 +48,13 @@ export async function validateNarrative(g, speakerIds, listenerId, candidate, as
   }
   if (options.citations) {
     const allowed = new Set(evidenceFor(g, ids[0]).map(e => e.id));
+    // Citations are bookkeeping, not speech. Replayed live, a juror's whole
+    // vote was thrown away because an id came back as "[event:3]", or the
+    // array was missing: keep the ids that exist, drop the rest, and let the
+    // audit below judge what the juror actually said.
     for (const field of options.citations) {
-      if (!Array.isArray(candidate[field]) || candidate[field].some(id => !allowed.has(id))) throw rejected('Invalid evidence reference');
+      const raw = Array.isArray(candidate[field]) ? candidate[field] : candidate[field] ? [candidate[field]] : [];
+      candidate[field] = [...new Set(raw.map(id => String(id ?? '').trim().replace(/^[\[(<"'\s]+|[\])>"'\s.,]+$/g, '')).filter(id => allowed.has(id)))];
     }
   }
   const records = ids.map(speakerId => ({ speakerId, knowledge: knowledgeFor(g, speakerId) }));
@@ -144,5 +149,59 @@ export async function groundedChat({ g, speakerId, listenerId, utterance, system
     draft = await askJson({ system, messages: retry, maxTokens });
     if (!spoken(draft)) throw new Error('Model returned an empty reply');
     return validateNarrative(g, speakerId, listenerId, draft, askJson, { utterance, conversation });
+  }
+}
+
+// Which finalist a juror meant. The contract asks for an id, but the live model
+// also answers with the name ("Gus"), a label ("F2", "Finalist B") or a phrase
+// ("I vote for Gus"); each of those used to count as "no vote" and hand the
+// decision to the offline formula. Returns a finalist id or null — a phrase
+// naming both finalists, or neither, is not a vote.
+export function resolveFinalist(g, value, finalists) {
+  if (finalists.includes(value)) return value;
+  const s = String(value ?? '').trim().toLowerCase().replace(/^["'\[(\s]+|["'\])\s.!]+$/g, '');
+  if (!s) return null;
+  const nameOfId = (id) => String(g.houseguests.find(h => h.id === id)?.name || (id === 'you' ? g.playerName : '') || '').trim().toLowerCase();
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const [i, f] of finalists.entries()) {
+    if (s === f.toLowerCase() || s === nameOfId(f) || s === `f${i + 1}` || s === `finalist ${i + 1}` || s === `finalist ${'ab'[i]}`) return f;
+  }
+  const named = finalists.filter(f => { const n = nameOfId(f); return n && new RegExp(`\\b${esc(n)}\\b`).test(s); });
+  return named.length === 1 ? named[0] : null;
+}
+
+// One structured answer that is not a chat line — a juror's question, a
+// finalist's answer, a juror's vote — with the same two second chances a chat
+// reply gets in groundedChat: an unusable draft is asked for again, and a draft
+// the fact-check refuses WITH a finding is handed that finding and corrected
+// once. Before this, any of those sent a jury decision to the offline formula;
+// the first jury replay lost 34 of 63 AI votes that way.
+//   prepare(draft)  tidy a draft in place before it is judged (e.g. vote name -> id)
+//   usable(draft)   whether the draft has the fields the caller needs
+export async function groundedAsk({ g, speakerId, listenerId, system, prompt, askJson, maxTokens = 600, temperature, usable = () => true, prepare, options = {} }) {
+  const messages = [{ role: 'user', content: prompt }];
+  const ok = (d) => !!d && typeof d === 'object' && usable(d);
+  const call = async (msgs) => {
+    let d = null;
+    try { d = await askJson({ system, messages: msgs, maxTokens, temperature }); }
+    catch (e) { if (!/JSON/i.test(e?.message || '')) throw e; }
+    if (d && typeof d === 'object' && prepare) prepare(d);
+    return d;
+  };
+  let draft = await call(messages);
+  if (!ok(draft)) draft = await call(messages);
+  if (!ok(draft)) throw new Error('Model reply was unusable');
+  try {
+    return await validateNarrative(g, speakerId, listenerId, draft, askJson, options);
+  } catch (err) {
+    if (!err.grounded || !err.reason) throw err;
+    const retry = [
+      ...messages,
+      { role: 'assistant', content: JSON.stringify(draft) },
+      { role: 'user', content: `[Fact-check — not said by anyone in the house] That was held back: ${err.reason} (record: ${err.evidence}). Give it again with that corrected, stating only what your record supports. Your decision and your feelings are yours to keep or change. Do not mention this correction or an earlier version. Same JSON format.` },
+    ];
+    draft = await call(retry);
+    if (!ok(draft)) throw new Error('Model reply was unusable');
+    return validateNarrative(g, speakerId, listenerId, draft, askJson, options);
   }
 }

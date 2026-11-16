@@ -3,7 +3,7 @@ import { newGame, logEvent } from '../src/game/state.js';
 import { applyVeto, applyNominations, applyEviction } from '../src/game/season.js';
 import { publicFacts, knowledgeFor, formatEvidence, rememberExchange } from '../src/game/knowledge.js';
 import { buildChatSystemPrompt, buildGroupSystemPrompt, buildJurorQuestionPrompt, buildJurorVotePrompt, buildThreadMessages } from '../src/ai/prompts.js';
-import { validateNarrative, assertVetoOwnership } from '../src/ai/grounding.js';
+import { validateNarrative, assertVetoOwnership, resolveFinalist } from '../src/ai/grounding.js';
 import { fallbackChat, fallbackOpener, fallbackJurorQuestion, fallbackJurorVote } from '../src/ai/fallback.js';
 import { npcChat, groupChat, jurorQuestion, jurorVote, diaryChat } from '../src/ai/dialogue.js';
 import { serverNpcChat, serverGroupChat, serverJurorQuestion, serverJurorVote, serverDiaryChat } from '../party/ai.js';
@@ -105,8 +105,43 @@ test('group context uses actual listener rather than single-player identity', ()
   const g=vetoGame();g.houseguests.find(h=>h.id==='rae').name='Brittany';const prompt=buildGroupSystemPrompt(g,['bev','marcus'],'rae');
   assert.match(prompt,/you is Brittany \(rae\)/);assert.match(prompt,/Your feelings about Brittany/);
 });
-test('invalid jury evidence IDs fail closed', async()=>{
-  await assert.rejects(validateNarrative(vetoGame(),'bev',['you','rae'],{evidenceForF1:['event:9999']},async()=>({valid:true}),{citations:['evidenceForF1']}));
+// Citations are bookkeeping. A made-up or mis-formatted id is dropped; it is not
+// a reason to discard what the juror said (live, it cost most AI jury votes).
+test('unknown or mis-formatted jury evidence IDs are dropped, not fatal', async()=>{
+  const g=vetoGame(), real=knowledgeFor(g,'bev').publicFacts[0].id;
+  const c={evidenceForF1:['event:9999','['+real+']',real]};
+  await validateNarrative(g,'bev',['you','rae'],c,async()=>({valid:true}),{citations:['evidenceForF1','evidenceForF2']});
+  assert.deepEqual(c.evidenceForF1,[real]);assert.deepEqual(c.evidenceForF2,[]);
+  // ...but what the juror SAYS is still judged
+  await assert.rejects(validateNarrative(g,'bev',['you','rae'],{evidenceForF1:['event:9999']},async()=>({valid:false,evidence:'absent',reason:'invented'}),{citations:['evidenceForF1']}));
+});
+test('a juror who votes by name, label or phrase still casts an AI vote', async()=>{
+  const g=vetoGame();applyEviction(g,'bev',{});const qa={f1Answer:'I chose to protect Rae.',f2Answer:'I wanted to survive.'};
+  for(const said of ['Rae','F2','I vote for Rae.','rae']){
+    await mocked({vote:said,reasoning:'Her answer was the straighter one.',evidenceIds:['[nope]']},{valid:true},async()=>{
+      assert.equal((await jurorVote(g,'bev',['you','rae'],qa)).vote,'rae');
+      const s=await serverJurorVote(g,'bev',['you','rae'],qa,'test-key');assert.equal(s.vote,'rae');assert.equal(s.usedAi,true);
+    });
+  }
+  assert.equal(resolveFinalist(g,'Steven or Rae',['you','rae']),null);assert.equal(resolveFinalist(g,'Steven',['you','rae']),'you');
+});
+test('a jury vote the fact-check refuses with a finding gets one correction, then the formula',async()=>{
+  const g=vetoGame();applyEviction(g,'bev',{});const qa={f1Answer:'I chose to protect Rae.',f2Answer:'I wanted to survive.'};
+  const run=async(secondVerdict)=>{
+    const original=globalThis.fetch, prev=globalThis.location;globalThis.location={hostname:'localhost'};
+    let asks=0, audits=0, sawFinding=false;
+    globalThis.fetch=async(_u,o)=>{
+      const body=JSON.parse(o.body);let value;
+      if(body.system.startsWith('You verify')){audits++;value=audits===1?{valid:false,evidence:'absent',reason:'No record of a week 99 eviction.'}:secondVerdict;}
+      else{asks++;if(JSON.stringify(body.messages).includes('week 99 eviction'))sawFinding=true;value=asks===1?{vote:'rae',reasoning:'Steven evicted me in week 99.',evidenceIds:[]}:{vote:'rae',reasoning:'Her answer was the straighter one.',evidenceIds:[]};}
+      return{ok:true,status:200,json:async()=>({text:JSON.stringify(value),content:[{type:'text',text:JSON.stringify(value)}]})};
+    };
+    try{return{out:await serverJurorVote(g,'bev',['you','rae'],qa,'test-key'),asks,audits,sawFinding};}finally{globalThis.fetch=original;globalThis.location=prev;}
+  };
+  const fixed=await run({valid:true});
+  assert.equal(fixed.out.usedAi,true);assert.match(fixed.out.reasoning,/straighter/);assert.equal(fixed.asks,2);assert.ok(fixed.sawFinding,'the correction request did not carry the finding');
+  const still=await run({valid:false,evidence:'absent',reason:'Still invented.'});
+  assert.equal(still.out.usedAi,false);assert.equal(still.asks,2,'more than one correction was attempted');
 });
 test('single-player rejects unsupported effects and does not retain invented response', async()=>{
   const g=vetoGame();const before=g.social.bev.you.trust;

@@ -21,7 +21,7 @@ import { newGame, logEvent } from '../src/game/state.js';
 import { applyNominations, applyVeto, applyEviction, nextPhase } from '../src/game/season.js';
 import { applyChatEffects } from '../src/game/social.js';
 import { buildJurorVotePrompt, cleanSpoken } from '../src/ai/prompts.js';
-import { validateNarrative } from '../src/ai/grounding.js';
+import { groundedAsk, resolveFinalist } from '../src/ai/grounding.js';
 import { extractJson } from '../src/ai/claude.js';
 import { fallbackJurorQuestion, fallbackJurorVote } from '../src/ai/fallback.js';
 import { buildFinaleContext } from '../src/game/finale.js';
@@ -121,7 +121,7 @@ function cleanSeason() {
 
 const GUS = "I never put a knife in anyone's back to get here. I gave my word to very few people and I kept it every time, and I stayed on good terms with this whole jury. I didn't win much, but nobody in this room can say I lied to them.";
 const ANSWERS = {
-  'cutthroat-owns': (q) => `Yes. I did that, and I did it on purpose. ${q.replace(/ What were you trying.*$/, '')} I needed control of that week and you were the cost, because you were good enough to beat me. I won six competitions, I chose every move myself, and I am not going to apologise for playing the game we all signed up for. If that cost me your vote, I earned that too.`,
+  'cutthroat-owns': (q) => `Yes. I did that, and I did it on purpose. ${q.replace(/ What were you trying.*$/, '')} I needed control of that week and you were the cost, because you were good enough to beat me. I won competitions when I had to, I chose every move myself, and I am not going to apologise for playing the game we all signed up for. If that cost me your vote, I earned that too.`,
   'cutthroat-dodges': () => "Honestly it wasn't really my decision, the house wanted it and I just went along. I didn't mean anything by it. I think I played a pretty good game overall and I hope you can see that.",
   clean: () => "I tried to treat people well and stay out of the crossfire. I didn't make big moves, but I kept my word and I never targeted anyone in this room.",
 };
@@ -148,8 +148,14 @@ for (const [name, build] of CONDITIONS) {
       const qa = { questionForF1: q.questionForF1, questionForF2: q.questionForF2, f1Answer: ANSWERS[name](q.questionForF1), f2Answer: GUS };
       let vote, why, src = 'AI';
       try {
-        const res = await ask({ system: buildJurorVotePrompt(g, j, finalists, qa), messages: [{ role: 'user', content: 'Cast your vote now.' }], maxTokens: 600 });
-        await validateNarrative(g, j, finalists, res, ask, { qa, citations: ['evidenceIds'] });
+        // the same path the game takes (dialogue.js jurorVote / party/ai.js serverJurorVote)
+        const res = await groundedAsk({
+          g, speakerId: j, listenerId: finalists, askJson: ask, maxTokens: 600,
+          system: buildJurorVotePrompt(g, j, finalists, qa), prompt: 'Cast your vote now.',
+          prepare: (d) => { d.vote = resolveFinalist(g, d.vote, finalists) ?? d.vote; },
+          usable: (d) => finalists.includes(d.vote),
+          options: { qa, citations: ['evidenceIds'] },
+        });
         if (!finalists.includes(res.vote)) throw new Error('no vote');
         vote = res.vote; why = cleanSpoken(res.reasoning || '', 300);
       } catch (e) {

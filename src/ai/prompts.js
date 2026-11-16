@@ -340,7 +340,7 @@ export function buildJurorVotePrompt(g, jurorId, finalists, qa) {
     `${nameOf(g, f2)} answered: "${qa.f2Answer}"`,
     `Weigh: did their answer actually address your grievance/question? Did it feel honest by your standards? Then their game, then your heart.`,
     GROUNDING_RULE,
-    `Evidence ids go ONLY in the evidenceIds array, never inside the reasoning text.`,
+    `Evidence ids go ONLY in the evidenceIds array, never inside the reasoning text. The trust, bond and threat numbers above are for you alone: never say a number, or the words stats, readings or record ids, in the reasoning. It is read aloud to the finalists; speak as a person.`,
     `Explain the vote using supplied evidence and the quality of their answers. Do not invent an event to make the explanation specific. Cite evidence IDs in evidenceIds when invoking history. When no history is available, explain your judgment of their answers without an accusation. 2-3 sentences.`,
     `Respond ONLY with JSON: {"vote": "${f1}"|"${f2}", "reasoning": "<2-3 sentences citing real events>", "answerQuality": {"${f1}": <0-10>, "${f2}": <0-10>}, "evidenceIds": ["<evidence id>"]}`,
   ].join('\n');
