@@ -6,9 +6,9 @@
 import {
   buildChatSystemPrompt, buildThreadMessages,
   buildJurorQuestionPrompt, buildOpponentAnswerPrompt, buildJurorVotePrompt,
-  buildGroupSystemPrompt, buildDiarySystemPrompt, cleanSpoken } from '../src/ai/prompts.js';
+  buildGroupSystemPrompt, buildDiarySystemPrompt, buildOpenerPrompt, stripStamp, cleanSpoken } from '../src/ai/prompts.js';
 import {
-  fallbackChat, fallbackJurorQuestion, fallbackJurorVote, fallbackGroupChat, fallbackDiary,
+  fallbackChat, fallbackJurorQuestion, fallbackJurorVote, fallbackGroupChat, fallbackDiary, fallbackOpener,
 } from '../src/ai/fallback.js';
 import { validateNarrative, groundedChat, groundedAsk, resolveFinalist } from '../src/ai/grounding.js';
 import { extractJson } from '../src/ai/claude.js';
@@ -49,6 +49,24 @@ export async function serverNpcChat(g, npcId, playerMsg, chatterId, thread, apiK
     }
   }
   return { ...fallbackChat(g, npcId, playerMsg, chatterId), usedAi: false };
+}
+
+// A houseguest who walked up to a player speaks first. Returns { reply, usedAi }.
+export async function serverNpcOpener(g, npcId, reason, chatterId, apiKey) {
+  if (apiKey) {
+    try {
+      const json = await groundedAsk({
+        g, speakerId: npcId, listenerId: chatterId, askJson: auditor(apiKey), maxTokens: 400,
+        system: buildOpenerPrompt(g, npcId, reason, chatterId), prompt: '(The player turns to you as you walk over.)',
+        usable: (d) => !!String(d.reply || '').trim(),
+      });
+      const reply = stripStamp(String(json.reply)).slice(0, 500);
+      if (reply) return { reply, usedAi: true };
+    } catch (err) {
+      // fall through to the built-in engine
+    }
+  }
+  return { reply: fallbackOpener(g, npcId, reason, chatterId), usedAi: false };
 }
 
 // AI juror asks each finalist one question. Returns { questionForF1, questionForF2, toneNote, usedAi }.

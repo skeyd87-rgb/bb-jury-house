@@ -181,9 +181,15 @@ export function openPromisesBetween(g, a, b) {
 //   who: 'you' | a houseguest id | 'dr' (Diary Room) | 'note' (a game notice)
 //   withId: the houseguest, 'diary', or 'group:a,b,c'
 //   ai: true = the AI wrote it, false = the offline writer, undefined = n/a
-export function logLine(g, who, withId, text, kind = 'chat', ai) {
+// The room server keeps one transcript per player, outside the game object, and
+// builds its lines with this.
+export function transcriptEntry(g, who, withId, text, kind = 'chat', ai) {
   const entry = { w: g.week, p: g.phase, k: kind, with: withId, who, t: String(text ?? '').slice(0, 800) };
   if (ai !== undefined) entry.a = ai ? 1 : 0;
+  return entry;
+}
+export function logLine(g, who, withId, text, kind = 'chat', ai) {
+  const entry = transcriptEntry(g, who, withId, text, kind, ai);
   (g.transcript ||= []).push(entry);
   if (g.transcript.length > 4000) g.transcript.splice(0, g.transcript.length - 4000);
 }

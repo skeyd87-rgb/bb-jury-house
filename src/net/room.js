@@ -181,7 +181,18 @@ export class Room {
         if (this._authenticated) this.onGame && this.onGame(msg.game);
       } else if (msg.type === 'chatReply') {
         const w = this._chatWaiters[msg.npcId];
-        if (w) { delete this._chatWaiters[msg.npcId]; w({ text: msg.text, note: msg.note }); }
+        if (w) { delete this._chatWaiters[msg.npcId]; w({ text: msg.text, note: msg.note, overheard: msg.overheard || [] }); }
+      } else if (msg.type === 'approach') {
+        this.onApproach && this.onApproach(msg);
+      } else if (msg.type === 'approachOpener') {
+        const w = this._openerWaiters && this._openerWaiters[msg.npcId];
+        if (w) { delete this._openerWaiters[msg.npcId]; w(msg.text); }
+      } else if (msg.type === 'npcSummon') {
+        this.onNpcSummon && this.onNpcSummon(msg.id, msg.to, !!msg.on);
+      } else if (msg.type === 'npcLead') {
+        this.onNpcLead && this.onNpcLead(msg.id, msg.x, msg.z);
+      } else if (msg.type === 'exportRecord') {
+        if (this._exportWaiter) { const w = this._exportWaiter; this._exportWaiter = null; w(msg); }
       } else if (msg.type === 'chatMsg') {
         this.onChatMsg && this.onChatMsg(msg.from, msg.fromName, msg.text);
       } else if (msg.type === 'chatThread') {
@@ -242,10 +253,34 @@ export class Room {
   }
 
   // Send a chat message to a houseguest; resolves with { text, note } reply.
-  sendChat(targetId, text) {
+  // Say yes to a houseguest who came over; resolves with their opening line
+  // (null if the server never answers — an older server has no approaches).
+  acceptApproach(id, npcId) {
+    return new Promise((resolve) => {
+      (this._openerWaiters ||= {})[npcId] = resolve;
+      this.send('approachAnswer', { id, accept: true });
+      setTimeout(() => {
+        if (this._openerWaiters[npcId] === resolve) { delete this._openerWaiters[npcId]; resolve(null); }
+      }, 30000);
+    });
+  }
+
+  // This player's record of the season; resolves with { text, filename, full } or null.
+  requestExport() {
+    return new Promise((resolve) => {
+      this._exportWaiter = resolve;
+      this.send('exportRecord');
+      setTimeout(() => {
+        if (this._exportWaiter === resolve) { this._exportWaiter = null; resolve(null); }
+      }, 8000);
+    });
+  }
+
+  // listeners: who is standing within earshot, as [[id, distance], ...].
+  sendChat(targetId, text, listeners = []) {
     return new Promise((resolve) => {
       this._chatWaiters[targetId] = resolve;
-      this.send('chat', { targetId, text });
+      this.send('chat', { targetId, text, listeners });
       setTimeout(() => {
         if (this._chatWaiters[targetId]) { delete this._chatWaiters[targetId]; resolve({ text: '(no reply — try again)' }); }
       }, 30000);

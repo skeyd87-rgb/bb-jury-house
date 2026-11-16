@@ -429,7 +429,91 @@ async function testLeavingAHumanChatTellsOnlyTheOtherPerson() {
   if (count !== 2) throw new Error(`expected 2 presence messages, got ${count}`);
 }
 
+async function testOverhearingIsRolledByTheServerAndNeverByAHuman() {
+  const { host, rae } = await setupSocialRoom('BB-O');
+  const raeName = latest(host, 'game').game.houseguests.find((h) => h.id === 'rae').name;
+  // Everyone at arm's length: five AI houseguests at 85% each, and one person.
+  send(host, { type: 'chat', targetId: 'marcus', text: 'I want Tessa out this week.', listeners: [['tessa', 0], ['zoe', 0], ['gus', 0], ['bev', 0], ['nash', 0], ['rae', 0], ['nobody', 0], ['flynn', 99]] });
+  const reply = await waitFor(host, (m) => m.type === 'chatReply' && m.npcId === 'marcus', 15000);
+  send(host, { type: 'chat', targetId: 'marcus', text: 'Just checking in.' }); // an older client sends no listeners
+  await delay(200);
+  const second = await waitFor(host, (m) => m.type === 'chatReply' && m.npcId === 'marcus' && m !== reply, 15000);
+  const leaked = rae.messages.some((m) => m.type === 'chatReply');
+  closeAll(host, rae);
+  if (!Array.isArray(reply.overheard) || !reply.overheard.length) throw new Error('nobody overheard a conversation held in a crowd');
+  if (reply.overheard.includes(raeName)) throw new Error('a houseguest played by a person was said to overhear');
+  if (reply.overheard.some((n) => /flynn/i.test(n))) throw new Error('someone out of earshot overheard');
+  if (!Array.isArray(second.overheard) || second.overheard.length) throw new Error('a chat with nobody near was overheard');
+  if (leaked) throw new Error("another player received someone else's private reply");
+}
+
+async function testTakingAHouseguestAsideMovesThemOnEveryScreen() {
+  const { host, rae } = await setupSocialRoom('BB-V');
+  send(host, { type: 'goPrivate', targetId: 'marcus', x: 2.5, z: -1.5, witnesses: ['zoe', 'rae'] });
+  const lead = await waitFor(rae, (m) => m.type === 'npcLead');
+  send(host, { type: 'goPrivate', targetId: 'rae', x: 1, z: 1, witnesses: [] }); // a person cannot be led
+  send(host, { type: 'goPrivate', targetId: 'marcus', x: 'x', z: 1, witnesses: [] });
+  await delay(300);
+  const leads = rae.messages.filter((m) => m.type === 'npcLead').length;
+  const echoed = host.messages.some((m) => m.type === 'npcLead');
+  closeAll(host, rae);
+  if (lead.id !== 'marcus' || lead.x !== 2.5 || lead.z !== -1.5) throw new Error('the walk was not relayed as sent');
+  if (leads !== 1) throw new Error(`expected one relayed walk, got ${leads}`);
+  if (echoed) throw new Error('the player who asked got their own walk back');
+}
+
+async function testExportIsThePlayersOwnRecord() {
+  const { host, rae } = await setupSocialRoom('BB-X');
+  send(host, { type: 'chat', targetId: 'marcus', text: 'Pineapple is my secret word.' });
+  await waitFor(host, (m) => m.type === 'chatReply' && m.npcId === 'marcus', 15000);
+  send(host, { type: 'exportRecord' });
+  send(rae, { type: 'exportRecord' });
+  const mine = await waitFor(host, (m) => m.type === 'exportRecord');
+  const theirs = await waitFor(rae, (m) => m.type === 'exportRecord');
+  closeAll(host, rae);
+  if (!/BB JURY HOUSE/.test(mine.text) || !/online game/.test(mine.text)) throw new Error('not a season record');
+  if (!mine.text.includes('Pineapple is my secret word.')) throw new Error("the player's own conversation is missing");
+  if (theirs.text.includes('Pineapple')) throw new Error("another player's conversation was exported");
+  if (mine.full !== false || !/Exported mid-season/.test(mine.text)) throw new Error('a mid-season export was not marked as partial');
+  for (const hidden of ['loyalty ', 'toward you at export', 'RAW SAVE (JSON)\n=', '"social"']) {
+    if (mine.text.includes(hidden)) throw new Error('a mid-season export gave away hidden state: ' + hidden);
+  }
+  if (!mine.filename || !/\.txt$/.test(mine.filename)) throw new Error('no filename');
+}
+
+// The picker is weighted chance, so an approach may not come in the time a
+// test can wait. When one does, the whole exchange is checked; when none
+// does, that is reported rather than passed off as coverage.
+async function testAnApproachSummonsOnEveryScreenAndOpensWithTheirLine() {
+  const { host, rae } = await setupSocialRoom('BB-K');
+  let ap = null;
+  for (let i = 0; i < 4 && !ap; i++) {
+    send(host, { type: 'approachRequest' });
+    await delay(600);
+    ap = host.messages.find((m) => m.type === 'approach');
+    if (!ap && i < 3) await delay(12100);
+  }
+  if (!ap) { closeAll(host, rae); console.log('  (no approach was rolled in four tries; exchange not exercised this run)'); return; }
+  const seenByOther = await waitFor(rae, (m) => m.type === 'npcSummon' && m.on === true);
+  const askedTwice = host.messages.filter((m) => m.type === 'approach').length;
+  send(host, { type: 'approachAnswer', id: ap.id, accept: true });
+  const opener = await waitFor(host, (m) => m.type === 'approachOpener', 15000);
+  const released = await waitFor(rae, (m) => m.type === 'npcSummon' && m.on === false);
+  const leaked = rae.messages.some((m) => m.type === 'approach' || m.type === 'approachOpener');
+  closeAll(host, rae);
+  if (ap.npcId === 'rae') throw new Error('a houseguest played by a person was sent to approach');
+  if (seenByOther.id !== ap.npcId || seenByOther.to !== 'you') throw new Error('the other screen was not told who is walking to whom');
+  if (askedTwice !== 1) throw new Error('more than one approach at a time');
+  if (opener.npcId !== ap.npcId || !opener.text) throw new Error('no opening line');
+  if (released.id !== ap.npcId) throw new Error('the houseguest was not released');
+  if (leaked) throw new Error("another player was sent someone else's approach");
+}
+
 const tests = [
+  testOverhearingIsRolledByTheServerAndNeverByAHuman,
+  testTakingAHouseguestAsideMovesThemOnEveryScreen,
+  testExportIsThePlayersOwnRecord,
+  testAnApproachSummonsOnEveryScreenAndOpensWithTheirLine,
   testLeavingAHumanChatTellsOnlyTheOtherPerson,
   testNpcPositionsRelayButNeverMoveAHuman,
   testHouseReadIsPrivateTieredAndBlindToHumans,

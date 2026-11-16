@@ -15,7 +15,7 @@ import {
   resolveEviction, applyEviction, nextPhase, evictionDesire, phaseLabel,
 } from './game/season.js';
 import { buildFinaleContext, countJuryVotes, winnerFromJuryVotes, playerPlacement } from './game/finale.js';
-import { chooseApproacher, APPROACH_REASON_TEXT, allianceWillingness, formOfficialAlliance, leaveAlliance, applySpotted, mentionsHouseguest } from './game/social.js';
+import { chooseApproacher, APPROACH_REASON_TEXT, allianceWillingness, formOfficialAlliance, leaveAlliance, applySpotted, applyEavesdrop, applyPulledAside } from './game/social.js';
 import { pickHuddlePair, huddleIntel, recordIntel, houseReadView } from './game/intel.js';
 import { showHouseRead } from './ui/houseread.js';
 import { buildSeasonRecord, recordFilename } from './game/record.js';
@@ -204,6 +204,21 @@ function startOnlineSeason(game) {
   };
   room.onNpcPos = (msg) => receiveNpcBatch(msg);
   room.onNpcHold = (id, on) => world.holdNpc(id, on);
+  // A houseguest is on their way to a player. Every screen is told, because
+  // whichever client is simulating the house has to do the walking.
+  room.onNpcSummon = (id, to, on) => {
+    if (!on) world.releaseNpc(id);
+    else if (to === myEngineId()) world.summonNpc(id);
+    else world.summonNpcTo(id, to);
+  };
+  room.onNpcLead = (id, x, z) => world.leadNpc(id, x + 1.1, z);
+  room.onApproach = (msg) => offerOnlineApproach(msg);
+  clearInterval(onlineApproachTimer);
+  onlineApproachTimer = setInterval(() => {
+    if (!room || !onlineGame || isSpectator() || onlineGame.turn?.kind !== 'social') return;
+    if (onlineOverlay || compRunning || onlineApproach || privateWalk || document.getElementById('chat-panel')) return;
+    room.send('approachRequest');
+  }, 14000);
   room.onHuddleSpotted = (msg) => {
     sting('knock');
     showToast(`<b>${escHtml(msg.aName)}</b> and <b>${escHtml(msg.bName)}</b> go quiet the second they see you. They noticed.`);
@@ -242,8 +257,75 @@ function openHouseReadOnline(tab = 'people') {
   showHouseRead(onlineGame.houseRead, tab);
 }
 
-async function openOnlineChat(targetId) {
+// Online: the houseguests within earshot that the AI is playing. A person
+// standing nearby does not receive the text, so they cannot overhear it.
+function aiListeners(targetId) {
+  return world.nearbyListeners(targetId, 6).filter((l) => !(onlineGame.humanSeats?.[l.id] && !seatOffline(onlineGame, l.id)));
+}
+
+// A houseguest came looking for this player (the server picked who and why).
+let onlineApproach = null;
+let onlineApproachTimer = null;
+function endOnlineApproach(answer) {
+  const ap = onlineApproach;
+  if (!ap) return;
+  clearTimeout(ap.timer);
+  onlineApproach = null;
+  if (answer === false) room.send('approachAnswer', { id: ap.id, accept: false });
+}
+function offerOnlineApproach(msg) {
+  if (!onlineGame || onlineOverlay || compRunning || document.getElementById('chat-panel') || onlineGame.turn?.kind !== 'social') {
+    room.send('approachAnswer', { id: msg.id, accept: false });
+    return;
+  }
+  endOnlineApproach(false);
+  const name = onlineGame.houseguests.find((h) => h.id === msg.npcId)?.name || 'Someone';
+  const why = APPROACH_REASON_TEXT[msg.reason] || 'wants to talk';
+  const ap = onlineApproach = { id: msg.id, npcId: msg.npcId };
+  sting('knock');
+  // If the player never responds, they give up rather than trailing them.
+  ap.timer = setTimeout(() => { if (onlineApproach === ap) { endOnlineApproach(false); clearToast(); } }, 22000);
+  showToast(`<b>${name}</b> ${why}...`, [
+    { label: 'Talk', style: 'gold', onClick: () => {
+      if (onlineApproach !== ap) return;
+      endOnlineApproach();
+      openOnlineChat(ap.npcId, { opener: `${name} came to find you. ${name} ${why}.`, firstLine: room.acceptApproach(ap.id, ap.npcId) });
+    } },
+    { label: 'Not now', style: '', onClick: () => { if (onlineApproach === ap) endOnlineApproach(false); } },
+  ]);
+}
+
+// Walk somewhere quiet with an AI houseguest, then pick the conversation back up.
+function takeItPrivateOnline(id) {
+  if (privateWalk || onlineOverlay || compRunning) return;
+  const spot = world.findQuietSpot(id);
+  const witnesses = aiListeners(id);
+  closeChatPanel(); // releases the hold and the close-up
+  if (!spot || !world.goPrivate(id, spot.x, spot.z)) {
+    openOnlineChat(id, { opener: 'There is nowhere quieter to go right now.' });
+    return;
+  }
+  room.send('goPrivate', { targetId: id, x: spot.x, z: spot.z, witnesses: witnesses.map((w) => w.id) });
+  const started = performance.now();
+  const turn = onlineGame.turn;
+  const nameOn = (x) => onlineGame.houseguests.find((h) => h.id === x)?.name || x;
+  privateWalk = setInterval(() => {
+    const timedOut = performance.now() - started > 16000;
+    const interrupted = onlineGame.turn?.kind !== 'social' || onlineGame.turn?.next !== turn?.next || !!onlineOverlay || !world.npcs.has(id);
+    if (!interrupted && !timedOut && !world.privateDone(id)) return;
+    clearInterval(privateWalk);
+    privateWalk = null;
+    world.endPrivateWalk(id, false);
+    if (interrupted) return;
+    const label = ROOMS[spot.room]?.label || 'a quieter spot';
+    const seen = witnesses.length ? ` ${witnesses.map((w) => nameOn(w.id)).join(', ')} watched you go.` : '';
+    openOnlineChat(id, { opener: `You and ${nameOn(id)} step away to the ${label}.${seen}` });
+  }, 200);
+}
+
+async function openOnlineChat(targetId, { opener = null, firstLine = null } = {}) {
   if (onlineOverlay || compRunning) return; // don't interrupt a ceremony/comp
+  endOnlineApproach(false);
   const hg = onlineGame.houseguests.find((h) => h.id === targetId);
   if (!hg || onlineGame.evicted.includes(targetId)) return;
   // A person only counts as one while they are connected; while they are away
@@ -258,12 +340,19 @@ async function openOnlineChat(targetId) {
   // Human-human chat has real shared history server-side (unlike an AI
   // conversation, it can span multiple separate sessions on both ends) —
   // fetch it so the panel doesn't open blank every time.
+  // A houseguest who came over speaks first: wait for that line so it is in
+  // the history fetched below.
+  if (firstLine) await firstLine;
   let thread = [];
-  if (isHuman) {
+  {
     const myId = myEngineId();
     const entries = await room.getChatThread(targetId);
-    thread = entries.map((e) => ({ who: e.from === myId ? 'you' : 'them', text: e.text }));
+    thread = entries.map((e) => ({ who: e.from === myId ? 'you' : 'them', text: stripStamp(e.text) }));
   }
+  const earshotNow = isHuman ? [] : aiListeners(targetId);
+  const prompts = isHuman ? null : chatPrompts(targetId, onlinePromptView(onlineGame));
+  // Only offered when it would change something: somebody can hear you.
+  if (prompts && earshotNow.length) prompts.unshift({ label: 'Go somewhere private', action: () => takeItPrivateOnline(targetId) });
   const panel = openChatPanel({
     title: hg.name,
     subtitle: `${hg.job}${isHuman ? ' · 🧑 human' : seatOffline(onlineGame, targetId) ? ' · 🤖 AI (player away)' : ' · 🤖 AI'}${onlineGame.hoh === targetId ? ' · HoH 👑' : ''}${onlineGame.nominees?.includes(targetId) ? ' · Nominated 🎯' : ''}`,
@@ -272,10 +361,13 @@ async function openOnlineChat(targetId) {
     thread,
     // A person does not need to be handed a line; a houseguest played by the
     // AI gets the same openers as single-player.
-    prompts: isHuman ? null : chatPrompts(targetId, onlinePromptView(onlineGame)),
+    prompts,
     onSend: async (text) => {
-      const { text: reply, note } = await room.sendChat(targetId, text);
+      // Who is in earshot BEFORE the exchange; the server rolls who caught it.
+      const listeners = isHuman ? [] : aiListeners(targetId).map((l) => [l.id, +l.dist.toFixed(2)]);
+      const { text: reply, note, overheard } = await room.sendChat(targetId, text, listeners);
       if (note) panel.addSystemMsg(note);
+      for (const n of overheard || []) panel.addSystemMsg(`👂 ${n} was close enough to catch that.`);
       return reply;
     },
     onClose: () => {
@@ -288,6 +380,20 @@ async function openOnlineChat(targetId) {
   });
   openChatTargetId = targetId;
   openChatPanelRef = panel;
+  const nameOn = (x) => onlineGame.houseguests.find((h) => h.id === x)?.name || x;
+  if (opener) panel.addSystemMsg(opener);
+  if (earshotNow.length) {
+    panel.addSystemMsg(`👂 Not private — ${earshotNow.map((l) => nameOn(l.id)).join(', ')} ${earshotNow.length > 1 ? 'are' : 'is'} within earshot. Use "Go somewhere private" for a real secret.`);
+  } else if (opener && /step away/.test(opener)) {
+    panel.addSystemMsg('Nobody is within earshot.');
+  }
+}
+
+// Online export: the server builds this player's record and hands it back.
+async function exportOnline() {
+  const rec = await room.requestExport();
+  if (!rec?.text) { showToast('This room\'s server cannot export a season yet.', [{ label: 'OK', style: '', onClick: () => {} }]); return; }
+  showExport(rec.text, rec.filename, rec.full ? 'this season' : 'this season so far, as you know it');
 }
 
 // ---- Online social tools (group chat, house meeting, alliances, diary) ----
@@ -687,6 +793,10 @@ function syncOnlineWorld(game) {
     const dr = el('button', 'bb', 'Diary Room');
     dr.onclick = () => openDiaryOnline();
     btns.append(dr);
+    const xp = el('button', 'bb', 'Export season');
+    xp.title = 'Save or share your record of this season: your conversations, the comps, events and promises';
+    xp.onclick = () => { if (!onlineOverlay && !compRunning) exportOnline(); };
+    roomActions.append(xp);
     const ga = el('button', 'bb', 'Form Alliance');
     ga.onclick = () => formAllianceFlowOnline();
     socialActions.append(ga);
@@ -838,6 +948,7 @@ function handleOnlineTurn(game) {
   if (nowAs) seatedAs = nowAs;
   onlineGame = game;
   if (!game || game.phase === 'lobby') return;
+  if (onlineApproach && game.turn?.kind !== 'social') { endOnlineApproach(); clearToast(); world.releaseAllFollowers(); }
   maybeUpgradeSpectator(game);
   syncOnlineWorld(game);
   syncOnlineHuddle(game);
@@ -1147,7 +1258,10 @@ function renderOnlineTurn(game, t) {
       ` : '';
       onlineOverlay = cinematic({ kicker: 'Season Finale', title: `🏆 ${t.winnerName} wins Big Brother! (${Object.values(t.tally).join('–')})`, cardCls: 'stats-card',
         bodyHtml: `<div>${votes}</div>${statsHtml}<p>${iWon ? 'You did it.' : 'Better luck next season.'}</p>` });
-      onlineOverlay.setActions([{ label: 'Back to Title', style: 'gold', onClick: () => { room.disconnect(); location.reload(); } }]);
+      onlineOverlay.setActions([
+        ...(myEngine ? [{ label: 'Export season', style: 'primary', onClick: () => exportOnline() }] : []),
+        { label: 'Back to Title', style: 'gold', onClick: () => { room.disconnect(); location.reload(); } },
+      ]);
       break;
     }
 
@@ -1346,7 +1460,7 @@ function broadcastState() {
       hoh: onlineGame.hoh,
       vetoHolder: onlineGame.vetoHolder,
       nominees: onlineGame.nominees || [],
-      approachId: null,
+      approachId: onlineApproach?.npcId || null,
       huddleIds: world.huddle?.ready ? [world.huddle.a, world.huddle.b] : [],
       week: onlineGame.week,
       step: turn.kind === 'comp' ? (turn.comp === 'veto' ? 'veto_comp' : 'hoh_comp') : turn.kind,
@@ -1436,7 +1550,7 @@ function openNpcChat(id, opener = null, approachReason = null) {
       if (effects.allianceSignal === 'accept') panel.addSystemMsg(`🤝 ${hg.name} is in. Check your alliances.`);
       if (effects.allianceSignal === 'propose' && !sharedAlliance(g, id, PLAYER_ID)) panel.addSystemMsg(`🤝 ${hg.name} is offering to work together. Nothing is agreed until you say yes.`);
       if (effects.suspicionOfLie) panel.addSystemMsg(`👀 ${hg.name} didn't seem to buy that...`);
-      const overheardBy = applyEavesdrop(id, listeners, text, effects);
+      const overheardBy = applyEavesdrop(g, PLAYER_ID, id, listeners, text, effects);
       for (const eid of overheardBy) { panel.addSystemMsg(`👂 ${nameOf(g, eid)} was close enough to catch that.`); logLine(g, 'note', id, `${nameOf(g, eid)} overheard that.`); }
       refresh();
       return reply;
@@ -1702,14 +1816,7 @@ function takeItPrivate(id) {
     openNpcChat(id, 'There is nowhere quieter to go right now.');
     return;
   }
-  for (const w of witnesses) {
-    const r = g.social[w.id]?.[PLAYER_ID];
-    if (r) r.threat = Math.min(100, r.threat + 2);
-    g.memory[w.id].gossipHeard.push({
-      text: `saw ${g.playerName} pull ${nameOf(g, id)} aside to talk alone`,
-      aboutId: PLAYER_ID, fromId: w.id, week: g.week, believed: true,
-    });
-  }
+  applyPulledAside(g, PLAYER_ID, id, witnesses.map((w) => w.id));
   const started = performance.now();
   const phase = g.phase;
   privateWalk = setInterval(() => {
@@ -1725,49 +1832,6 @@ function takeItPrivate(id) {
     openNpcChat(id, `You and ${nameOf(g, id)} step away to the ${label}.${seen}`);
     refresh();
   }, 200);
-}
-
-// Roll eavesdropping for nearby NPCs. Closer = far likelier to overhear.
-// Overheard strategy talk enters their memory and can sour them if it's
-// about them. Returns the ids who actually caught it.
-function applyEavesdrop(withId, listeners, text, effects) {
-  const caught = [];
-  for (const { id, dist } of listeners) {
-    const chance = Math.max(0.1, 0.85 - dist * 0.12); // ~0.7 at 1m, ~0.1 at 6m
-    if (Math.random() > chance) continue;
-    caught.push(id);
-    // Only "about" someone if the player actually said their name: the AI's
-    // guess at who was discussed is not enough to make a listener an enemy.
-    const aboutTarget = effects.targetDiscussed && mentionsHouseguest(g, text, effects.targetDiscussed) ? effects.targetDiscussed : null;
-    const gist = effects.secretShared
-      ? effects.secretShared
-      : effects.summary || `something to ${nameOf(g, withId)}`;
-    g.memory[id].gossipHeard.push({
-      text: `overheard ${g.playerName} tell ${nameOf(g, withId)}: "${String(gist).slice(0, 120)}"`,
-      aboutId: aboutTarget || null,
-      fromId: id,
-      week: g.week,
-      believed: true,
-      overheard: true,
-    });
-    // If they overheard you scheming against THEM, it stings
-    if (aboutTarget === id) {
-      const r = g.social[id][PLAYER_ID];
-      r.trust = Math.max(0, r.trust - 16);
-      r.bond = Math.max(0, r.bond - 8);
-      r.threat = Math.min(100, r.threat + 8);
-      g.memory[id].grudges.push({
-        againstId: PLAYER_ID,
-        reason: `overheard ${g.playerName} naming me as a target to ${nameOf(g, withId)}`,
-        week: g.week,
-        severity: 2,
-      });
-    } else if (aboutTarget) {
-      // They now know your target — a small trust ding for scheming near them
-      g.social[id][PLAYER_ID].threat = Math.min(100, g.social[id][PLAYER_ID].threat + 4);
-    }
-  }
-  return caught;
 }
 
 function openDiary() {
@@ -2024,7 +2088,7 @@ function scheduleApproaches() {
         onClick: () => {
           clearTimeout(expireTimer);
           g.pendingApproach = null;
-          openNpcChat(ap.npcId, `${nameOf(g, ap.npcId)} came to find you — they ${APPROACH_REASON_TEXT[ap.reason] || 'want to talk'}.`, ap.reason);
+          openNpcChat(ap.npcId, `${nameOf(g, ap.npcId)} came to find you. ${nameOf(g, ap.npcId)} ${APPROACH_REASON_TEXT[ap.reason] || 'wants to talk'}.`, ap.reason);
         },
       },
       {

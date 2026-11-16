@@ -319,11 +319,11 @@ const OPENER_LINES = {
   ],
 };
 
-export function fallbackOpener(g, npcId, reason) {
-  if (['beg_veto', 'lobby_veto'].includes(reason) && (g.vetoUsed || g.vetoHolder !== PLAYER_ID || !['social_veto', 'veto_lobby', 'veto_ceremony'].includes(g.phase))) reason = 'hangout';
+export function fallbackOpener(g, npcId, reason, viewerId = PLAYER_ID) {
+  if (['beg_veto', 'lobby_veto'].includes(reason) && (g.vetoUsed || g.vetoHolder !== viewerId || !['social_veto', 'veto_lobby', 'veto_ceremony'].includes(g.phase))) reason = 'hangout';
   if (reason === 'campaign' && !g.nominees.includes(npcId)) reason = 'hangout';
   if (reason === 'confront') {
-    const evidence = evidenceFor(g, npcId).filter(f => f.actorId === PLAYER_ID && (f.targetIds.includes(npcId) || f.kind === 'veto_used')).at(-1);
+    const evidence = evidenceFor(g, npcId).filter(f => f.actorId === viewerId && (f.targetIds.includes(npcId) || f.kind === 'veto_used')).at(-1);
     if (evidence) return `Can we talk about week ${evidence.week}? ${evidence.text} I want to understand your thinking.`;
     const rumor = knowledgeFor(g, npcId).rumors.at(-1);
     if (rumor) return `I heard something from ${rumor.sourceName}, but I can't verify it. Can we compare notes before I jump to conclusions?`;

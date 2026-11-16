@@ -271,9 +271,9 @@ const APPROACH_CONTEXT = {
   renom_scramble: 'the player is HoH and about to name a replacement nominee — you came to plead your case not to go up (and maybe throw someone else under the bus)',
 };
 
-export function buildOpenerPrompt(g, npcId, reason) {
+export function buildOpenerPrompt(g, npcId, reason, chatterId = PLAYER_ID) {
   return (
-    buildChatSystemPrompt(g, npcId) +
+    buildChatSystemPrompt(g, npcId, chatterId) +
     `\n\nSPECIAL SITUATION: YOU sought out the player just now because ${APPROACH_CONTEXT[reason] || 'you wanted to talk'}. YOU speak first. Open the conversation in character (1-3 sentences), getting to why you came over. Effects should be zeros/null except summary.`
   );
 }

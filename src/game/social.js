@@ -552,18 +552,21 @@ function pick(arr, rand = Math.random) {
 // Returns { npcId, reason, opener } | null. Called after phase transitions and
 // periodically during social phases.
 
-export function chooseApproacher(g, rand = Math.random) {
-  const npcs = activeNpcIds(g);
+// viewerId: who is being approached (single-player: the player). skipIds:
+// houseguests who cannot come over right now — online, seats a person is
+// playing, and anyone already on their way to someone else.
+export function chooseApproacher(g, rand = Math.random, viewerId = PLAYER_ID, skipIds = []) {
+  const npcs = activeIds(g).filter((id) => id !== viewerId && !skipIds.includes(id) && g.social[id]?.[viewerId] && g.memory[id]);
   const candidates = [];
 
-  const playerNominated = g.nominees.includes(PLAYER_ID);
-  const playerIsHoh = g.hoh === PLAYER_ID;
-  const playerHasVeto = g.vetoHolder === PLAYER_ID;
+  const playerNominated = g.nominees.includes(viewerId);
+  const playerIsHoh = g.hoh === viewerId;
+  const playerHasVeto = g.vetoHolder === viewerId;
 
   for (const id of npcs) {
-    const r = rel(g, id, PLAYER_ID);
+    const r = rel(g, id, viewerId);
     const p = personality(g, id);
-    const inAlliance = sharedAlliance(g, id, PLAYER_ID);
+    const inAlliance = sharedAlliance(g, id, viewerId);
     const nominated = g.nominees.includes(id);
 
     if (playerIsHoh && (g.phase === 'social_hoh' || g.phase === 'nominations_pending')) {
@@ -596,7 +599,7 @@ export function chooseApproacher(g, rand = Math.random) {
       candidates.push({ npcId: id, weight: 55 + (100 - r.trust) * 0.4, reason: 'renom_scramble', opener: null });
     }
     // Confrontation over a fresh grudge
-    const fresh = g.memory[id].grudges.find((gr) => gr.againstId === PLAYER_ID && gr.week === g.week && !gr.confronted);
+    const fresh = g.memory[id].grudges.find((gr) => gr.againstId === viewerId && gr.week === g.week && !gr.confronted);
     if (fresh && p.chaos + p.bitterness > 90) {
       candidates.push({ npcId: id, weight: 80 + p.chaos * 0.2, reason: 'confront', opener: null, grudge: fresh });
     }
@@ -637,3 +640,58 @@ export const APPROACH_REASON_TEXT = {
   lobby_veto: 'wants to talk about the veto decision',
   renom_scramble: 'is scrambling not to be the replacement',
 };
+
+// ---- Being overheard, being seen leaving -----------------------------------------
+// One copy for single-player (main.js) and the room server. `listeners` is who
+// was physically within earshot, as [{ id, dist }] — the client knows where
+// people are standing; what it costs is decided here.
+
+// Roll eavesdropping for nearby houseguests. Closer = far likelier to overhear.
+// Overheard strategy talk enters their memory and can sour them if it is about
+// them. Returns the ids who actually caught it.
+export function applyEavesdrop(g, speakerId, withId, listeners, text, effects, rand = Math.random) {
+  const caught = [];
+  const speaker = nameOf(g, speakerId);
+  for (const { id, dist } of listeners || []) {
+    if (id === speakerId || id === withId || !g.memory[id] || !g.social[id]?.[speakerId]) continue;
+    const chance = Math.max(0.1, 0.85 - dist * 0.12); // ~0.7 at 1m, ~0.1 at 6m
+    if (rand() > chance) continue;
+    caught.push(id);
+    // Only "about" someone if the speaker actually said their name: the AI's
+    // guess at who was discussed is not enough to make a listener an enemy.
+    const aboutTarget = effects.targetDiscussed && mentionsHouseguest(g, text, effects.targetDiscussed) ? effects.targetDiscussed : null;
+    const gist = effects.secretShared ? effects.secretShared : effects.summary || `something to ${nameOf(g, withId)}`;
+    g.memory[id].gossipHeard.push({
+      text: `overheard ${speaker} tell ${nameOf(g, withId)}: "${String(gist).slice(0, 120)}"`,
+      aboutId: aboutTarget || null,
+      fromId: id,
+      week: g.week,
+      believed: true,
+      overheard: true,
+    });
+    const r = g.social[id][speakerId];
+    if (aboutTarget === id) {
+      // They overheard you scheming against THEM: it stings.
+      r.trust = Math.max(0, r.trust - 16);
+      r.bond = Math.max(0, r.bond - 8);
+      r.threat = Math.min(100, r.threat + 8);
+      g.memory[id].grudges.push({ againstId: speakerId, reason: `overheard ${speaker} naming me as a target to ${nameOf(g, withId)}`, week: g.week, severity: 2 });
+    } else if (aboutTarget) {
+      r.threat = Math.min(100, r.threat + 4); // they now know your target
+    }
+  }
+  return caught;
+}
+
+// The people who watched two houseguests leave the room to talk alone.
+export function applyPulledAside(g, speakerId, withId, witnessIds) {
+  const seen = [];
+  for (const id of witnessIds || []) {
+    if (id === speakerId || id === withId || !g.memory[id] || !g.social[id]?.[speakerId]) continue;
+    const r = g.social[id][speakerId];
+    r.threat = Math.min(100, r.threat + 2);
+    g.memory[id].gossipHeard.push({ text: `saw ${nameOf(g, speakerId)} pull ${nameOf(g, withId)} aside to talk alone`, aboutId: speakerId, fromId: id, week: g.week, believed: true });
+    seen.push(id);
+  }
+  return seen;
+}

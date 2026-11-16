@@ -35,14 +35,30 @@ function scoreBoard(g, scores) {
     .join(', ');
 }
 
+// Online, the room server builds this for one player (`meta.viewerId`), and
+// what goes in depends on `meta.scope`:
+//   'viewer'  mid-season — only what that player could know: public events,
+//             their own conversations, promises, alliances and intel. No
+//             personality numbers, feelings, secret ballots or grudges.
+//   'full'    the season is over (and always in single-player): everything.
+// The transcript and intel are passed in (`meta.transcript`, `meta.intel`)
+// because the server keeps them per player; the raw save is left out online
+// (`meta.raw === false`) since it holds every other player's private chats.
 export function buildSeasonRecord(g, meta = {}) {
   const L = [];
-  const me = g.playerName || nameOf(g, PLAYER_ID);
-  const who = (id) => (id === 'you' || id === PLAYER_ID ? me : nameOf(g, id));
+  const online = !!meta.viewerId;
+  const viewer = meta.viewerId || PLAYER_ID;
+  const full = meta.scope !== 'viewer';
+  const me = online ? nameOf(g, viewer) : g.playerName || nameOf(g, PLAYER_ID);
+  const who = (id) => (!online && (id === 'you' || id === PLAYER_ID) ? me : nameOf(g, id));
+  const mine = (id) => (online ? id === viewer : id === 'you');
+  const transcript = meta.transcript || g.transcript || [];
+  const intel = meta.intel || g.intel || [];
 
   L.push('BB JURY HOUSE — SEASON RECORD');
   L.push(`Game version ${meta.version || '?'} · exported ${meta.exportedAt || new Date().toISOString()}`);
-  L.push(`Player: ${me} · reached week ${g.week} · phase ${g.phase}`);
+  L.push(`Player: ${me} · reached week ${g.week} · phase ${g.phase}${online ? ' · online game' : ''}`);
+  if (!full) L.push('Exported mid-season: this holds only what you could know. The full record (every ballot, promise and grudge) is available once the season ends.');
   if (g.finale?.winner) L.push(`Winner: ${who(g.finale.winner)}  (finalists: ${names(g, g.finale.finalists)})`);
   L.push(`Evicted, in order: ${names(g, g.evicted)}`);
   L.push('');
@@ -52,9 +68,9 @@ export function buildSeasonRecord(g, meta = {}) {
   L.push(line());
   for (const h of g.houseguests) {
     const p = h.personality;
-    const feel = h.id !== PLAYER_ID && g.social?.[h.id]?.[PLAYER_ID];
-    L.push(`${h.name}${h.id === PLAYER_ID ? ' (you)' : ''} — ${h.job || ''}` +
-      (p ? ` | loyalty ${p.loyalty}, bitterness ${p.bitterness}, strategic ${p.strategic}, chaos ${p.chaos}, comp ${p.compSkill}` : '') +
+    const feel = full && h.id !== viewer && g.social?.[h.id]?.[viewer];
+    L.push(`${h.name}${h.id === viewer ? ' (you)' : ''} — ${h.job || ''}` +
+      (p && full ? ` | loyalty ${p.loyalty}, bitterness ${p.bitterness}, strategic ${p.strategic}, chaos ${p.chaos}, comp ${p.compSkill}` : '') +
       (feel ? ` | toward you at export: trust ${feel.trust}, bond ${feel.bond}, threat ${feel.threat}` : ''));
   }
   L.push('');
@@ -63,7 +79,7 @@ export function buildSeasonRecord(g, meta = {}) {
   const events = byWeek(g.events);
   const comps = byWeek(g.compHistory);
   const votes = byWeek(g.voteHistory);
-  const talk = byWeek(g.transcript, 'w');
+  const talk = byWeek(transcript, 'w');
   const weeks = [...new Set([...events.keys(), ...comps.keys(), ...votes.keys(), ...talk.keys()])].sort((a, b) => a - b);
   for (const w of weeks) {
     L.push(`WEEK ${w}`);
@@ -72,7 +88,7 @@ export function buildSeasonRecord(g, meta = {}) {
       L.push(`[${c.type === 'hoh' ? 'HoH comp' : 'Veto comp'}] won by ${who(c.winner)} — ${scoreBoard(g, c.scores)}`);
     }
     for (const e of events.get(w) || []) L.push(`[${e.phase}] ${e.text}`);
-    for (const v of votes.get(w) || []) {
+    for (const v of full ? votes.get(w) || [] : []) {
       const ballots = Object.entries(v.votes || {}).map(([voter, target]) => `${who(voter)}→${who(target)}`).join(', ');
       L.push(`[vote] ${ballots}${v.tally ? `  (tally: ${Object.entries(v.tally).map(([id, n]) => `${who(id)} ${n}`).join(', ')})` : ''}`);
     }
@@ -84,15 +100,15 @@ export function buildSeasonRecord(g, meta = {}) {
       for (const t of said) {
         const head = `${t.p} · ${t.k === 'diary' ? 'Diary Room' : t.k === 'group' ? `group with ${String(t.with).replace('group:', '').split(',').map(who).join(', ')}` : `with ${who(t.with)}`}`;
         if (head !== last) { L.push(`  -- ${head}`); last = head; }
-        const tag = t.who === 'you' ? '' : t.a === 1 ? ' [AI]' : t.a === 0 ? ' [offline writer]' : '';
-        L.push(`     ${t.who === 'you' ? me : t.who === 'dr' ? 'Diary Room' : t.who === 'note' ? '(game)' : who(t.who)}${tag}: ${t.t}`);
+        const tag = mine(t.who) ? '' : t.a === 1 ? ' [AI]' : t.a === 0 ? ' [offline writer]' : '';
+        L.push(`     ${mine(t.who) ? me : t.who === 'dr' ? 'Diary Room' : t.who === 'note' ? '(game)' : who(t.who)}${tag}: ${t.t}`);
       }
     }
     L.push('');
   }
 
   // ---- Older saves: only the capped threads exist ------------------------------
-  if (!(g.transcript || []).length) {
+  if (!online && !transcript.length) {
     L.push('CONVERSATIONS (from a save made before full transcripts were kept — only the last 24 lines with each houseguest survive)');
     L.push(line());
     for (const [id, thread] of Object.entries(g.threads || {})) {
@@ -110,25 +126,27 @@ export function buildSeasonRecord(g, meta = {}) {
   // ---- Promises, alliances, memory -----------------------------------------------
   L.push('PROMISES');
   L.push(line());
-  if (!(g.promises || []).length) L.push('None recorded.');
-  for (const p of g.promises || []) {
+  const promises = (g.promises || []).filter((p) => full || p.from === viewer || p.to === viewer);
+  if (!promises.length) L.push('None recorded.');
+  for (const p of promises) {
     L.push(`wk ${p.week} · ${who(p.from)} → ${who(p.to)} · ${p.kind} · ${String(p.status).toUpperCase()} · "${p.text}"`);
   }
   L.push('');
   L.push('ALLIANCES');
   L.push(line());
-  for (const a of g.alliances || []) L.push(`"${a.name}" — ${a.members.map(who).join(', ')} · formed wk ${a.formedWeek}${a.dead ? ' · DEAD' : ''}`);
+  for (const a of (g.alliances || []).filter((al) => full || al.members.includes(viewer))) L.push(`"${a.name}" — ${a.members.map(who).join(', ')} · formed wk ${a.formedWeek}${a.dead ? ' · DEAD' : ''}`);
   L.push('');
   L.push('WHAT EACH HOUSEGUEST HELD AGAINST PEOPLE');
   L.push(line());
-  for (const [id, mem] of Object.entries(g.memory || {})) {
+  if (!full) L.push('Not shown until the season ends.');
+  for (const [id, mem] of full ? Object.entries(g.memory || {}) : []) {
     for (const gr of mem.grudges || []) L.push(`${who(id)} vs ${who(gr.againstId)} (wk ${gr.week}, severity ${gr.severity}): ${gr.reason}`);
   }
   L.push('');
-  if ((g.intel || []).length) {
+  if (intel.length) {
     L.push('WHAT YOU OVERHEARD');
     L.push(line());
-    for (const x of g.intel) L.push(`wk ${x.week} · ${names(g, x.sourceIds)} · ${x.text}`);
+    for (const x of intel) L.push(`wk ${x.week} · ${names(g, x.sourceIds)} · ${x.text}`);
     L.push('');
   }
 
@@ -151,14 +169,18 @@ export function buildSeasonRecord(g, meta = {}) {
   // ---- Raw save ------------------------------------------------------------------------
   // Everything above is derived from this. Kept so a claim in the readable part
   // can be checked against the exact state the game held.
+  if (meta.raw === false) {
+    L.push('The raw save is not attached to an online record: it holds every other player\'s private conversations.');
+    return L.join('\n');
+  }
   L.push('RAW SAVE (JSON)');
   L.push(line('='));
   L.push(JSON.stringify(g));
   return L.join('\n');
 }
 
-export function recordFilename(g) {
+export function recordFilename(g, name = g.playerName) {
   const d = new Date();
-  const safe = String(g.playerName || 'season').replace(/[^A-Za-z0-9]+/g, '-').slice(0, 20) || 'season';
+  const safe = String(name || 'season').replace(/[^A-Za-z0-9]+/g, '-').slice(0, 20) || 'season';
   return `bb-jury-house-${safe}-week${g.week}-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.txt`;
 }

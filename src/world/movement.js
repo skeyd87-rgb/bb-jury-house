@@ -586,9 +586,35 @@ export class WorldController {
     }
   }
 
+  // Online: walk to another player's avatar (the client simulating the house
+  // is not always the one being approached). Lapses by itself, so a lost
+  // "stop" message cannot leave them trailing someone.
+  summonNpcTo(id, targetId) {
+    const st = this.npcState.get(id);
+    if (st) {
+      st.queue = null;
+      st.approachId = targetId;
+      st.approachUntil = this.clock.elapsedTime + 30;
+      st.repathAt = 0;
+    }
+  }
+
+  // Online: someone is taking this houseguest aside; walk them to the spot.
+  leadNpc(id, x, z) {
+    const st = this.npcState.get(id);
+    if (!st) return;
+    st.frozen = false;
+    st.approachPlayer = false;
+    st.approachId = null;
+    st.holdUntil = 0;
+    st.queue = null;
+    st.lead = { x, z };
+  }
+
   releaseNpc(id) {
     const st = this.npcState.get(id);
     if (st) {
+      st.approachId = null;
       st.approachPlayer = false;
       st.queue = null;
     }
@@ -741,7 +767,10 @@ export class WorldController {
       let npcMoving = false;
       const npcSpeed = inPool(char.position.x, char.position.z) ? NPC_SPEED * 0.45 : NPC_SPEED;
 
-      if (this.inHuddle(id) && !st.approachPlayer) {
+      if (st.approachId && (t > (st.approachUntil || 0) || !this.npcs.get(st.approachId))) st.approachId = null;
+      // Who they are walking up to: this screen's player, or another player's avatar.
+      const seek = st.approachId ? this.npcs.get(st.approachId) : st.approachPlayer ? this.player : null;
+      if (this.inHuddle(id) && !seek) {
         const h = this.huddle;
         const side = h.a === id ? -0.5 : 0.5;
         const dx = h.x + side - char.position.x, dz = h.z - char.position.z;
@@ -758,20 +787,20 @@ export class WorldController {
           // Face each other, with the small sway of someone mid-argument.
           turnToward(char, Math.atan2(-side, 0) + Math.sin(t * 1.3 + (side > 0 ? 2 : 0)) * 0.12, dt);
         }
-      } else if (st.approachPlayer && this.player) {
-        const dist = char.position.distanceTo(this.player.position);
-        const sameRoom = nearestRoom(char.position.x, char.position.z) === nearestRoom(this.player.position.x, this.player.position.z);
+      } else if (seek) {
+        const dist = char.position.distanceTo(seek.position);
+        const sameRoom = nearestRoom(char.position.x, char.position.z) === nearestRoom(seek.position.x, seek.position.z);
         if (dist > 2.0 || !sameRoom) {
           if (!st.queue || !st.queue.length || t > (st.repathAt || 0)) {
-            st.queue = routeTo(char.position, this.player.position);
+            st.queue = routeTo(char.position, seek.position);
             st.repathAt = t + 1.5; // player moves; re-route periodically
           }
           const r = followQueue(char, st.queue, npcSpeed * 1.6, dt);
           npcMoving = r.moving;
           if (r.stuck) st.queue = null;
         } else {
-          // arrived: face the player and wait
-          const to = this.player.position.clone().sub(char.position);
+          // arrived: face them and wait
+          const to = seek.position.clone().sub(char.position);
           turnToward(char, Math.atan2(to.x, to.z), dt);
           st.queue = null;
         }

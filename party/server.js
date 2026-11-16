@@ -7,7 +7,8 @@ import { rememberExchange } from '../src/game/knowledge.js';
 
 import { Server, routePartykitRequest } from 'partyserver';
 import { CAST, PLAYER_ID } from '../src/game/cast.js';
-import { newGame, activeIds, activeNpcIds, nameOf, logEvent } from '../src/game/state.js';
+import { newGame, activeIds, activeNpcIds, nameOf, logEvent, transcriptEntry } from '../src/game/state.js';
+import { buildSeasonRecord, recordFilename } from '../src/game/record.js';
 import {
   npcCompScore, decideNominations, applyNominations, vetoPlayers, decideVetoUse,
   decideReplacement, applyVetoSave, applyReplacement, applyVeto, evictionDesire,
@@ -15,12 +16,13 @@ import {
 } from '../src/game/season.js';
 import {
   simulateHouseLife, applyChatEffects, formOfficialAlliance, leaveAlliance, allianceWillingness, settleWeekPromises, applySpotted,
+  applyEavesdrop, applyPulledAside, chooseApproacher,
 } from '../src/game/social.js';
 import { pickHuddlePair, huddleIntel, recordIntel, houseReadView } from '../src/game/intel.js';
 import { fallbackChat, fallbackDiary } from '../src/ai/fallback.js';
 import {
   serverNpcChat, serverJurorQuestion, serverOpponentAnswer, serverJurorVote,
-  serverGroupChat, serverDiaryChat,
+  serverGroupChat, serverDiaryChat, serverNpcOpener,
 } from './ai.js';
 
 import { randomCompType } from '../src/game/competition-catalog.js';
@@ -210,6 +212,126 @@ export class Room extends Server {
     return base;
   }
 
+  // ---- Per-player transcript (for the season export) --------------------------
+  // Kept OUT of the game object, one storage key per player: the game is saved
+  // as a single value on every action and a season of conversation would make
+  // that value large. Only seats a person has played get one.
+  async logFor(viewerId, who, withId, text, kind = 'chat', ai) {
+    if (!this.game || !viewerId || !this.isHuman(viewerId)) return;
+    if (!this.tx) this.tx = {};
+    if (!this.tx[viewerId]) this.tx[viewerId] = (await this.ctx.storage.get('tx:' + viewerId)) || [];
+    const list = this.tx[viewerId];
+    list.push(transcriptEntry(this.game, who, withId, text, kind, ai));
+    if (list.length > 1500) list.splice(0, list.length - 1500);
+    await this.ctx.storage.put('tx:' + viewerId, list);
+  }
+
+  async clearTranscripts() {
+    this.tx = {};
+    const keys = [...(await this.ctx.storage.list({ prefix: 'tx:' })).keys()];
+    if (keys.length) await this.ctx.storage.delete(keys);
+  }
+
+  // One player's record of the season. Mid-season it holds only what they
+  // could know; once there is a winner, everything except other players'
+  // conversations.
+  async handleExport(pid) {
+    const g = this.game;
+    const viewer = this.engineForPlayer(pid);
+    if (!g || !viewer) return;
+    if (!this.tx) this.tx = {};
+    if (!this.tx[viewer]) this.tx[viewer] = (await this.ctx.storage.get('tx:' + viewer)) || [];
+    const over = this.turn?.kind === 'winner';
+    const text = buildSeasonRecord(g, {
+      viewerId: viewer, scope: over ? 'full' : 'viewer', raw: false,
+      transcript: this.tx[viewer], intel: (g.intelBy && g.intelBy[viewer]) || [],
+      version: 'online',
+    });
+    this.sendToPid(pid, { type: 'exportRecord', text, filename: recordFilename(g, nameOf(g, viewer)), full: over });
+  }
+
+  // ---- Houseguests who come to find you ---------------------------------------
+  // Same picker as single-player, run for the player who asked. Transient: an
+  // approach in flight when the room restarts is simply gone.
+  liveApproaches() {
+    const now = Date.now();
+    if (!this.approaches) this.approaches = {};
+    for (const [v, a] of Object.entries(this.approaches)) if (now > a.until) delete this.approaches[v];
+    return this.approaches;
+  }
+
+  sendAll(obj) {
+    const payload = JSON.stringify(obj);
+    for (const c of this.getConnections()) c.send(payload);
+  }
+
+  async handleApproachRequest(pid) {
+    const g = this.game;
+    const viewer = this.engineForPlayer(pid);
+    if (!g || !viewer || this.turn?.kind !== 'social' || !activeIds(g).includes(viewer)) return;
+    const live = this.liveApproaches();
+    const now = Date.now();
+    if (live[viewer]) return;
+    if (!this.lastApproachAt) this.lastApproachAt = {};
+    if (now - (this.lastApproachAt[viewer] || 0) < 12000) return;
+    this.lastApproachAt[viewer] = now;
+    // Not a seat a person is playing, not someone already walking to another
+    // player, not a pair in the middle of a huddle.
+    const skip = activeIds(g).filter((id) => this.isActiveHuman(id));
+    for (const a of Object.values(live)) skip.push(a.npcId);
+    const h = this.liveHuddle();
+    if (h) skip.push(h.a, h.b);
+    const ap = chooseApproacher(g, Math.random, viewer, skip);
+    if (!ap) return;
+    live[viewer] = { id: 'a' + now, npcId: ap.npcId, reason: ap.reason, until: now + 24000 };
+    if (ap.grudge) await this.saveGame(); // the picker marked it confronted
+    this.sendAll({ type: 'npcSummon', id: ap.npcId, to: viewer, on: true });
+    this.sendToPid(pid, { type: 'approach', id: live[viewer].id, npcId: ap.npcId, reason: ap.reason });
+  }
+
+  async handleApproachAnswer(pid, id, accept) {
+    const g = this.game;
+    const viewer = this.engineForPlayer(pid);
+    const ap = viewer && this.liveApproaches()[viewer];
+    if (!g || !ap || ap.id !== id) return;
+    delete this.approaches[viewer];
+    this.sendAll({ type: 'npcSummon', id: ap.npcId, to: viewer, on: false });
+    if (!accept || !activeIds(g).includes(ap.npcId) || this.isActiveHuman(ap.npcId)) return;
+    let out;
+    try { out = await serverNpcOpener(g, ap.npcId, ap.reason, viewer, this.effectiveApiKey); }
+    catch { out = null; }
+    const reply = String(out?.reply || 'Hey. Got a minute?').slice(0, 500);
+    if (!g.mpThreads) g.mpThreads = {};
+    const key = viewer + ':' + ap.npcId;
+    const thread = g.mpThreads[key] || (g.mpThreads[key] = []);
+    thread.push({ who: 'them', text: reply, week: g.week, phase: g.phase });
+    if (thread.length > 24) g.mpThreads[key] = thread.slice(-24);
+    await this.logFor(viewer, ap.npcId, ap.npcId, reply, 'chat', !!out?.usedAi);
+    await this.saveGame();
+    this.sendToPid(pid, { type: 'approachOpener', npcId: ap.npcId, text: reply, usedAi: !!out?.usedAi });
+  }
+
+  // ---- Taking a conversation somewhere private ---------------------------------
+  // The client finds the spot (it knows the house); the server charges for
+  // being seen leaving and tells every screen where that houseguest is going.
+  async handleGoPrivate(pid, msg) {
+    const g = this.game;
+    const viewer = this.engineForPlayer(pid);
+    const id = typeof msg.targetId === 'string' ? msg.targetId : null;
+    const x = Number(msg.x), z = Number(msg.z);
+    if (!g || !viewer || !id || this.turn?.kind !== 'social' || !isFinite(x) || !isFinite(z)) return;
+    if (!activeIds(g).includes(id) || id === viewer || this.isActiveHuman(id)) return;
+    const witnesses = (Array.isArray(msg.witnesses) ? msg.witnesses : []).slice(0, 12)
+      .filter((w) => typeof w === 'string' && activeIds(g).includes(w) && !this.isActiveHuman(w));
+    const seen = applyPulledAside(g, viewer, id, witnesses);
+    if (seen.length) {
+      await this.logFor(viewer, 'note', id, `${seen.map((w) => nameOf(g, w)).join(', ')} watched you take ${nameOf(g, id)} aside.`);
+      await this.saveGame();
+    }
+    const payload = JSON.stringify({ type: 'npcLead', id, x, z });
+    for (const c of this.getConnections()) if (this.connToPlayer.get(c.id) !== pid) c.send(payload);
+  }
+
   // ---- Huddles ---------------------------------------------------------------
   // Transient (not persisted): a huddle that was in flight when the room
   // restarted is simply gone, and the next request starts another.
@@ -289,7 +411,11 @@ export class Room extends Server {
 
   async setTurn(turn) {
     this.turn = turn;
-    if (turn?.kind !== 'social') this.huddle = null;
+    if (turn?.kind !== 'social') {
+      this.huddle = null;
+      for (const [v, a] of Object.entries(this.approaches || {})) this.sendAll({ type: 'npcSummon', id: a.npcId, to: v, on: false });
+      this.approaches = {};
+    }
     this.applyTurnTimer();
     await this.commit();
   }
@@ -641,6 +767,8 @@ export class Room extends Server {
   async resolveJurorAnswer() {
     const g = this.game;
     const t = this.turn;
+    const [f1, f2] = t.finalists;
+    if (g.juryPhase) (g.juryPhase.qa ||= {})[t.juror] = { questionForF1: t.questions[f1], questionForF2: t.questions[f2], f1Answer: t.answers[f1], f2Answer: t.answers[f2] };
     await this.setTurn({
       kind: 'jury_answer_result', juror: t.juror, jurorName: t.jurorName, finalists: t.finalists,
       questions: t.questions, answers: t.answers, toneNote: t.toneNote,
@@ -686,6 +814,7 @@ export class Room extends Server {
     let a = 0, b = 0;
     for (const v of votes) if (v.vote === finalists[0]) a++; else b++;
     const winner = a >= b ? finalists[0] : finalists[1];
+    g.finale = { finalists, qa: g.juryPhase.qa || {}, votes, winner };
     await this.setTurn({
       kind: 'winner',
       finalists, finalistNames: finalists.map((f) => nameOf(g, f)),
@@ -913,7 +1042,7 @@ export class Room extends Server {
     return [a, b].sort().join(':');
   }
 
-  async handleChat(chatterId, targetId, text, connection) {
+  async handleChat(chatterId, targetId, text, connection, listeners = []) {
     const g = this.game;
     if (!g || !text) return;
     if (!activeIds(g).includes(targetId) || targetId === chatterId) return;
@@ -933,6 +1062,8 @@ export class Room extends Server {
         if (this.connToPlayer.get(c.id) === this.humanFor(targetId)) c.send(payload);
       }
       connection.send(JSON.stringify({ type: 'chatReply', npcId: targetId, text: null, relayed: true }));
+      await this.logFor(chatterId, chatterId, targetId, text);
+      await this.logFor(targetId, chatterId, chatterId, text);
       await this.saveGame();
       return;
     }
@@ -955,10 +1086,24 @@ export class Room extends Server {
     rememberExchange(g, targetId, chatterId, text);
     thread.push({ who: 'them', text: reply, week: g.week, phase: g.phase });
     if (thread.length > 24) g.mpThreads[key] = thread.slice(-24);
+    // Who was standing close enough to hear comes from the client (it knows
+    // where people are); whether they caught it, and what that costs, is
+    // decided here. A seat a person is playing never "overhears": they did
+    // not get the text.
+    const near = (Array.isArray(listeners) ? listeners : []).slice(0, 12)
+      .map((l) => ({ id: String(l?.[0] ?? ''), dist: Math.max(0, Number(l?.[1])) }))
+      .filter((l) => isFinite(l.dist) && l.dist <= 6 && activeIds(g).includes(l.id) && !this.isActiveHuman(l.id));
+    const overheard = applyEavesdrop(g, chatterId, targetId, near, text, fx).map((id) => nameOf(g, id));
+    await this.logFor(chatterId, chatterId, targetId, text);
+    await this.logFor(chatterId, targetId, targetId, reply, 'chat', !!result.usedAi);
+    if (fx.promiseMade) await this.logFor(chatterId, 'note', targetId, `Promise recorded (you → ${nameOf(g, targetId)}): "${fx.promiseMade.text}"`);
+    if (fx.npcPromise) await this.logFor(chatterId, 'note', targetId, `${nameOf(g, targetId)} gave their word: "${fx.npcPromise.text}"`);
+    if (fx.suspicionOfLie) await this.logFor(chatterId, 'note', targetId, `${nameOf(g, targetId)} did not seem to buy that.`);
+    for (const n of overheard) await this.logFor(chatterId, 'note', targetId, `${n} overheard that.`);
     await this.saveGame();
     this.broadcastGame(); // in case effects touched alliances/promises (personalized panels)
     connection.send(JSON.stringify({
-      type: 'chatReply', npcId: targetId, text: reply, usedAi: !!result.usedAi,
+      type: 'chatReply', npcId: targetId, text: reply, usedAi: !!result.usedAi, overheard,
       note: fx.npcPromise ? `📋 ${nameOf(g, targetId)} gave you their word: "${fx.npcPromise.text}"`
         : fx.promiseMade ? `📋 Promise recorded: "${fx.promiseMade.text}"`
         : (fx.allianceProposal?.accepted || fx.allianceSignal === 'accept') ? `🤝 ${nameOf(g, targetId)} is in.`
@@ -1045,6 +1190,8 @@ export class Room extends Server {
     }
 
     grp.log.push({ who: 'you', id: senderId, text });
+    const groupKey = (m) => 'group:' + grp.members.filter((x) => x !== m).join(',');
+    for (const m of grp.members) await this.logFor(m, senderId, groupKey(m), text, 'group');
     for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: senderId, name: nameOf(g, senderId), text });
 
     const aiMembers = grp.members.filter((m) => !this.isActiveHuman(m)); // an away player is voiced by the AI
@@ -1060,6 +1207,7 @@ export class Room extends Server {
     for (const r of replies) {
       const reply = String(r.reply).slice(0, 400);
       grp.log.push({ who: 'them', id: r.id, text: reply });
+      for (const m of grp.members) await this.logFor(m, r.id, groupKey(m), reply, 'group', !!result.usedAi);
       for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupMsg', groupId, id: r.id, name: nameOf(g, r.id), text: reply, usedAi: !!result.usedAi });
     }
     for (const id of aiMembers) {
@@ -1217,6 +1365,8 @@ export class Room extends Server {
     }
     log.push({ who: 'them', text: reply });
     if (log.length > 30) g.mpDiary[engineId] = log.slice(-30);
+    await this.logFor(engineId, engineId, 'diary', String(text).slice(0, 400), 'diary');
+    await this.logFor(engineId, 'dr', 'diary', reply, 'diary');
     await this.saveGame();
     this.sendToPid(pid, { type: 'diaryReply', text: reply, usedAi });
   }
@@ -1438,6 +1588,7 @@ export class Room extends Server {
         // another houseguest's name — "You wins HoH" with you sitting as Marcus.
         const playerName = (newcomer.occupant && newcomer.occupantName) || 'Newcomer';
         this.game = newGame(playerName);
+        await this.clearTranscripts();
         s.humanSeats = {};
         for (const seat of claimed) {
           s.humanSeats[this.seatToEngineId(seat.id)] = seat.occupant;
@@ -1462,7 +1613,27 @@ export class Room extends Server {
       case 'chat': {
         const pid = this.connToPlayer.get(connection.id);
         const chatter = this.engineForPlayer(pid);
-        if (chatter && msg.targetId) await this.handleChat(chatter, msg.targetId, String(msg.text || '').slice(0, 400), connection);
+        if (chatter && msg.targetId) await this.handleChat(chatter, msg.targetId, String(msg.text || '').slice(0, 400), connection, msg.listeners);
+        return;
+      }
+      case 'approachRequest': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleApproachRequest(pid);
+        return;
+      }
+      case 'approachAnswer': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleApproachAnswer(pid, String(msg.id || ''), !!msg.accept);
+        return;
+      }
+      case 'goPrivate': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleGoPrivate(pid, msg);
+        return;
+      }
+      case 'exportRecord': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleExport(pid);
         return;
       }
       case 'getChatThread': {
@@ -1470,7 +1641,13 @@ export class Room extends Server {
         const chatter = this.engineForPlayer(pid);
         if (!chatter || !msg.targetId) return;
         const g = this.game;
-        const hThread = (g?.mpHumanThreads && g.mpHumanThreads[this.humanThreadKey(chatter, msg.targetId)]) || [];
+        // With a person: the shared log. With a houseguest the AI is playing:
+        // this player's own thread with them, so a conversation reopens where
+        // it left off, as it does in single-player.
+        const target = String(msg.targetId);
+        const hThread = this.isActiveHuman(target)
+          ? (g?.mpHumanThreads && g.mpHumanThreads[this.humanThreadKey(chatter, target)]) || []
+          : ((g?.mpThreads && g.mpThreads[chatter + ':' + target]) || []).map((m) => ({ from: m.who === 'you' ? chatter : target, text: m.text }));
         connection.send(JSON.stringify({ type: 'chatThread', targetId: msg.targetId, entries: hThread }));
         return;
       }
@@ -1675,6 +1852,8 @@ export class Room extends Server {
     this.turn = null;
     this.apiKey = null;
     this.playerTokens = {};
+    this.tx = {};
+    this.approaches = {};
     await this.ctx.storage.deleteAll();
     for (const c of this.getConnections()) {
       try { c.close(); } catch {}
