@@ -5,7 +5,7 @@ import { publicFacts, knowledgeFor, formatEvidence, rememberExchange } from '../
 import { buildChatSystemPrompt, buildGroupSystemPrompt, buildJurorQuestionPrompt, buildJurorVotePrompt, buildThreadMessages } from '../src/ai/prompts.js';
 import { validateNarrative, assertVetoOwnership, resolveFinalist } from '../src/ai/grounding.js';
 import { fallbackChat, fallbackOpener, fallbackJurorQuestion, fallbackJurorVote } from '../src/ai/fallback.js';
-import { npcChat, groupChat, jurorQuestion, jurorVote, diaryChat } from '../src/ai/dialogue.js';
+import { npcChat, groupChat, jurorQuestion, jurorVote, diaryChat, opponentJuryAnswer } from '../src/ai/dialogue.js';
 import { serverNpcChat, serverGroupChat, serverJurorQuestion, serverJurorVote, serverDiaryChat } from '../party/ai.js';
 
 const tests = [];
@@ -223,6 +223,30 @@ test('group context does not deny the actual veto winner their own win', () => {
 test('denying a promise does not create a new one in the fallback', () => {
   const g=vetoGame();const r=fallbackChat(g,'bev','I never promised to keep you safe.');
   assert.equal(r.effects.promiseMade,undefined);assert.equal(r.effects.suspicionOfLie,false);
+});
+
+test('a juror question that hands a finalist a veto they never held is corrected, then stands', async()=>{
+  const g=vetoGame();g.compHistory.push({week:5,type:'veto',winner:'rae',scores:{}});applyEviction(g,'bev',{});
+  const original=globalThis.fetch, prev=globalThis.location;globalThis.location={hostname:'localhost'};
+  let asks=0;const seen=[];
+  globalThis.fetch=async(_u,o)=>{const body=JSON.parse(o.body);let value;
+    if(body.system.startsWith('You verify'))value={valid:true};
+    else{asks++;seen.push(JSON.stringify(body.messages));value=asks===1
+      ?{questionForF1:'Steven, back in week five you chose to let the veto stand. Why?',questionForF2:'Rae, why should you win?',evidenceForF1:[],evidenceForF2:[]}
+      :{questionForF1:'Steven, what was your plan in week five?',questionForF2:'Rae, why should you win?',evidenceForF1:[],evidenceForF2:[]};}
+    return{ok:true,status:200,json:async()=>({text:JSON.stringify(value),content:[{type:'text',text:JSON.stringify(value)}]})};};
+  try{
+    const q=await serverJurorQuestion(g,'bev',['you','rae'],'test-key');
+    assert.equal(q.usedAi,true);assert.doesNotMatch(q.questionForF1,/veto stand/);assert.equal(asks,2);
+    assert.match(seen[1],/did not hold the veto in week 5/,'the correction did not say what was wrong');
+  }finally{globalThis.fetch=original;globalThis.location=prev;}
+});
+test('an AI finalist whose answer fails still answers the question it was asked', async()=>{
+  const g=vetoGame();applyEviction(g,'bev',{});
+  await mocked({nothing:true},{valid:true},async()=>{
+    const a=await opponentJuryAnswer(g,'marcus','bev','Why did you put me on the block?');
+    assert.doesNotMatch(a,/played my heart out/);assert.match(a,/block/);assert.match(a,/Bev/);
+  });
 });
 
 let failed=0;

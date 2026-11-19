@@ -28,6 +28,7 @@ import {
   fallbackJurorQuestion,
   fallbackJurorVote,
   fallbackOpener,
+  fallbackFinalistAnswer,
   fallbackGroupChat,
   fallbackAnalysis,
 } from './fallback.js';
@@ -38,7 +39,7 @@ import { PLAYER_ID } from '../game/cast.js';
 // the indicator can show "audit refused this line" rather than "AI is down".
 const aiFailed = (err) => setAiStatus(err?.grounded ? 'grounded' : 'offline');
 
-const VALID_KINDS = ['safety', 'vote', 'final2', 'alliance', 'vote_evict', 'info'];
+const VALID_KINDS = ['safety', 'vote', 'final2', 'alliance', 'vote_evict', 'nominate', 'veto', 'info'];
 const VALID_SIGNALS = ['none', 'propose', 'accept'];
 
 function sanitizeEffects(raw, npcIds) {
@@ -72,7 +73,7 @@ function sanitizeEffects(raw, npcIds) {
               : [],
           }
         : null,
-    npcPromise: e.npcPromise && e.npcPromise.text ? { text: String(e.npcPromise.text).slice(0, 160), kind: String(e.npcPromise.kind || 'safety') } : null,
+    npcPromise: e.npcPromise && e.npcPromise.text ? { text: String(e.npcPromise.text).slice(0, 160), kind: String(e.npcPromise.kind || 'safety'), targetId: npcIds.includes(e.npcPromise.targetId) ? e.npcPromise.targetId : null } : null,
     summary: e.summary ? String(e.summary).slice(0, 200) : null,
   };
 }
@@ -267,7 +268,7 @@ export async function jurorQuestion(g, jurorId, finalists) {
       g, speakerId: jurorId, listenerId: finalists, askJson: askClaudeJson, maxTokens: 600,
       system: buildJurorQuestionPrompt(g, jurorId, finalists), prompt: 'Ask your questions now.',
       usable: (d) => !!(String(d.questionForF1 || '').trim() && String(d.questionForF2 || '').trim()),
-      options: { citations: ['evidenceForF1', 'evidenceForF2'] },
+      options: { citations: ['evidenceForF1', 'evidenceForF2'], addressed: { questionForF1: finalists[0], questionForF2: finalists[1] } },
     });
     if (r.questionForF1 && r.questionForF2) {
       setAiStatus(true);
@@ -291,7 +292,7 @@ export async function opponentJuryAnswer(g, opponentId, jurorId, question) {
   } catch (err) {
     aiFailed(err);
   }
-  return "I played my heart out, I owned my choices, and I'm asking for your respect, not your forgiveness.";
+  return fallbackFinalistAnswer(g, opponentId, jurorId, question);
 }
 
 export async function jurorVote(g, jurorId, finalists, qa) {

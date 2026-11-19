@@ -17,6 +17,7 @@
 // expressions over the reply); read a flagged line before believing it.
 
 import { newGame, logEvent } from '../src/game/state.js';
+import { applyChatEffects } from '../src/game/social.js';
 import { applyNominations, nominationPlan } from '../src/game/season.js';
 import { buildChatSystemPrompt, buildThreadMessages, stripStamp } from '../src/ai/prompts.js';
 import { extractJson } from '../src/ai/claude.js';
@@ -143,6 +144,27 @@ SCENARIOS.push({
     { say: "I'm feeling okay but you know that Bev is coming after you right", must: [[/bev|(she|her)/i, 'should respond to the claim about Bev']], mustNot: [[/take a minute away from game talk/i, 'ignored the claim']] },
     { say: 'she told me herself, she wants you out next week', must: [[/bev|(she|her)/i, 'should stay on the subject']] },
     { say: "I think marcus and zoe are working together too", mustNot: [NO_INVENTED_BETRAYAL] },
+  ],
+});
+
+// Reported (season exported 2026-11-18): the player held the veto, asked the
+// HoH to put someone up as the replacement if she pulled Gus off, the HoH
+// agreed — and the deal was filed as the PLAYER's promise as well as the HoH's,
+// as a "safety" promise the engine could not hold anyone to.
+const dealOk = (g, r) => {
+  const g2 = structuredClone(g);
+  applyChatEffects(g2, 'rae', 'deal', r.effects || {});
+  const problems = [];
+  if (g2.promises.some((p) => p.from === 'you' && /\brae\b[^.]{0,12}\b(will|'ll)\b/i.test(p.text))) problems.push("filed Rae's commitment as the player's promise");
+  if (r.effects?.npcPromise && !g2.promises.some((p) => p.from === 'rae' && p.kind === 'nominate' && p.targetId === 'marcus')) problems.push(`Rae committed but it was not recorded as a deal to nominate Marcus (${JSON.stringify(r.effects.npcPromise)})`);
+  return problems.join('; ') || null;
+};
+SCENARIOS.push({
+  name: 'a replacement deal is the HoH\'s, recorded as one',
+  npc: 'rae', game: () => season({ hoh: 'rae', nominees: ['nash', 'gus'], phase: 'veto_lobby', setup: (g) => { g.vetoHolder = 'you'; g.social.rae.you.trust = 72; Object.assign(g.social.rae.marcus, { trust: 18, bond: 20, threat: 85 }); g.alliances = g.alliances.filter((a) => !(a.members.includes('rae') && a.members.includes('marcus'))); } }),
+  lines: [
+    { say: 'If I use the veto on Gus, will you put Marcus up as the replacement?', mustNot: [NO_STAMP], check: dealOk },
+    { say: 'So we have a deal? Gus comes down, Marcus goes up.', mustNot: [NO_STAMP], check: dealOk },
   ],
 });
 

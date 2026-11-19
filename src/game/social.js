@@ -39,9 +39,18 @@ export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYE
   // weeks later as an accusation of a betrayal that never happened.
   if (effects.suspicionOfLie) r.trust = clamp(r.trust - 4);
 
+  // The model sometimes files the houseguest's own commitment as the player's
+  // promise too ("If Brittany uses the veto on Gus, Rae will nominate Flynn",
+  // recorded both ways), or a promise whose protection is the player's own
+  // ("Brittany expects Marcus to protect her"). The first was then judged
+  // against the player — and marked broken — for a deal that was not theirs.
+  if (effects.promiseMade && effects.promiseMade.text && !isPlayersOwnPromise(g, npcId, chatterId, effects)) {
+    effects = { ...effects, promiseMade: null };
+  }
   if (effects.promiseMade && effects.promiseMade.text) {
     const text = String(effects.promiseMade.text).slice(0, 160);
-    const kind = effects.promiseMade.kind || 'safety';
+    const deal = readDeal(g, text, effects.promiseMade.kind, effects.promiseMade.targetId, [chatterId]);
+    const kind = deal.kind || effects.promiseMade.kind || 'safety';
     const protectedIds = promiseRecipients(g, npcId, chatterId, text, effects.promiseMade);
     for (const protectedId of protectedIds) {
       let p = g.promises.find((existing) =>
@@ -59,10 +68,11 @@ export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYE
           to: protectedId,
           text,
           kind,
-          targetId: effects.promiseMade.targetId || null,
+          targetId: deal.targetId ?? effects.promiseMade.targetId ?? null,
           week: g.week,
           status: 'open',
         };
+        if (deal.ifReplacement) p.ifReplacement = true;
         g.promises.push(p);
         logEvent(g, 'promise', `${chatterName} promised ${nameOf(g, protectedId)}: "${p.text}"`, [protectedId, chatterId]);
       }
@@ -79,10 +89,15 @@ export function applyChatEffects(g, npcId, playerMsg, effects, chatterId = PLAYE
   // this existed nothing a houseguest said tied them to anything.
   if (effects.npcPromise && effects.npcPromise.text) {
     const text = String(effects.npcPromise.text).slice(0, 160);
-    const kind = ['safety', 'vote', 'alliance', 'final2'].includes(effects.npcPromise.kind) ? effects.npcPromise.kind : 'safety';
-    const dup = g.promises.some((p) => p.status === 'open' && p.from === npcId && p.to === chatterId && p.kind === kind && p.week === g.week);
-    if (!dup) {
-      g.promises.push({ id: 'p' + (g.promises.length + 1), from: npcId, to: chatterId, text, kind, targetId: null, week: g.week, status: 'open' });
+    const given = ['safety', 'vote', 'alliance', 'final2', 'vote_evict', 'nominate', 'veto'].includes(effects.npcPromise.kind) ? effects.npcPromise.kind : 'safety';
+    const deal = readDeal(g, text, given, effects.npcPromise.targetId, [npcId]);
+    const kind = deal.kind || given;
+    const targetId = deal.targetId ?? null;
+    const dup = g.promises.some((p) => p.status === 'open' && p.from === npcId && p.to === chatterId && p.kind === kind && (p.targetId ?? null) === targetId && p.week === g.week);
+    if (!dup && (!['vote_evict', 'nominate', 'veto'].includes(kind) || targetId)) {
+      const p = { id: 'p' + (g.promises.length + 1), from: npcId, to: chatterId, text, kind, targetId, week: g.week, status: 'open' };
+      if (deal.ifReplacement) p.ifReplacement = true;
+      g.promises.push(p);
       logEvent(g, 'promise', `${nameOf(g, npcId)} promised ${chatterId === PLAYER_ID ? 'you' : nameOf(g, chatterId)}: "${text}"`, [npcId, chatterId]);
     }
   }
@@ -186,14 +201,103 @@ export function settleWeekPromises(g) {
         r.bond = clamp(r.bond + 3);
       }
       logEvent(g, 'promise_kept', `${nameOf(g, p.from)} kept a promise to ${nameOf(g, p.to)} ("${p.text}").`, [p.from, p.to]);
-    } else if (p.kind === 'vote') {
-      // A kept or broken vote is settled at the eviction itself. Still open
-      // here means it never came up (they were not on the block, or the
-      // promiser had no vote): nothing to judge.
+    } else if (['vote', 'vote_evict', 'nominate', 'veto'].includes(p.kind)) {
+      // Settled at the ceremony or vote itself. Still open here means it never
+      // came up (they had no power, no veto was used, their target was not
+      // up): nothing to judge.
       p.status = 'void';
       p.settledWeek = g.week;
     }
   }
+}
+
+// ---- Deals: "I'll nominate X", "I'll use the veto on X" -----------------------
+// A promise about what someone will DO to a third person. Until these existed
+// the engine had no way to hold anyone to one: "Rae will put Flynn up as the
+// replacement" was filed as a safety promise to the player, Rae named Bev, and
+// the record said she had kept her word.
+//   nominate  the promiser, as HoH, puts targetId up (ifReplacement: only as
+//             the replacement after a veto)
+//   veto      the promiser, holding the veto, uses it on targetId
+const NUM_WORDS = '(?:\\w+(?:,| and)\\s+){0,2}';
+export function readDeal(g, text, kind, targetId, notIds = []) {
+  const t = String(text || '');
+  const ids = activeIds(g).filter((id) => !notIds.includes(id));
+  const valid = (id) => (ids.includes(id) ? id : null);
+  const named = (rx) => {
+    for (const id of ids) {
+      const n = escapeRegExp(nameOf(g, id));
+      if (new RegExp(rx.replace('NAME', n), 'i').test(t)) return id;
+    }
+    return null;
+  };
+  const ifReplacement = /\b(replacement|renom|backdoor|if .{0,40}\bveto|veto .{0,30}\b(used|pulls?|comes? down|saves?))\b/i.test(t);
+  // "use the veto on NAME", "pull NAME off (the block)", "save NAME with the veto"
+  const vetoTarget = named('\\b(?:use|using|used)\\s+(?:the |my |his |her |their )?(?:power of )?veto\\s+(?:to (?:pull|save)\\s+)?(?:on\\s+)?NAME\\b') ||
+    named('\\b(?:pull|take|bring)\\s+NAME\\s+(?:off|down)\\b') ||
+    named('\\bsave\\s+NAME\\s+with\\s+(?:the |my )?veto\\b');
+  // "nominate NAME", "put NAME up", "name NAME as (the) replacement", "backdoor NAME"
+  const nomTarget = named(`\\b(?:nominat\\w*|backdoor\\w*|put(?:ting)? up|name)\\s+${NUM_WORDS}NAME\\b`) ||
+    named('\\bput(?:ting)?\\s+NAME\\s+(?:up|on the block)\\b') ||
+    named('\\bNAME\\s+(?:goes|go|going)\\s+up\\b');
+  const negated = /\b(won'?t|will not|never|not going to|not gonna|wouldn'?t)\b[^.!?;]{0,24}(nominat|put|target|backdoor|go after)/i.test(t);
+  if (kind === 'veto' || (vetoTarget && kind !== 'nominate')) {
+    const target = valid(targetId) || vetoTarget;
+    return target ? { kind: 'veto', targetId: target } : {};
+  }
+  if (kind === 'nominate' || (nomTarget && !negated && ['safety', 'alliance', 'vote_evict', 'info', undefined, null].includes(kind) && /\b(nominat|backdoor|put\w* up|replacement|on the block|goes up)/i.test(t))) {
+    const target = valid(targetId) || nomTarget;
+    return target ? { kind: 'nominate', targetId: target, ifReplacement } : {};
+  }
+  return {};
+}
+
+// Is this promiseMade really the player's? See applyChatEffects.
+function isPlayersOwnPromise(g, npcId, chatterId, effects) {
+  const pm = effects.promiseMade;
+  const text = String(pm.text || '');
+  const ids = [...(pm.protectedIds || []), pm.targetId].filter(Boolean);
+  if (pm.kind === 'safety' && ids.includes(chatterId)) return false; // protects the player: theirs, not ours
+  const npcName = escapeRegExp(nameOf(g, npcId));
+  const meName = escapeRegExp(chatterId === PLAYER_ID ? g.playerName || nameOf(g, PLAYER_ID) : nameOf(g, chatterId));
+  const npcActs = new RegExp(`\\b${npcName}\\s+(?:will|'ll|is going to|would|promises|promised|agrees|agreed)\\b`, 'i').test(text);
+  const iAct = new RegExp(`(?:^|[^f]\\s)(?:${meName}|I)\\s+(?:will|'ll|am going to|won'?t|promise)\\b|^\\s*(?:I'?ll|I will|I won'?t)\\b|\\byou(?:'re| are)\\s+safe\\b`, 'i').test(text);
+  if (npcActs && !iAct) return false;
+  const np = effects.npcPromise?.text;
+  if (np) {
+    const words = (s) => new Set(String(s).toLowerCase().match(/[a-z']{3,}/g) || []);
+    const a = words(text), b = words(np);
+    const shared = [...a].filter((w) => b.has(w)).length;
+    if (shared / Math.max(1, Math.min(a.size, b.size)) >= 0.6 && !iAct) return false;
+  }
+  return true;
+}
+
+// Settle one deal and let the person it was made to feel it.
+export function settleDeal(g, p, kept, how) {
+  p.status = kept ? 'kept' : 'broken';
+  p.settledWeek = g.week;
+  const by = nameOf(g, p.from), to = nameOf(g, p.to), on = nameOf(g, p.targetId);
+  if (p.to !== PLAYER_ID && g.memory[p.to] && g.social[p.to]?.[p.from] && !g.evicted.includes(p.to)) {
+    const r = rel(g, p.to, p.from);
+    if (kept) { r.trust = clamp(r.trust + 10); r.bond = clamp(r.bond + 5); }
+    else {
+      r.trust = clamp(r.trust - 20);
+      g.memory[p.to].grudges.push({ againstId: p.from, reason: `promised to ${how} ${on} and didn't`, week: g.week, severity: 2 });
+    }
+  }
+  logEvent(g, kept ? 'promise_kept' : 'promise_broken',
+    kept ? `${by} kept a deal with ${to} (${how} ${on}).` : `${by} broke a deal with ${to}: promised to ${how} ${on}.`,
+    [p.from, p.to]);
+}
+
+// How hard a deal pulls on the one who made it: loyal people keep their word;
+// someone who has since soured on the person they gave it to, less so.
+export function dealPull(g, p) {
+  const loyalty = personality(g, p.from).loyalty;
+  const trust = g.social[p.from]?.[p.to]?.trust ?? 50;
+  const warmth = Math.max(0.25, Math.min(1.15, (trust - 15) / 50));
+  return Math.max(0.1, Math.min(0.97, (0.35 + loyalty * 0.6 / 100) * warmth));
 }
 
 function escapeRegExp(text) {

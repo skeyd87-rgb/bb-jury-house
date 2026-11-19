@@ -1007,7 +1007,7 @@ export class Room extends Server {
   sanitizeChatEffects(raw) {
     const e = raw && typeof raw === 'object' ? raw : {};
     const ids = this.game.houseguests.map((h) => h.id);
-    const KINDS = ['safety', 'vote', 'final2', 'alliance', 'vote_evict', 'info'];
+    const KINDS = ['safety', 'vote', 'final2', 'alliance', 'vote_evict', 'nominate', 'veto', 'info'];
     const SIGNALS = ['none', 'propose', 'accept'];
     return {
       trustDelta: e.trustDelta ?? 0,
@@ -1028,7 +1028,7 @@ export class Room extends Server {
       allianceProposal: e.allianceProposal && typeof e.allianceProposal === 'object'
         ? { accepted: !!e.allianceProposal.accepted, name: e.allianceProposal.name ? String(e.allianceProposal.name).slice(0, 40) : null, memberIds: Array.isArray(e.allianceProposal.memberIds) ? e.allianceProposal.memberIds.filter((id) => ids.includes(id)) : [] }
         : null,
-      npcPromise: e.npcPromise && e.npcPromise.text ? { text: String(e.npcPromise.text).slice(0, 160), kind: String(e.npcPromise.kind || 'safety') } : null,
+      npcPromise: e.npcPromise && e.npcPromise.text ? { text: String(e.npcPromise.text).slice(0, 160), kind: String(e.npcPromise.kind || 'safety'), targetId: ids.includes(e.npcPromise.targetId) ? e.npcPromise.targetId : null } : null,
       summary: e.summary ? String(e.summary).slice(0, 200) : null,
     };
   }

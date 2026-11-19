@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import PartySocket from 'partysocket';
 
 const HOST = '127.0.0.1:8787';
@@ -551,7 +551,23 @@ try {
   }
   console.log(JSON.stringify(results, null, 2));
   const failed = results.filter((r) => !r.ok);
-  process.exit(failed.length ? 1 : 0);
+  process.exitCode = failed.length ? 1 : 0; // not process.exit(): the finally below must stop the worker
 } finally {
-  if (worker) worker.kill();
+  // On Windows the worker runs under cmd.exe; killing that leaves wrangler and
+  // workerd running, and a few test runs used up the machine's memory.
+  if (worker) {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/pid', String(worker.pid), '/T', '/F'], { stdio: 'ignore' });
+      // npx starts wrangler through a shell that exits, so the tree is broken:
+      // stop every node/workerd for this test port, and their children.
+      const ps = "$all = Get-CimInstance Win32_Process -Filter \"Name='node.exe' or Name='workerd.exe'\"; " +
+        "$hit = @($all | Where-Object { $_.CommandLine -like '*wrangler*' -and $_.CommandLine -like '*8787*' } | ForEach-Object { $_.ProcessId }); " +
+        "$kids = @($all | Where-Object { $hit -contains $_.ParentProcessId } | ForEach-Object { $_.ProcessId }); " +
+        "($hit + $kids) | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }";
+      spawnSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'ignore' });
+    }
+    else worker.kill();
+  }
+  // Open test sockets would keep the process alive; the worker is stopped now.
+  process.exit(process.exitCode ?? 0);
 }

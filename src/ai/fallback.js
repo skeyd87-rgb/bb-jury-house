@@ -267,13 +267,61 @@ export function fallbackChat(g, npcId, playerMsg, chatterId = PLAYER_ID) {
     deny: ["I can't commit to that right now. I need to protect my own position.", "I'm not convinced yet. What's the risk for me?"],
     accuse: ["Tell me exactly which decision you mean. I want to get the facts straight before we argue about it."],
     target: ["Walk me through who benefits and what happens if the plan fails.", "What would we need to make that work, and who would we lose along the way?"],
-    ask_info: ["What are you trying to work out? I can give you my read, but I won't pretend a rumor is a fact.", "Let's compare what we actually know. Where's your head at?"],
-    smalltalk: ["How are you holding up? We can take a minute away from game talk.", "What do you want to talk about? I'm listening."],
+    ask_info: ["What are you trying to work out? I can give you my read, but I won't pretend a rumor is a fact.", "Let's compare what we actually know. Where's your head at?", "I'll tell you what I've seen if you tell me what you've heard. Deal?"],
+    smalltalk: ["How are you holding up? We can take a minute away from game talk.", "What do you want to talk about? I'm listening.", ...situationalLines(g, npcId, chatterId)],
   };
-  const lines = answers[bucket] || answers.smalltalk;
-  const baseReply = lines[Math.floor(Math.random() * lines.length)];
+  // Never the same line twice in a row of the same conversation: in one season
+  // a houseguest answered "How are you holding up?" three times running, and it
+  // read as being ignored.
+  const recent = recentReplies(g, npcId, chatterId);
+  const pool = answers[bucket] || answers.smalltalk;
+  const fresh = pool.filter((l) => !recent.includes(l));
+  const lines = fresh.length ? fresh : [...answers.ask_info, ...answers.smalltalk].filter((l) => !recent.includes(l));
+  const baseReply = (lines.length ? lines : pool)[Math.floor(Math.random() * (lines.length || pool.length))];
   const reply = intent === 'strategy' ? `${strategyLead(g, targetId, chatterId)} ${baseReply}` : baseReply;
   return { reply, effects };
+}
+
+// What this houseguest just said to this person, newest last.
+function recentReplies(g, npcId, chatterId) {
+  const thread = chatterId === PLAYER_ID ? g.threads?.[npcId] : g.mpThreads?.[chatterId + ':' + npcId];
+  return (thread || []).filter((m) => m.who === 'them').slice(-6).map((m) => String(m.text || '').trim());
+}
+
+// Small talk that knows where they stand this week.
+function situationalLines(g, npcId, chatterId) {
+  const out = [];
+  if (g.nominees?.includes(npcId)) out.push("I'm sitting on the block, so forgive me if I'm only half here. What's on your mind?");
+  if (g.hoh === npcId) out.push("This room gets a lot of visitors this week. What brings you up here?");
+  if (g.hoh === chatterId) out.push("Everyone's being extra nice to the HoH today. I'll try to be the honest one. What's up?");
+  if (g.vetoHolder === npcId) out.push("I know, I know. Everyone wants to talk about the veto. Is that why you're here?");
+  if (!out.length) out.push("Quiet day. Those are the ones that scare me in this house. What's going on with you?");
+  return out;
+}
+
+// A finalist answering a juror when the AI could not. It used to be one fixed
+// line ("I played my heart out...") whatever was asked. Now it owns the most
+// recent thing the finalist actually did to that juror, from the record.
+export function fallbackFinalistAnswer(g, finalistId, jurorId, question = '') {
+  const juror = nameOf(g, jurorId);
+  const mine = evidenceFor(g, finalistId).filter((f) => f.actorId === finalistId && !['rumor', 'statement'].includes(f.kind));
+  const toJuror = mine.filter((f) => (f.targetIds || []).includes(jurorId));
+  const f = toJuror.at(-1);
+  const week = f ? `week ${f.week}` : '';
+  if (f?.kind === 'nominations' || f?.kind === 'replacement') {
+    return `${juror}, I put you on the block in ${week}, and I'm not going to pretend someone else did. I saw you as a real threat to my game, and I needed you out before you came for me. It was strategy, not personal, and I respect you for making it hard.`;
+  }
+  if (f?.kind === 'final_cut') {
+    return `I cut you at the final three, ${juror}. That was the hardest call I made, and I made it because I didn't think I could beat you in front of this jury. That's the biggest compliment I can give you.`;
+  }
+  if (f?.kind === 'veto_used') {
+    return `In ${week} I used the veto the way I thought kept me safest, and I know that cost you. I own it. I'd rather tell you that straight than dress it up.`;
+  }
+  const wins = mine.filter((x) => ['hoh', 'veto_win', 'final_hoh'].includes(x.kind)).length;
+  if (/\b(why|deserve|earn|vote)\b/i.test(question) && wins) {
+    return `I won ${wins} competition${wins === 1 ? '' : 's'} when I had to, and I made my own decisions with that power. You may not like every one of them, but every one was mine, and I'm here because of them.`;
+  }
+  return `I never targeted you directly, ${juror}, and I worked to stay on good terms with you. I played the game I could live with, and I'm proud of how I got here.`;
 }
 
 const OPENER_LINES = {

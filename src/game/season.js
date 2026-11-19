@@ -15,7 +15,7 @@ import {
   openPromisesBetween,
   logEvent,
 } from './state.js';
-import { personality, recordBetrayalIfAny, markKeptPromises, simulateHouseLife, settleWeekPromises } from './social.js';
+import { personality, recordBetrayalIfAny, markKeptPromises, simulateHouseLife, settleWeekPromises, settleDeal, dealPull } from './social.js';
 import { captureKnowledge } from './knowledge.js';
 
 export const PHASES = [
@@ -84,14 +84,20 @@ export function resolveComp(g, playerScore, { excludeIds = [], playerPlays = tru
 // HoH ranks everyone by nomination desire = threat + distrust + grudges
 // - alliance/promise protection, then samples 2 via weighted randomness.
 
-export function nominationDesire(g, hohId, targetId, rand = Math.random) {
+export function nominationDesire(g, hohId, targetId, rand = Math.random, stage = 'nominations') {
   const r = rel(g, hohId, targetId);
   const p = personality(g, hohId);
   let d = r.threat * (0.5 + p.strategic / 200) + (100 - r.trust) * 0.45 + (60 - r.bond) * 0.25;
 
   if (sharedAlliance(g, hohId, targetId)) d -= 45;
-  if (openPromisesBetween(g, hohId, targetId).some((pr) => pr.from === hohId && pr.kind !== 'info')) {
+  if (openPromisesBetween(g, hohId, targetId).some((pr) => pr.from === hohId && !['info', 'nominate', 'veto', 'vote_evict'].includes(pr.kind))) {
     d -= 55 * (p.loyalty / 100); // promises restrain loyal players far more
+  }
+  // A deal to put this person up ("I'll nominate Flynn") pulls the other way.
+  for (const pr of g.promises) {
+    if (pr.status === 'open' && pr.from === hohId && pr.kind === 'nominate' && pr.targetId === targetId && (stage === 'replacement' || !pr.ifReplacement)) {
+      d += 70 * dealPull(g, pr);
+    }
   }
   const grudges = g.memory[hohId]?.grudges.filter((x) => x.againstId === targetId) || [];
   d += grudges.reduce((s, x) => s + x.severity * 12, 0) * (0.5 + p.bitterness / 150);
@@ -188,6 +194,10 @@ function nominationForced(g, hohId, pool, needed) {
 
 export function applyNominations(g, hohId, nominees) {
   g.nominees = nominees;
+  g.weekNoms = { week: g.week, ids: [...nominees] };
+  for (const p of g.promises) {
+    if (p.status === 'open' && p.kind === 'nominate' && p.from === hohId && !p.ifReplacement && nominees.includes(p.targetId)) settleDeal(g, p, true, 'nominate');
+  }
   const forced = nominationForced(g, hohId, activeIds(g).filter((id) => id !== hohId), nominees.length);
   for (const n of nominees) {
     recordBetrayalIfAny(g, hohId, 'nominated', n, { forced });
@@ -218,13 +228,27 @@ export function decideVetoUse(g, holderId) {
   // an HoH veto holder is free to use it (the 4th houseguest goes up).
   if (activeIds(g).length <= 4 && g.hoh !== holderId) return { use: false };
   const p = personality(g, holderId);
+  // What the HoH has offered for using it: "use the veto and I'll backdoor
+  // Rae". Worth as much as the holder wants that person gone and trusts the
+  // HoH to do it. Gus was offered exactly this and the engine never looked.
+  let offer = 0;
+  for (const pr of g.promises) {
+    if (pr.status !== 'open' || pr.from !== g.hoh || pr.to !== holderId || pr.kind !== 'nominate' || !pr.targetId) continue;
+    if (!activeIds(g).includes(pr.targetId) || g.nominees.includes(pr.targetId) || pr.targetId === holderId) continue;
+    const rt = rel(g, holderId, pr.targetId), rh = rel(g, holderId, g.hoh);
+    offer = Math.max(offer, (55 - rt.trust) * 0.6 + (rt.threat - 40) * 0.4 + (rh.trust - 45) * 0.5 + 10);
+  }
   let best = null;
   for (const nom of g.nominees) {
     const r = rel(g, holderId, nom);
-    let want = (r.trust - 55) * 0.8 + (r.bond - 50) * 0.5 - r.threat * 0.25;
+    let want = (r.trust - 55) * 0.8 + (r.bond - 50) * 0.5 - r.threat * 0.25 + offer;
     if (sharedAlliance(g, holderId, nom)) want += 30;
     if (openPromisesBetween(g, holderId, nom).some((pr) => pr.from === holderId && pr.kind === 'safety'))
       want += 40 * (p.loyalty / 100);
+    // Their own word: "I'll use it on Gus".
+    for (const pr of g.promises) {
+      if (pr.status === 'open' && pr.from === holderId && pr.kind === 'veto' && pr.targetId === nom) want += 75 * dealPull(g, pr);
+    }
     want -= 15; // using the veto paints a target; default is keep noms
     want += (Math.random() - 0.5) * 16;
     if (!best || want > best.want) best = { savedId: nom, want };
@@ -236,7 +260,11 @@ export function decideReplacement(g, hohId, excluded) {
   let pool = activeIds(g).filter((id) => id !== hohId && !excluded.includes(id));
   // Final-4 safety: if exclusions empty the pool, the veto holder goes up.
   if (!pool.length) pool = activeIds(g).filter((id) => id !== hohId && !g.nominees.includes(id));
-  const ranked = pool.map((id) => ({ id, d: nominationDesire(g, hohId, id) })).sort((a, b) => b.d - a.d);
+  // A deal on who goes up as the replacement is kept with a chance set by the
+  // HoH's loyalty and how they feel now about the person they promised.
+  const deal = g.promises.find((pr) => pr.status === 'open' && pr.from === hohId && pr.kind === 'nominate' && pool.includes(pr.targetId));
+  if (deal && Math.random() < dealPull(g, deal)) return deal.targetId;
+  const ranked = pool.map((id) => ({ id, d: nominationDesire(g, hohId, id, Math.random, 'replacement') })).sort((a, b) => b.d - a.d);
   // softly weighted top pick
   const bag = ranked.slice(0, Math.min(3, ranked.length));
   const total = bag.reduce((s, x) => s + Math.max(5, x.d), 0);
@@ -251,6 +279,7 @@ export function decideReplacement(g, hohId, excluded) {
 export function applyVeto(g, holderId, use, savedId, replacementId) {
   if (!use) {
     g.vetoUsed = null;
+    judgeVetoDeals(g, holderId, null);
     // nominees who begged and were left: light resentment if bonded
     logEvent(g, 'veto', `${nameOf(g, holderId)} did not use the Power of Veto.`, [holderId]);
     return;
@@ -262,7 +291,16 @@ export function applyVeto(g, holderId, use, savedId, replacementId) {
 // Part 1 of a used veto: pull the saved nominee off the block. The replacement
 // is named separately (applyReplacement) so a "renom watch" social window can
 // sit between the two.
+function judgeVetoDeals(g, holderId, savedId) {
+  for (const p of g.promises) {
+    if (p.status !== 'open' || p.kind !== 'veto' || p.from !== holderId) continue;
+    if (!g.nominees.includes(p.targetId) && p.targetId !== savedId) continue; // their person was not up
+    settleDeal(g, p, p.targetId === savedId, 'use the veto on');
+  }
+}
+
 export function applyVetoSave(g, holderId, savedId) {
+  judgeVetoDeals(g, holderId, savedId);
   markKeptPromises(g, holderId, 'vetoed', savedId);
   g.nominees = g.nominees.filter((n) => n !== savedId);
   g.vetoUsed = { holderId, savedId, replacementId: null };
@@ -282,6 +320,11 @@ export function applyReplacement(g, replacementId) {
   let pool = activeIds(g).filter((id) => !taken.includes(id) && id !== g.vetoUsed?.holderId);
   if (!pool.length) pool = activeIds(g).filter((id) => !taken.includes(id));
   const forced = nominationForced(g, g.hoh, pool, 1);
+  for (const p of g.promises) {
+    if (p.status !== 'open' || p.kind !== 'nominate' || p.from !== g.hoh) continue;
+    if (p.targetId === replacementId) settleDeal(g, p, true, 'nominate');
+    else if (p.ifReplacement && pool.includes(p.targetId)) settleDeal(g, p, false, 'nominate');
+  }
   g.nominees.push(replacementId);
   if (g.vetoUsed) g.vetoUsed.replacementId = replacementId;
   recordBetrayalIfAny(g, g.hoh, 'nominated', replacementId, { forced });
@@ -348,6 +391,12 @@ export function resolveEviction(g, playerVote /* nominee id or null if player is
 
 export function applyEviction(g, evicted, votes) {
   const survivor = g.nominees.find((n) => n !== evicted);
+  const wentUp = new Set([...(g.weekNoms?.week === g.week ? g.weekNoms.ids : []), ...g.nominees]);
+  for (const p of g.promises) {
+    if (p.status !== 'open' || p.kind !== 'nominate' || p.from !== g.hoh || p.ifReplacement) continue;
+    if (wentUp.has(p.targetId)) settleDeal(g, p, true, 'nominate');
+    else if (activeIds(g).includes(p.targetId)) settleDeal(g, p, false, 'nominate');
+  }
 
   // Resolve third-party vote promises ("I'll vote to evict X") for this week.
   for (const p of g.promises) {

@@ -8,7 +8,7 @@ import {
   buildJurorQuestionPrompt, buildOpponentAnswerPrompt, buildJurorVotePrompt,
   buildGroupSystemPrompt, buildDiarySystemPrompt, buildOpenerPrompt, stripStamp, cleanSpoken } from '../src/ai/prompts.js';
 import {
-  fallbackChat, fallbackJurorQuestion, fallbackJurorVote, fallbackGroupChat, fallbackDiary, fallbackOpener,
+  fallbackChat, fallbackJurorQuestion, fallbackJurorVote, fallbackGroupChat, fallbackDiary, fallbackOpener, fallbackFinalistAnswer,
 } from '../src/ai/fallback.js';
 import { validateNarrative, groundedChat, groundedAsk, resolveFinalist } from '../src/ai/grounding.js';
 import { extractJson } from '../src/ai/claude.js';
@@ -77,7 +77,7 @@ export async function serverJurorQuestion(g, jurorId, finalists, apiKey) {
         g, speakerId: jurorId, listenerId: finalists, askJson: auditor(apiKey), maxTokens: 600,
         system: buildJurorQuestionPrompt(g, jurorId, finalists), prompt: 'Ask your questions now.',
         usable: (d) => !!(String(d.questionForF1 || '').trim() && String(d.questionForF2 || '').trim()),
-        options: { citations: ['evidenceForF1', 'evidenceForF2'] },
+        options: { citations: ['evidenceForF1', 'evidenceForF2'], addressed: { questionForF1: finalists[0], questionForF2: finalists[1] } },
       });
       if (json && json.questionForF1 && json.questionForF2) return { ...json, questionForF1: cleanSpoken(json.questionForF1, 420), questionForF2: cleanSpoken(json.questionForF2, 420), usedAi: true };
     } catch (err) {
@@ -102,7 +102,7 @@ export async function serverOpponentAnswer(g, opponentId, jurorId, question, api
       // fall through
     }
   }
-  return { reply: "I played my heart out, I owned my choices, and I'm asking for your respect, not your forgiveness.", usedAi: false };
+  return { reply: fallbackFinalistAnswer(g, opponentId, jurorId, question), usedAi: false };
 }
 
 // AI juror casts a vote after hearing both answers. Returns { vote, reasoning, usedAi }.
