@@ -115,3 +115,7 @@ Headless logic test: open `/test.html` in a browser — runs 60 simulated season
 - **Arms have to clear the hips**, which on a wide build are broader than the shoulder joints. The rest angle is solved per character (`armRest`), not authored, or hands end up buried in the trousers.
 - Necklines are made by *compressing* the shell's top band toward its lower edge, never by translating it: a translation slides the top ring past the ones beneath it (spikes) and drags the small neck-radius edge inside the chest.
 - The torso loft grows its own neck and ends above the jaw, where the head hides its cap. A separate neck cylinder leaves the torso's flat top cap in the open under the chin.
+
+## Shipping changes
+
+When work is done, push your claude/* branch and open a pull request to main. Merging runs .github/workflows/deploy.yml, which publishes to GitHub Pages. Never deploy from a session; deploy credentials live only in GitHub.
