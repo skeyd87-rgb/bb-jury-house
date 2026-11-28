@@ -10,6 +10,7 @@ Reject any unsupported or contradictory factual premise in replies, jury questio
 Public event records override all past dialogue. Private rumors may be discussed only with attribution and uncertainty; belief does not prove them. Emotional interpretations and proposals about the future are allowed, but must not invent past events, secret votes, shared plans, or NPC commitments. A quoted player claim is not proof it happened. A promise effect must match an explicit commitment in the current utterance, not an earlier exchange. A truthful correction of an NPC's earlier error must not be marked suspicionOfLie or punished for alleged dishonesty.
 For a jury vote: reject (evidence: vote) a reasoning that argues for the finalist the juror did NOT vote for, or that praises one finalist and gives no reason at all for choosing the other. A juror may criticise the person they voted against, or note what they respected in the loser and still choose the winner.
 Jurors know only their eviction records plus the supplied questions/answers as claims. They cannot use later house events or current social state as knowledge. A finalist may correct an inaccurate question. Reject reasoning that treats an unsupported accusation as established guilt. A lack of records permits open questions, not invented history.
+Eviction votes: an eviction_vote record's "ballots" maps each voter's name to the nominee they voted to evict; it is public. A reply naming who voted which way is valid when every ballot it states matches that table, the speaker's own included. Check each stated ballot against the table one by one; if all match, the reply is valid, and if your own reasoning finds no mismatch, return valid=true.
 Time: currentSituation.week is the present week. Reject a reply that places a recorded event in the wrong week relative to it — for example calling something "last week" when its record is in the current week, or the reverse — even if the listener's own message made that mistake first.
 Return valid=false only with the contradicted record named in "evidence"; otherwise valid=true. The requested ceremony action, if present, is authorized by the engine but does not authorize inventing earlier events.`;
 
@@ -63,15 +64,183 @@ export function assertAddressedVeto(g, addresseeId, text) {
   }
 }
 
+// ---- Record checks for claims the semantic audit let through (BB-XDWN) -------
+// Each reads one kind of claim with an explicit week (or "last/this week")
+// and answers it from the engine record. Hypotheticals, questions and denials
+// are left to the audit. A finding names what the record says, so the speaker
+// gets one correction (groundedAsk / groundedChat).
+const hgName = (g, id) => g.houseguests.find((h) => h.id === id)?.name || id;
+const idByName = (g, word) => g.houseguests.find((h) => h.name.toLowerCase() === String(word || '').toLowerCase())?.id || null;
+const sentencesOf = (t) => String(t || '').split(/(?<=[.!?])\s+/);
+const HYPOTHETICAL = /\b(if|would|could|should|wish|hope|might|imagine|suppose)\b/i;
+const ASKING = /^\s*(?:did|were|was|have|had|do|are|is)\s+(?:you|i)\b/i;
+const DENIAL = /\b(?:didn'?t|did not|never|wasn'?t|was not|weren'?t)\b/i;
+// Hedged only if the hedge comes before the claim: in "I heard you ask Marcus
+// who he'd go after if he won", the "if" is what was asked, not a hedge.
+function hedged(s, re) {
+  const m = s.match(re);
+  if (!m) return true;
+  const before = s.slice(0, m.index);
+  return ASKING.test(s) || HYPOTHETICAL.test(before) || DENIAL.test(before);
+}
+function claimedWeek(sentence, nowWeek) {
+  const m = sentence.match(/\bweek\s+(\d+|[a-z]+)\b|\b(first|second|third|fourth|fifth|sixth|seventh)\s+week\b/i);
+  if (m) { const w = Number(m[1]) || WEEK_WORD[(m[1] || m[2] || '').toLowerCase()]; if (w) return w; }
+  if (nowWeek && /\blast week\b/i.test(sentence)) return nowWeek - 1;
+  if (nowWeek && /\bthis week\b/i.test(sentence)) return nowWeek;
+  return null;
+}
+function finding(reason, evidence) {
+  const err = rejected(reason);
+  err.reason = reason;
+  err.evidence = evidence;
+  return err;
+}
+const hohsIn = (g, week) => new Set((g.compHistory || []).filter((c) => (c.type === 'hoh' || c.type === 'final_hoh') && c.week === week).map((c) => c.winner));
+const nomineesIn = (g, week) => (g.events || []).find((e) => e.type === 'nominations' && e.week === week)?.actors?.slice(1) || [];
+function evictionBallots(g, id) {
+  const ev = (g.events || []).find((e) => e.type === 'eviction' && e.actors?.[0] === id);
+  if (!ev) return null;
+  const v = (g.voteHistory || []).find((x) => x.evicted === id) || (g.voteHistory || []).find((x) => x.week === ev.week);
+  return { week: ev.week, votes: Object.fromEntries(Object.entries(v?.votes || {}).filter(([k]) => !k.endsWith('_tiebreak'))) };
+}
+const ballotLine = (g, b) => Object.entries(b.votes).map(([v, t]) => `${hgName(g, v)} voted to evict ${hgName(g, t)}`).join('; ') || 'no ballots recorded';
+
+// "my nominations", "I was HoH", "you nominated me" in a week the person was
+// not HoH. Rae, a juror, asked about "my nominations" in week 5; Flynn was HoH.
+export function assertHohClaims(g, speakerId, addresseeId, text, nowWeek = null) {
+  const FIRST = /\b(?:my nominations?|my noms|I nominated|I put (?:you|\w+) (?:up|on the block)|I was (?:the )?(?:HoH|head of household))\b/i;
+  const SECOND = /\b(?:your nominations?|you nominated|you put (?:me|\w+) (?:up|on the block)|you were (?:the )?(?:HoH|head of household))\b/i;
+  for (const s of sentencesOf(text)) {
+    const who = FIRST.test(s) ? speakerId : (addresseeId && SECOND.test(s)) ? addresseeId : null;
+    if (!who || hedged(s, who === speakerId ? FIRST : SECOND)) continue;
+    const week = claimedWeek(s, nowWeek);
+    const hohs = week && hohsIn(g, week);
+    if (!hohs?.size || hohs.has(who)) continue;
+    const noms = nomineesIn(g, week);
+    throw finding(`${hgName(g, who)} was not Head of Household in week ${week}: ${[...hohs].map((id) => hgName(g, id)).join(' and ')} was${noms.length ? `, and nominated ${noms.map((id) => hgName(g, id)).join(' and ')}` : ''}.`, `hoh week ${week}`);
+  }
+}
+
+// Eviction ballots are read out by name. "Votes were never public", or "I
+// voted you out" from someone who did not vote, is contradicted by the record.
+export function assertBallotClaims(g, speakerId, addresseeId, text) {
+  const SECRET = /\b(?:votes?|ballots?)\b[^.?!]{0,40}\b(?:secret|never (?:made )?public|not public|anonymous|never revealed|never announced|never confirmed)\b|\bsecret (?:votes?|ballots?)\b/i;
+  const VOTED_YOU = /\bI\s+(?:\w+\s+)?voted\s+(?:to\s+evict\s+you|you\s+out|against\s+you|to\s+send\s+you\s+home)\b/i;
+  const mine = addresseeId && evictionBallots(g, addresseeId);
+  for (const s of sentencesOf(text)) {
+    if (SECRET.test(s) && !/\bjury\s+votes?\b[^.?!]{0,20}\b(?:for|to)\s+(?:the\s+)?win/i.test(s) && !/\bfinal(?:e| vote)\b/i.test(s)) {
+      throw finding(`Eviction ballots are read out by name to the house${mine ? `. When ${hgName(g, addresseeId)} was evicted in week ${mine.week}: ${ballotLine(g, mine)}` : ''}.`, mine ? `vote week ${mine.week}` : 'vote');
+    }
+    if (mine && VOTED_YOU.test(s) && !hedged(s, VOTED_YOU) && mine.votes[speakerId] !== addresseeId) {
+      throw finding(`${hgName(g, speakerId)} did not vote to evict ${hgName(g, addresseeId)} in week ${mine.week}: ${ballotLine(g, mine)}.`, `vote week ${mine.week}`);
+    }
+  }
+}
+
+// "I heard you ask Marcus…" put to a finalist, with nothing in the juror's
+// record of that finalist talking to Marcus. Zoe's own week-4 conversation with
+// Steven came back as one between Steven and Marcus.
+export function assertHeardClaims(g, speakerId, addresseeId, text) {
+  const HEARD = /\b(?:heard|saw|watched|noticed|caught)\s+you\s+(?:ask|tell|say|promis|talk|pitch|offer)\w*\s+(?:to\s+|with\s+)?([A-Z][a-z]+)\b/;
+  const SAID_TO = /\byou\s+(?:asked|told|promised|pitched|offered)\s+([A-Z][a-z]+)\b/;
+  const evidence = evidenceFor(g, speakerId);
+  for (const s of sentencesOf(text)) {
+    const re = HEARD.test(s) ? HEARD : SAID_TO;
+    if (hedged(s, re)) continue;
+    const x = idByName(g, s.match(re)?.[1]);
+    if (!x || x === speakerId || x === addresseeId) continue;
+    const a = hgName(g, addresseeId), b = hgName(g, x);
+    const supported = evidence.some((e) => (e.actorId === addresseeId && e.targetIds?.includes(x)) || (e.actorId === x && e.targetIds?.includes(addresseeId)) || (e.text.includes(a) && e.text.includes(b) && e.kind !== 'eviction_vote'));
+    if (supported) continue;
+    const own = (knowledgeFor(g, speakerId).statements || []).filter((st) => st.withId === addresseeId).pop();
+    throw finding(`No record that ${a} said that to ${b}.${own ? ` What you have is ${a}'s own words to you in week ${own.week}: ${String(own.summary).slice(0, 160)}` : ''}`, 'absent');
+  }
+}
+
+// "That's exactly what you told me last week" to someone whose recorded words
+// to the speaker are from another week, or who never said anything to them.
+export function assertToldMe(g, speakerId, listenerId, text, nowWeek, options = {}) {
+  const TOLD_ME = /\b(?:you\s+(?:told|said\s+to|promised)\s+me|what\s+you\s+(?:told|said\s+to)\s+me|you\s+(?:mentioned|said|told me)\s+(?:that|it|so))\b/i;
+  // "Didn't I tell you last week…?" answered "Yeah, you mentioned that": the
+  // week is in the question, and agreeing adopts it (Gus, live replay).
+  const asked = options.utterance && /\b(?:told|tell|said|say|mentioned|mention)\b/i.test(options.utterance) ? claimedWeek(options.utterance, nowWeek) : null;
+  const said = (g.memory[speakerId]?.convoSummaries || []);
+  for (const s of sentencesOf(text)) {
+    if (hedged(s, TOLD_ME)) continue;
+    const voc = idByName(g, s.match(/^\s*([A-Z][a-z]+),/)?.[1]) || idByName(g, String(text).match(/^\s*([A-Z][a-z]+),/)?.[1]);
+    const to = voc || listenerId;
+    if (to !== listenerId) continue; // only the person in front of them is on record
+    const week = claimedWeek(s, nowWeek) || asked;
+    if (!week) continue;
+    if (week === nowWeek && options.utterance) continue; // they may mean what was just said
+    if (said.length >= 20 && Math.min(...said.map((x) => x.week)) > week) continue; // older memory has rolled off
+    const theirs = said.filter((x) => x.withId === to);
+    if (theirs.some((x) => x.week === week)) continue;
+    const weeks = [...new Set(theirs.map((x) => x.week))];
+    throw finding(theirs.length
+      ? `${hgName(g, to)}'s recorded words to ${hgName(g, speakerId)} are from week ${weeks.join(', ')}${weeks.includes(nowWeek) ? ' (this week)' : ''}, not week ${week}.`
+      : `There is no record of ${hgName(g, to)} telling ${hgName(g, speakerId)} anything before this.`, theirs.length ? `statements week ${weeks.join(',')}` : 'absent');
+  }
+}
+
+// The ballots a line states, as [voterId, targetId] pairs: "I voted to evict
+// Nash", "Rae, Bev and Marcus voted Flynn out", "Bev voted for Flynn".
+const NAME = String.raw`(?:I|me|[A-Z][a-z]+)`;
+const BALLOT = new RegExp(String.raw`(${NAME}(?:\s*,\s*(?:and\s+)?${NAME}|\s+and\s+${NAME})*)\s+(?:all\s+|both\s+)?voted\s+(?:to\s+evict\s+|for\s+|against\s+|out\s+)?([A-Z][a-z]+)`, 'g');
+function statedBallots(g, speakerId, text) {
+  const pairs = [];
+  for (const m of String(text || '').matchAll(BALLOT)) {
+    const target = idByName(g, m[2]);
+    if (!target) continue;
+    for (const who of m[1].split(/\s*,\s*(?:and\s+)?|\s+and\s+/)) {
+      const voter = /^(I|me)$/i.test(who) ? speakerId : idByName(g, who);
+      if (voter) pairs.push([voter, target]);
+    }
+  }
+  return pairs;
+}
+// A rejection that cites an eviction vote is overruled when every ballot the
+// line states matches that vote exactly. Live, the reviewer said "Gus is
+// listed as voting to evict Flynn" of a record where Gus voted Nash.
+function ballotsMatch(g, speakerIds, candidate, evidence) {
+  const index = Number(String(evidence).match(/^votes?:(\d+)/i)?.[1]);
+  const v = Number.isInteger(index) ? (g.voteHistory || [])[index] : null;
+  if (!v) return false;
+  const lines = candidate.replies ? candidate.replies.map((r) => [r.id, r.reply]) : [[speakerIds[0], candidate.reply || candidate.reasoning || '']];
+  const pairs = lines.flatMap(([id, t]) => statedBallots(g, id, t));
+  return pairs.length > 0 && pairs.every(([voter, target]) => v.votes?.[voter] === target);
+}
+
+function checkSpoken(g, speakerId, listenerId, text, options) {
+  const nowWeek = g.evicted?.includes(speakerId) ? null : g.week;
+  assertHohClaims(g, speakerId, listenerId, text, nowWeek);
+  assertBallotClaims(g, speakerId, listenerId, text);
+  assertToldMe(g, speakerId, listenerId, text, nowWeek, options);
+}
+
 export async function validateNarrative(g, speakerIds, listenerId, candidate, ask, options = {}) {
   if (!candidate || typeof candidate !== 'object') throw rejected('Missing dialogue');
   const ids = Array.isArray(speakerIds) ? speakerIds : [speakerIds];
-  if (candidate.reply && ids.length === 1 && !options.authorizedAction) assertVetoOwnership(g, ids[0], candidate.reply);
+  if (candidate.reply && ids.length === 1 && !options.authorizedAction) {
+    assertVetoOwnership(g, ids[0], candidate.reply);
+    checkSpoken(g, ids[0], listenerId, candidate.reply, options);
+  }
   for (const reply of candidate.replies || []) {
     if (!ids.includes(reply.id)) throw rejected('Unknown speaker');
     assertVetoOwnership(g, reply.id, reply.reply);
+    checkSpoken(g, reply.id, listenerId, reply.reply, options);
   }
-  for (const [field, addressee] of Object.entries(options.addressed || {})) assertAddressedVeto(g, addressee, candidate[field]);
+  for (const [field, addressee] of Object.entries(options.addressed || {})) {
+    assertAddressedVeto(g, addressee, candidate[field]);
+    assertHohClaims(g, ids[0], addressee, candidate[field]);
+    assertBallotClaims(g, ids[0], addressee, candidate[field]);
+    assertHeardClaims(g, ids[0], addressee, candidate[field]);
+  }
+  if (typeof candidate.reasoning === 'string') { // a juror's vote, read aloud
+    assertHohClaims(g, ids[0], null, candidate.reasoning);
+    assertBallotClaims(g, ids[0], null, candidate.reasoning);
+  }
   if (options.citations) {
     const allowed = new Set(evidenceFor(g, ids[0]).map(e => e.id));
     // Citations are bookkeeping, not speech. Replayed live, a juror's whole
@@ -125,6 +294,7 @@ export async function validateNarrative(g, speakerIds, listenerId, candidate, as
   // still counts; only an explicit "none" is treated as no finding.)
   const evidence = audit.evidence === undefined ? 'unspecified' : String(audit.evidence || '').trim();
   if (!evidence || /^(none|n\/a|null)$/i.test(evidence)) return candidate;
+  if (ballotsMatch(g, ids, candidate, evidence)) return candidate;
   const err = rejected('Dialogue does not match the session record');
   err.reason = String(audit.reason || '').slice(0, 300);
   err.evidence = evidence.slice(0, 60);
@@ -154,6 +324,21 @@ function recentConversation(messages, speakerId, listenerId) {
 // nearly-right AI reply for a canned line that did not answer the question.
 // askJson({system, messages, maxTokens}) -> parsed JSON; shared by the browser
 // (single-player) and the room server.
+// A corrected draft sometimes opens by correcting itself ("I misspoke - …",
+// "Actually let me correct myself — …"), live in both replays. Nobody heard the
+// first draft, so there is nothing to take back: drop the preface.
+const PREFACE = /^\s*(?:actually,?\s+)?(?:let me correct myself|i misspoke|i stand corrected|correction|scratch that|to correct myself|sorry,?\s+i misspoke|my mistake)\s*[-—–:,.;!]*\s*/i;
+export function dropCorrectionPreface(draft) {
+  if (!draft || typeof draft !== 'object') return draft;
+  for (const field of ['reply', 'reasoning', 'questionForF1', 'questionForF2']) {
+    const t = draft[field];
+    if (typeof t !== 'string' || !PREFACE.test(t)) continue;
+    const rest = t.replace(PREFACE, '');
+    if (rest.trim()) draft[field] = rest.charAt(0).toUpperCase() + rest.slice(1);
+  }
+  return draft;
+}
+
 export async function groundedChat({ g, speakerId, listenerId, utterance, system, messages, askJson, maxTokens = 900 }) {
   const conversation = recentConversation(messages, speakerId, listenerId);
   // The model sometimes returns well-formed JSON with no words in it (seen
@@ -172,7 +357,7 @@ export async function groundedChat({ g, speakerId, listenerId, utterance, system
       { role: 'assistant', content: JSON.stringify({ reply: String(draft?.reply || '') }) },
       { role: 'user', content: `[Fact-check — not said by anyone in the house] That reply was held back: ${err.reason} (record: ${err.evidence}). Answer the previous message again, in character, with that corrected and nothing else changed. Same JSON format.` },
     ];
-    draft = await askJson({ system, messages: retry, maxTokens });
+    draft = dropCorrectionPreface(await askJson({ system, messages: retry, maxTokens }));
     if (!spoken(draft)) throw new Error('Model returned an empty reply');
     return validateNarrative(g, speakerId, listenerId, draft, askJson, { utterance, conversation });
   }
@@ -226,7 +411,7 @@ export async function groundedAsk({ g, speakerId, listenerId, system, prompt, as
       { role: 'assistant', content: JSON.stringify(draft) },
       { role: 'user', content: `[Fact-check — not said by anyone in the house] That was held back: ${err.reason} (record: ${err.evidence}). Give it again with that corrected, stating only what your record supports. Your decision and your feelings are yours to keep or change. Do not mention this correction or an earlier version. Same JSON format.` },
     ];
-    draft = await call(retry);
+    draft = dropCorrectionPreface(await call(retry));
     if (!ok(draft)) throw new Error('Model reply was unusable');
     return validateNarrative(g, speakerId, listenerId, draft, askJson, options);
   }

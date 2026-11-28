@@ -480,7 +480,7 @@ function snapshotJuryNotes(g, jurorId, votes) {
   const keptToMe = g.promises.filter((p) => p.status === 'kept' && p.to === jurorId);
   for (const p of keptToMe) notes.push(`${nameOf(g, p.from)} kept a promise: "${p.text}".`);
   for (const s of mem.convoSummaries.slice(-6)) notes.push(`(wk ${s.week}) with ${nameOf(g, s.withId)}: ${s.summary}`);
-  notes.push('Individual eviction ballots are secret; the outcome does not establish who cast each vote.');
+  notes.push('Eviction ballots are read out by name; who voted which way is in the vote records.');
   mem.juryNotes = notes.slice(0, 18);
 }
 

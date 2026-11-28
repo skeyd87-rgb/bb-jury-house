@@ -128,6 +128,22 @@ const SCENARIOS = [
       } },
     ],
   },
+  {
+    // Reported (BB-XDWN, 2026-11-28): a houseguest placed words the player
+    // said this week in "last week", a juror claimed nominations from a week
+    // someone else was HoH, a finalist said eviction ballots were never public.
+    name: 'BB-XDWN: who said what, who was HoH, who voted',
+    npc: 'gus',
+    game: () => season({ hoh: 'rae', setup: (g) => {
+      g.voteHistory.push({ week: 1, evicted: 'tessa', votes: { rae: 'tessa', zoe: 'tessa', bev: 'nash', gus: 'tessa', you: 'tessa', flynn: 'nash' } });
+      g.voteHistory.push({ week: 2, evicted: 'flynn', votes: { rae: 'flynn', bev: 'flynn', gus: 'nash', marcus: 'flynn', you: 'flynn' } });
+    } }),
+    lines: [
+      { say: "didn't I already tell you last week that Marcus and I are tight?", mustNot: [[/\b(yeah|yes|right|you did|i remember)\b[^.?!]*\b(told|said|mentioned)\b/i, 'agrees the player told them something last week; they never spoke']] },
+      { say: 'you were hoh in week 2, right?', must: [[/zoe|\bno\b|not me|wasn'?t/i, 'Zoe was HoH in week 2, not Gus']] },
+      { say: 'who voted to evict Flynn?', must: [[/rae|bev|marcus|you/i, 'should name the voters, which were read out']], mustNot: [[/\b(secret|no idea who|can'?t (know|say) who|nobody knows)\b/i, 'treats read-out ballots as unknown']] },
+    ],
+  },
 ];
 SCENARIOS.find((s) => s.npc === 'flynnless').npc = 'nash';
 
