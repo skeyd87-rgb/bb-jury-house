@@ -150,6 +150,13 @@ export class Room extends Server {
       t.waitingOnCount = this.turn.waitingOn.length;
       t.waitingOnMe = !!viewerPid && this.turn.waitingOn.includes(viewerPid);
       t.waitingOn = t.waitingOnMe ? ['me'] : [];
+      // Who the room is waiting on, by houseguest name, so the host can see it
+      // is a person and not a fault. Whether someone has acted is public.
+      const g = this.game;
+      t.waitingOnNames = g ? this.turn.waitingOn.map((pid) => {
+        const eid = this.engineForPlayer(pid);
+        return eid ? nameOf(g, eid) : null;
+      }).filter(Boolean) : [];
     }
     return t;
   }
@@ -320,7 +327,7 @@ export class Room extends Server {
     const id = typeof msg.targetId === 'string' ? msg.targetId : null;
     const x = Number(msg.x), z = Number(msg.z);
     if (!g || !viewer || !id || this.turn?.kind !== 'social' || !isFinite(x) || !isFinite(z)) return;
-    if (!activeIds(g).includes(id) || id === viewer || this.isActiveHuman(id)) return;
+    if (!activeIds(g).includes(id) || !activeIds(g).includes(viewer) || id === viewer || this.isActiveHuman(id)) return;
     const witnesses = (Array.isArray(msg.witnesses) ? msg.witnesses : []).slice(0, 12)
       .filter((w) => typeof w === 'string' && activeIds(g).includes(w) && !this.isActiveHuman(w));
     const seen = applyPulledAside(g, viewer, id, witnesses);
@@ -411,19 +418,23 @@ export class Room extends Server {
 
   async setTurn(turn) {
     this.turn = turn;
-    if (turn?.kind !== 'social') {
-      this.huddle = null;
-      for (const [v, a] of Object.entries(this.approaches || {})) this.sendAll({ type: 'npcSummon', id: a.npcId, to: v, on: false });
-      this.approaches = {};
-    }
     this.applyTurnTimer();
     await this.commit();
   }
 
-  // Stamps the current turn with a deadline (so clients can show a countdown)
-  // and (re)schedules the Durable Object alarm that force-resolves it.
+  // Every new turn comes through here (setTurn, and the comp, vote and jury
+  // answer turns that set this.turn themselves). Outside a social window the
+  // house stops talking: groups break up, huddles and approaches end. The
+  // comp and vote turns used to skip this, so a house meeting ran on into the
+  // veto comp. Then stamps the deadline and (re)schedules the alarm.
   applyTurnTimer() {
     if (!this.turn) return;
+    if (this.turn.kind !== 'social') {
+      this.closeGroups();
+      this.huddle = null;
+      for (const [v, a] of Object.entries(this.approaches || {})) this.sendAll({ type: 'npcSummon', id: a.npcId, to: v, on: false });
+      this.approaches = {};
+    }
     const secs = this.turnTimerSeconds();
     if (secs > 0) this.turn.turnDeadline = Date.now() + secs * 1000;
     else delete this.turn.turnDeadline;
@@ -883,8 +894,60 @@ export class Room extends Server {
   // ---- Drop-in/out + timers (Phase 4) --------------------------------------
   // AI covers absent humans so the season never stalls.
 
-  // Fill ALL outstanding human actions in the current turn with AI decisions
-  // and resolve it. Used by the host "skip" button and the phase timer.
+  // The host's "move on". The AI never decides for a person who is connected:
+  // in a comp, anyone connected who has not played forfeits with 0; any other
+  // turn waits for them. Offline players are already covered by the AI the
+  // moment they drop (coverDisconnected); this sweeps up any that slipped by.
+  async hostMoveOn() {
+    const g = this.game;
+    const t = this.turn;
+    if (!g || !t) return;
+    if (t.kind === 'comp') {
+      for (const id of t.players) {
+        if (t.scores[id] != null) continue;
+        t.scores[id] = this.isActiveHuman(id) ? 0 : Math.round(npcCompScore(g, id));
+      }
+      t.waitingOn = [];
+      return this.resolveComp();
+    }
+    if (Array.isArray(t.waitingOn) || t.actor || t.juror) return this.coverOffline();
+    return this.advanceResultTurn();
+  }
+
+  // AI covers every pending action of a player who is NOT connected.
+  async coverOffline() {
+    const t = this.turn;
+    if (!t) return;
+    const pending = new Set();
+    for (const pid of t.waitingOn || []) { const eid = this.engineForPlayer(pid); if (eid) pending.add(eid); }
+    if (t.actor) pending.add(t.actor);
+    if (t.juror) pending.add(t.juror);
+    for (const eid of pending) {
+      if (this.turn !== t) return; // a cover resolved the turn
+      if (!this.isActiveHuman(eid)) await this.coverDisconnected(eid);
+    }
+  }
+
+  // House meetings and group talks end with the social window that held them.
+  closeGroups() {
+    const groups = this.game?.mpGroups;
+    if (!groups) return;
+    for (const grp of Object.values(groups)) {
+      if (grp.closed) continue;
+      grp.closed = true;
+      for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupSystem', groupId: grp.id, text: 'The group broke up.' });
+    }
+  }
+
+  // Talking happens in the house, during a social window, between houseguests
+  // still in it. Evicted players are on the jury and out of the house.
+  canTalk(engineId) {
+    const g = this.game;
+    return !!(g && this.turn?.kind === 'social' && engineId && activeIds(g).includes(engineId));
+  }
+
+  // Fill ALL outstanding actions in the current turn with AI decisions and
+  // resolve it. Only for turns nobody connected is acting in (see hostMoveOn).
   async forceResolveTurn() {
     const g = this.game;
     const t = this.turn;
@@ -975,24 +1038,31 @@ export class Room extends Server {
   }
 
   // Duration (seconds) before the phase timer auto-covers absent players.
+  // The lobby's "Social phase length" is how long a free-roam window lasts
+  // before the house moves on by itself; the host can move on sooner. Nothing
+  // else runs on a clock: a person acting is waited for (the host can end a
+  // comp), and a player who drops is covered by the AI when they drop.
   turnTimerSeconds() {
     const t = this.turn;
     if (!t) return 0;
-    if (['comp', 'nominate', 'veto_decision', 'replacement', 'vote', 'final_cut', 'jury_question', 'jury_answer', 'jury_vote'].includes(t.kind)) {
-      return this.state.settings.phaseSeconds || 1200;
-    }
-    return 180; // result/intro screens auto-advance if the host is away
+    if (t.kind === 'social') return this.state.settings.phaseSeconds || 1200;
+    return 0;
   }
 
   scheduleTurnTimer() {
     const secs = this.turnTimerSeconds();
+    // Always replace the previous alarm: a social window's alarm left standing
+    // after the host moved on early used to fire into the next turn (a comp)
+    // and have the AI play for everyone still in it.
     if (secs > 0) this.ctx.storage.setAlarm(Date.now() + secs * 1000);
+    else this.ctx.storage.deleteAlarm();
   }
 
   async alarm() {
-    // Timer fired: cover any absent humans / advance a stalled screen.
-    if (this.state?.phase === 'playing' && this.turn) {
-      await this.forceResolveTurn();
+    const t = this.turn;
+    if (this.state?.phase !== 'playing' || !t) return;
+    if (t.kind === 'social' && t.turnDeadline && Date.now() >= t.turnDeadline - 2000) {
+      await this.advanceResultTurn();
     }
   }
 
@@ -1046,6 +1116,10 @@ export class Room extends Server {
     const g = this.game;
     if (!g || !text) return;
     if (!activeIds(g).includes(targetId) || targetId === chatterId) return;
+    if (!this.canTalk(chatterId)) {
+      connection.send(JSON.stringify({ type: 'chatReply', npcId: targetId, text: null, note: 'The house has moved on.' }));
+      return;
+    }
 
     // Human target who is ONLINE: relay the message to them (they reply from
     // their own chat). A player who is away is covered by the AI everywhere
@@ -1130,7 +1204,7 @@ export class Room extends Server {
     const g = this.game;
     if (!g) return;
     const founder = this.engineForPlayer(pid);
-    if (!founder) return;
+    if (!founder || !this.canTalk(founder)) return;
     const ids = activeIds(g).filter((id) => id !== founder && memberIds.includes(id));
     if (ids.length < (isHouseMeeting ? 1 : 2)) return;
     if (!g.mpGroups) g.mpGroups = {};
@@ -1149,9 +1223,9 @@ export class Room extends Server {
   async handleGroupMsg(pid, groupId, text) {
     const g = this.game;
     const grp = g?.mpGroups?.[groupId];
-    if (!grp || !text) return;
+    if (!grp || !text || grp.closed) return;
     const senderId = this.engineForPlayer(pid);
-    if (!senderId || !grp.members.includes(senderId)) return;
+    if (!senderId || !grp.members.includes(senderId) || !this.canTalk(senderId)) return;
 
     // Whisper: /whisper <name> <msg> — only that member truly hears it, but the
     // rest of the group notices the huddle (matches the single-player mechanic).
@@ -1248,7 +1322,7 @@ export class Room extends Server {
     const g = this.game;
     if (!g) return;
     const founder = this.engineForPlayer(pid);
-    if (!founder) return;
+    if (!founder || !activeIds(g).includes(founder)) return;
     const picked = activeIds(g).filter((id) => id !== founder && memberIds.includes(id));
     if (!picked.length) return;
     const aiAccepts = [], aiDeclines = [], pendingHumans = [];
@@ -1804,7 +1878,7 @@ export class Room extends Server {
       case 'forceResolve': {
         // Host override: AI-cover any players we're waiting on and move ahead.
         const pid = this.connToPlayer.get(connection.id);
-        if (pid === this.state.hostPlayerId && this.turn) await this.forceResolveTurn();
+        if (pid === this.state.hostPlayerId && this.turn) await this.hostMoveOn();
         return;
       }
 

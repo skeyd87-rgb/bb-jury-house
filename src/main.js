@@ -325,6 +325,8 @@ function takeItPrivateOnline(id) {
 
 async function openOnlineChat(targetId, { opener = null, firstLine = null } = {}) {
   if (onlineOverlay || compRunning) return; // don't interrupt a ceremony/comp
+  // Talk only in a social window, and only while you are still in the house.
+  if (onlineGame?.turn?.kind !== 'social' || iAmEvicted()) return;
   endOnlineApproach(false);
   const hg = onlineGame.houseguests.find((h) => h.id === targetId);
   if (!hg || onlineGame.evicted.includes(targetId)) return;
@@ -797,16 +799,18 @@ function syncOnlineWorld(game) {
     xp.title = 'Save or share your record of this season: your conversations, the comps, events and promises';
     xp.onclick = () => { if (!onlineOverlay && !compRunning) exportOnline(); };
     roomActions.append(xp);
-    const ga = el('button', 'bb', 'Form Alliance');
-    ga.onclick = () => formAllianceFlowOnline();
-    socialActions.append(ga);
-    const gc = el('button', 'bb', 'Group Talk');
-    gc.onclick = () => groupChatFlowOnline();
-    socialActions.append(gc);
-    const hm = el('button', 'bb', 'House Meeting');
-    hm.onclick = () => groupChatFlowOnline(onlineActiveIds(game).filter((id) => id !== meId));
-    socialActions.append(hm);
-    btns.append(socialMenu);
+    if (!iAmEvicted()) { // the jury is out of the house
+      const ga = el('button', 'bb', 'Form Alliance');
+      ga.onclick = () => formAllianceFlowOnline();
+      socialActions.append(ga);
+      const gc = el('button', 'bb', 'Group Talk');
+      gc.onclick = () => groupChatFlowOnline();
+      socialActions.append(gc);
+      const hm = el('button', 'bb', 'House Meeting');
+      hm.onclick = () => groupChatFlowOnline(onlineActiveIds(game).filter((id) => id !== meId));
+      socialActions.append(hm);
+      btns.append(socialMenu);
+    }
   }
   const leave = el('button', 'bb', 'Leave Room');
   leave.onclick = () => {
@@ -879,6 +883,20 @@ function isSpectator() {
   return !myEngineId();
 }
 
+// Evicted: on the jury, out of the house. They watch, and come back in at the
+// finale to ask their question and vote.
+function iAmEvicted() {
+  const me = myEngineId();
+  return !!(me && onlineGame?.evicted?.includes(me));
+}
+let juryNoticeShown = false;
+function noteMyEviction(game) {
+  if (juryNoticeShown || !iAmEvicted()) return;
+  juryNoticeShown = true;
+  closeChatPanel();
+  showToast("You've been evicted and joined the jury. Watch the rest of the season from here: at the finale you'll ask the finalists a question and cast your vote.");
+}
+
 function phaseLabelOnline(game) {
   const k = game.turn?.kind;
   const map = {
@@ -927,7 +945,7 @@ function onlineSocialStrap(game) {
   if (t?.kind !== 'social') return null;
   const bar = el('div', 'online-social-bar');
   bar.id = 'online-social-bar';
-  bar.append(el('span', '', `<b>${t.label}</b> — tap a houseguest to talk.`));
+  bar.append(el('span', '', iAmEvicted() ? `<b>${t.label}</b> — you're on the jury, watching.` : `<b>${t.label}</b> — tap a houseguest to talk.`));
   if (iAmHost()) {
     const adv = el('button', 'bb gold sm', t.next === 'nominations' ? '▶ Nominations' : t.next === 'veto_comp' ? '▶ Veto Comp' : '▶ Live Eviction');
     adv.onclick = () => room.send('advanceTurn');
@@ -951,6 +969,7 @@ function handleOnlineTurn(game) {
   if (onlineApproach && game.turn?.kind !== 'social') { endOnlineApproach(); clearToast(); world.releaseAllFollowers(); }
   maybeUpgradeSpectator(game);
   syncOnlineWorld(game);
+  noteMyEviction(game);
   syncOnlineHuddle(game);
   const t = game.turn;
   if (!t) return;
@@ -977,7 +996,16 @@ function amIActing(game, t) {
 const STAGED_TURNS = ['nominate', 'noms_result', 'veto_decision', 'veto_result', 'replacement', 'vote', 'eviction_result'];
 
 function renderOnlineTurn(game, t) {
-  if (t.kind !== 'comp') compRunning = false; // never leave it stuck after a comp
+  if (t.kind !== 'comp' && compRunning) {
+    // The comp ended without us (the host closed it): take the game off the
+    // screen; its score, when it comes, is dropped (see the comp case).
+    compRunning = false;
+    overlayRoot.querySelectorAll('.comp-box').forEach((e) => e.remove());
+  }
+  // Everyone moves with the house. A conversation or house meeting left open
+  // kept people talking through comps and ceremonies on their own screen while
+  // the room waited on them.
+  if (t.kind !== 'social') closeChatPanel();
   closeOnlineOverlay();
   world.releaseHolds(); // a new turn: nobody is left standing in a conversation that ended
   onlineMood(game, t);
@@ -994,11 +1022,20 @@ function renderOnlineTurn(game, t) {
   const host = iAmHost();
 
   const waitCard = (kicker, title, body) => {
-    onlineOverlay = cinematic({ kicker, title, bodyHtml: body || '<p class="muted">Waiting on the house…</p>' });
+    // Name the people the room is waiting on (an older server sends no names).
+    const names = t.waitingOnNames || [];
+    const who = names.length ? `<p class="muted">Waiting on ${names.map(escHtml).join(', ')}.</p>` : '';
+    onlineOverlay = cinematic({ kicker, title, bodyHtml: (body || '<p class="muted">Waiting on the house…</p>') + who });
     const acts = [];
     if (host && isResultKind(t.kind)) acts.push({ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') });
-    // Host can AI-cover players we're stuck waiting on.
-    if (host && ((t.waitingOnCount || 0) > 0 || (t.waitingOn && t.waitingOn.length))) acts.push({ label: '⏩ Skip waiting (AI decides)', style: 'primary', onClick: () => room.send('forceResolve') });
+    // The AI never plays for someone who is here. In a comp the host can close
+    // it: anyone who has not played scores 0. Any other turn waits for them.
+    const waiting = (t.waitingOnCount || 0) > 0 || (t.waitingOn && t.waitingOn.length);
+    if (host && waiting && t.kind === 'comp') {
+      acts.push({ label: '⏹ End comp now', style: 'primary', onClick: () => {
+        if (confirm(`End the comp now? ${names.length ? names.join(', ') + (names.length === 1 ? ' has' : ' have') : 'Anyone who has'} not played and will score 0.`)) room.send('forceResolve');
+      } });
+    }
     onlineOverlay.setActions(acts);
   };
 
@@ -1043,6 +1080,10 @@ function renderOnlineTurn(game, t) {
         onlineOverlay.setActions([{ label: 'Compete! ▶', style: 'gold', onClick: async () => {
           closeOnlineOverlay();
           const score = await runComp(t.compType, overlayRoot);
+          // The comp closed while we played (the host ended it): the next turn is
+          // already on screen, so report nothing and draw nothing.
+          const now = onlineGame?.turn;
+          if (!now || now.kind !== 'comp' || now.comp !== t.comp || onlineGame.week !== game.week) return;
           compRunning = false;
           room.send('compScore', { score });
           onlineOverlay = cinematic({ kicker: compName, title: `You scored ${Math.round(score)}`, bodyHtml: '<p class="muted">Waiting for the other competitors…</p>' });
