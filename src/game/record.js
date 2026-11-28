@@ -85,7 +85,7 @@ export function buildSeasonRecord(g, meta = {}) {
     L.push(`WEEK ${w}`);
     L.push(line('='));
     for (const c of comps.get(w) || []) {
-      L.push(`[${c.type === 'hoh' ? 'HoH comp' : 'Veto comp'}] won by ${who(c.winner)} — ${scoreBoard(g, c.scores)}`);
+      L.push(`[${c.type === 'hoh' ? 'HoH comp' : c.type === 'final_hoh' ? 'Final HoH' : 'Veto comp'}] won by ${who(c.winner)} — ${scoreBoard(g, c.scores)}`);
     }
     for (const e of events.get(w) || []) L.push(`[${e.phase}] ${e.text}`);
     for (const v of full ? votes.get(w) || [] : []) {
@@ -134,7 +134,7 @@ export function buildSeasonRecord(g, meta = {}) {
   L.push('');
   L.push('ALLIANCES');
   L.push(line());
-  for (const a of (g.alliances || []).filter((al) => full || al.members.includes(viewer))) L.push(`"${a.name}" — ${a.members.map(who).join(', ')} · formed wk ${a.formedWeek}${a.dead ? ' · DEAD' : ''}`);
+  for (const a of (g.alliances || []).filter((al) => full || al.members.includes(viewer))) L.push(`"${a.name}" — ${a.members.map(who).join(', ')} · formed ${a.formedWeek >= 1 ? `wk ${a.formedWeek}` : `before the season`}${a.dead ? ' · DEAD' : ''}`);
   L.push('');
   L.push('WHAT EACH HOUSEGUEST HELD AGAINST PEOPLE');
   L.push(line());

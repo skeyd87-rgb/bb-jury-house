@@ -509,7 +509,128 @@ async function testAnApproachSummonsOnEveryScreenAndOpensWithTheirLine() {
   if (leaked) throw new Error("another player was sent someone else's approach");
 }
 
+// The lobby's "Social phase length" is how long a free-roam window runs. It
+// used to apply only to action turns; the social window itself ended after a
+// hard-coded 3 minutes, dropping people out of conversations into a comp.
+async function testSocialWindowRunsTheChosenLength() {
+  const { host, rae } = await setupLobbyWithTwoHumans('BB-W');
+  send(host, { type: 'setSettings', phaseSeconds: 600 });
+  await delay(200);
+  send(host, { type: 'startSeason', clientTime: Date.now() });
+  await waitTurn(host, 'week_ready');
+  send(host, { type: 'advanceTurn' });
+  await waitTurn(host, 'intro');
+  send(host, { type: 'advanceTurn' });
+  const comp = await waitTurn(host, 'comp');
+  send(host, { type: 'compScore', score: 10 });
+  send(rae, { type: 'compScore', score: 10 });
+  await waitTurn(host, 'comp_result');
+  send(host, { type: 'advanceTurn' });
+  const social = await waitTurn(host, 'social');
+  closeAll(host, rae);
+  if (comp.turnDeadline) throw new Error('a comp with people in it runs on a clock');
+  const left = (social.turnDeadline - Date.now()) / 1000;
+  if (!(left > 580 && left <= 600)) throw new Error(`social window lasts ${Math.round(left)}s, not 600s`);
+}
+
+// The host can close a comp, but the AI never plays for someone connected:
+// whoever has not played scores 0.
+async function testEndingACompNeverPlaysForAConnectedPerson() {
+  const { host, rae } = await setupStartedRoom('BB-E');
+  send(host, { type: 'advanceTurn' });
+  const comp = await waitTurn(rae, 'comp');
+  if (!comp.waitingOnNames?.length) throw new Error('the wait does not name who it is waiting on');
+  send(host, { type: 'compScore', score: 40 });
+  await delay(300);
+  send(host, { type: 'forceResolve' });
+  const result = await waitTurn(host, 'comp_result');
+  closeAll(host, rae);
+  const raeRow = result.board.find((b) => b.id === 'rae');
+  if (!raeRow) throw new Error('Rae missing from the board');
+  if (raeRow.score !== 0) throw new Error(`Rae, connected and unplayed, got an AI score of ${raeRow.score}`);
+}
+
+// Talk is for social windows. A chat sent during a comp gets no houseguest
+// reply, and a group started in a social window breaks up when it ends.
+async function testTalkStopsWhenTheHouseMovesOn() {
+  const { host, rae } = await setupSocialRoom('BB-T');
+  send(host, { type: 'startGroup', memberIds: ['rae', 'zoe'], isHouseMeeting: false });
+  const start = await waitFor(rae, (m) => m.type === 'groupStart');
+  send(host, { type: 'advanceTurn' }); // social → nominations
+  const broke = await waitFor(rae, (m) => m.type === 'groupSystem' && m.groupId === start.groupId && /broke up/.test(m.text), 4000);
+  const before = rae.messages.length;
+  send(host, { type: 'groupMsg', groupId: start.groupId, text: 'still here?' });
+  send(host, { type: 'chat', targetId: 'zoe', text: 'hey' });
+  const reply = await waitFor(host, (m) => m.type === 'chatReply' && m.npcId === 'zoe', 5000);
+  await delay(300);
+  const leaked = rae.messages.slice(before).some((m) => m.type === 'groupMsg');
+  closeAll(host, rae);
+  if (!broke) throw new Error('group did not break up');
+  if (leaked) throw new Error('a group message got through after the window closed');
+  if (reply.text) throw new Error('a houseguest answered outside a social window');
+}
+
+// A double tap on an advance button moves the game on once. In BB-XDWN a
+// second tap while the AI juror was thinking recorded Nash's vote twice and
+// skipped Bev's.
+async function testADoubleTappedAdvanceMovesOnce() {
+  const { host, rae } = await setupStartedRoom('BB-D');
+  send(host, { type: 'advanceTurn' });
+  await waitTurn(host, 'comp');
+  send(host, { type: 'compScore', score: 10 });
+  send(rae, { type: 'compScore', score: 10 });
+  const result = await waitTurn(host, 'comp_result');
+  send(host, { type: 'advanceTurn', turnId: result.id });
+  send(host, { type: 'advanceTurn', turnId: result.id });
+  await waitTurn(host, 'social');
+  await delay(800);
+  const now = latest(host, 'game')?.game?.turn?.kind;
+  closeAll(host, rae);
+  if (!result.id) throw new Error('turns carry no id');
+  if (now !== 'social') throw new Error(`a double tap skipped the social window (now ${now})`);
+}
+
+// People start the season outside the backstory alliances: they never agreed
+// to one. Rae held a grudge over "The Day Ones" against a player who had
+// never heard of it.
+async function testPeopleStartOutsideBackstoryAlliances() {
+  const { host, rae } = await setupStartedRoom('BB-A');
+  await delay(300);
+  const hostAl = latest(host, 'game')?.game?.myAlliances || [];
+  const raeAl = latest(rae, 'game')?.game?.myAlliances || [];
+  closeAll(host, rae);
+  if (hostAl.length || raeAl.length) throw new Error(`seated in alliances they never made: ${[...hostAl, ...raeAl].map((a) => a.name).join(', ')}`);
+}
+
+// A house meeting is on every screen: everyone in it is listed for all to
+// gather, and when the one who called it steps out it ends for everyone.
+async function testAHouseMeetingGathersEveryoneAndEndsForAll() {
+  const { host, rae } = await setupSocialRoom('BB-H');
+  const all = latest(host, 'game').game.houseguests.map((h) => h.id).filter((id) => id !== 'you');
+  send(host, { type: 'startGroup', memberIds: all, isHouseMeeting: true });
+  const start = await waitFor(rae, (m) => m.type === 'groupStart' && m.isHouseMeeting);
+  const seen = await waitFor(rae, (m) => m.type === 'game' && m.game?.meeting?.id === start.groupId);
+  const members = seen.game.meeting.members;
+  send(host, { type: 'huddleRequest' });
+  await delay(300);
+  const huddleDuring = latest(host, 'game')?.game?.huddle;
+  send(host, { type: 'leaveGroup', groupId: start.groupId });
+  await waitFor(rae, (m) => m.type === 'groupEnd' && m.groupId === start.groupId);
+  await delay(300);
+  const after = latest(rae, 'game')?.game?.meeting;
+  closeAll(host, rae);
+  if (!members.includes('rae') || !members.includes('zoe') || members.length < 3) throw new Error('meeting does not list people and AI houseguests');
+  if (huddleDuring) throw new Error('a huddle started during the house meeting');
+  if (after) throw new Error('meeting still showing after its caller left');
+}
+
 const tests = [
+  testADoubleTappedAdvanceMovesOnce,
+  testPeopleStartOutsideBackstoryAlliances,
+  testAHouseMeetingGathersEveryoneAndEndsForAll,
+  testSocialWindowRunsTheChosenLength,
+  testEndingACompNeverPlaysForAConnectedPerson,
+  testTalkStopsWhenTheHouseMovesOn,
   testOverhearingIsRolledByTheServerAndNeverByAHuman,
   testTakingAHouseguestAsideMovesThemOnEveryScreen,
   testExportIsThePlayersOwnRecord,
