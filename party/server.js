@@ -34,6 +34,12 @@ const SEAT_DEFS = [
   { id: 'newcomer', name: 'Newcomer', job: 'Houseguest', color: 0xECE7DA, fixed: false },
 ];
 
+// Messages that can change the turn; see runSerial.
+const TURN_MESSAGES = new Set([
+  'startSeason', 'advanceTurn', 'forceResolve', 'compScore', 'nominate', 'vetoDecision', 'replacement',
+  'vote', 'finalCut', 'juryQuestion', 'juryAnswer', 'juryVote', 'claimLiveSeat', 'takeoverResponse',
+]);
+
 export class Room extends Server {
   constructor(ctx, env) {
     super(ctx, env);
@@ -184,6 +190,7 @@ export class Room extends Server {
       // that it is happening is public (anyone in the house can see it);
       // what is said goes only to a player who listens in.
       huddle: this.liveHuddle(),
+      meeting: this.liveMeeting(),
       myEngineId: viewerEngineId || null,
       turn: this.projectTurn(viewerPid),
       houseguests: g.houseguests.map((h) => ({
@@ -242,7 +249,7 @@ export class Room extends Server {
   // One player's record of the season. Mid-season it holds only what they
   // could know; once there is a winner, everything except other players'
   // conversations.
-  async handleExport(pid) {
+  async handleExport(pid, clientVersion = '') {
     const g = this.game;
     const viewer = this.engineForPlayer(pid);
     if (!g || !viewer) return;
@@ -252,7 +259,7 @@ export class Room extends Server {
     const text = buildSeasonRecord(g, {
       viewerId: viewer, scope: over ? 'full' : 'viewer', raw: false,
       transcript: this.tx[viewer], intel: (g.intelBy && g.intelBy[viewer]) || [],
-      version: 'online',
+      version: clientVersion ? `${clientVersion} online` : 'online',
     });
     this.sendToPid(pid, { type: 'exportRecord', text, filename: recordFilename(g, nameOf(g, viewer)), full: over });
   }
@@ -349,9 +356,36 @@ export class Room extends Server {
     return { id: h.id, a: h.a, b: h.b };
   }
 
+  // A house meeting in progress: who is in it. Public, like the huddle: every
+  // screen gathers these houseguests, people and AI alike, in the living room.
+  liveMeeting() {
+    const m = this.meeting;
+    if (!m || this.turn?.kind !== 'social') return null;
+    const grp = this.game?.mpGroups?.[m.groupId];
+    if (!grp || grp.closed) return null;
+    return { id: m.groupId, members: grp.members.slice(), founder: grp.founder };
+  }
+
+  // A member steps out of a group. When the one who called it leaves, or
+  // nobody is left to talk to, it is over for everyone.
+  async handleLeaveGroup(pid, groupId) {
+    const g = this.game;
+    const grp = g?.mpGroups?.[groupId];
+    const who = this.engineForPlayer(pid);
+    if (!grp || grp.closed || !who || !grp.members.includes(who)) return;
+    if (who === grp.founder || grp.members.length <= 2) {
+      this.closeGroup(grp, grp.isHouseMeeting ? 'The house meeting is over.' : 'The group broke up.');
+    } else {
+      grp.members = grp.members.filter((m) => m !== who);
+      for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupSystem', groupId, text: `${nameOf(g, who)} stepped out.` });
+    }
+    await this.commit();
+  }
+
   handleHuddleRequest(pid) {
     const g = this.game;
     if (!g || this.turn?.kind !== 'social' || !this.engineForPlayer(pid)) return;
+    if (this.liveMeeting()) return; // the house is in a meeting
     const now = Date.now();
     if (this.liveHuddle() || now - (this.lastHuddleAt || 0) < 15000) return;
     // Only houseguests the AI is playing step aside: a claimed seat is a
@@ -429,6 +463,7 @@ export class Room extends Server {
   // veto comp. Then stamps the deadline and (re)schedules the alarm.
   applyTurnTimer() {
     if (!this.turn) return;
+    if (!this.turn.id) this.turn.id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     if (this.turn.kind !== 'social') {
       this.closeGroups();
       this.huddle = null;
@@ -514,6 +549,9 @@ export class Room extends Server {
     if (t.comp === 'hoh') {
       g.hoh = winner;
       logEvent(g, 'hoh', `${nameOf(g, winner)} won HoH.`, [winner]);
+    } else if (t.comp === 'final_hoh') {
+      g.hoh = winner;
+      logEvent(g, 'hoh', `${nameOf(g, winner)} won the Final HoH.`, [winner]);
     } else {
       g.vetoHolder = winner;
       logEvent(g, 'veto_win', `${nameOf(g, winner)} won the Power of Veto.`, [winner]);
@@ -932,10 +970,16 @@ export class Room extends Server {
   closeGroups() {
     const groups = this.game?.mpGroups;
     if (!groups) return;
-    for (const grp of Object.values(groups)) {
-      if (grp.closed) continue;
-      grp.closed = true;
-      for (const m of grp.members) if (this.isHuman(m)) this.sendToEngine(m, { type: 'groupSystem', groupId: grp.id, text: 'The group broke up.' });
+    for (const grp of Object.values(groups)) if (!grp.closed) this.closeGroup(grp, 'The group broke up.');
+  }
+
+  closeGroup(grp, text) {
+    grp.closed = true;
+    if (this.meeting?.groupId === grp.id) this.meeting = null;
+    for (const m of grp.members) {
+      if (!this.isHuman(m)) continue;
+      this.sendToEngine(m, { type: 'groupSystem', groupId: grp.id, text });
+      this.sendToEngine(m, { type: 'groupEnd', groupId: grp.id });
     }
   }
 
@@ -1059,6 +1103,10 @@ export class Room extends Server {
   }
 
   async alarm() {
+    return this.runSerial(() => this.alarmStep());
+  }
+
+  async alarmStep() {
     const t = this.turn;
     if (this.state?.phase !== 'playing' || !t) return;
     if (t.kind === 'social' && t.turnDeadline && Date.now() >= t.turnDeadline - 2000) {
@@ -1205,19 +1253,25 @@ export class Room extends Server {
     if (!g) return;
     const founder = this.engineForPlayer(pid);
     if (!founder || !this.canTalk(founder)) return;
+    if (isHouseMeeting && this.liveMeeting()) return; // one house meeting at a time
     const ids = activeIds(g).filter((id) => id !== founder && memberIds.includes(id));
     if (ids.length < (isHouseMeeting ? 1 : 2)) return;
     if (!g.mpGroups) g.mpGroups = {};
     const groupId = 'grp' + (Object.keys(g.mpGroups).length + 1) + '_' + g.week;
     const members = [founder, ...ids];
     g.mpGroups[groupId] = { id: groupId, members, founder, isHouseMeeting: !!isHouseMeeting, log: [] };
-    if (isHouseMeeting) logEvent(g, 'house_meeting', `${nameOf(g, founder)} called a house meeting.`, ids);
+    if (isHouseMeeting) {
+      logEvent(g, 'house_meeting', `${nameOf(g, founder)} called a house meeting.`, ids);
+      this.meeting = { groupId };
+      this.huddle = null; // everyone is called in
+    }
     const payload = {
       type: 'groupStart', groupId, members, memberNames: members.map((m) => nameOf(g, m)),
       founder, founderName: nameOf(g, founder), isHouseMeeting: !!isHouseMeeting,
     };
     for (const m of members) if (this.isHuman(m)) this.sendToEngine(m, payload);
-    await this.saveGame();
+    if (isHouseMeeting) await this.commit();
+    else await this.saveGame();
   }
 
   async handleGroupMsg(pid, groupId, text) {
@@ -1560,6 +1614,21 @@ export class Room extends Server {
     } catch {
       return;
     }
+    // Anything that can move the game on runs one at a time. Many of these
+    // wait on the AI for seconds; a second tap on "To the Vote" in that time
+    // used to run the same step again, so one juror voted twice and the next
+    // juror was skipped (the BB-XDWN finale).
+    if (TURN_MESSAGES.has(msg?.type)) return this.runSerial(() => this.dispatch(connection, msg));
+    return this.dispatch(connection, msg);
+  }
+
+  runSerial(fn) {
+    const run = (this.turnChain || Promise.resolve()).then(fn).catch((e) => console.error('turn step failed', e));
+    this.turnChain = run;
+    return run;
+  }
+
+  async dispatch(connection, msg) {
     const s = this.state;
 
     switch (msg.type) {
@@ -1674,6 +1743,16 @@ export class Room extends Server {
             if (hg) hg.name = seat.occupantName;
           }
         }
+        // The backstory alliances (formed "before the season") were written
+        // for single player. A person never agreed to one, so they start
+        // outside it; online they were held to it anyway: in BB-XDWN Rae held
+        // a grudge for a vote against "The Day Ones", an alliance the player
+        // never knew about, and Marcus "walked out" of one he never joined.
+        for (const al of this.game.alliances || []) {
+          if (al.formedWeek >= 1) continue;
+          al.members = al.members.filter((m) => !s.humanSeats[m]);
+          if (al.members.length < 2) al.dead = true;
+        }
         s.phase = 'playing';
         s.startedAt = msg.clientTime || 0;
         if (msg.apiKey) { this.apiKey = String(msg.apiKey); await this.ctx.storage.put('apiKey', this.apiKey); }
@@ -1707,7 +1786,7 @@ export class Room extends Server {
       }
       case 'exportRecord': {
         const pid = this.connToPlayer.get(connection.id);
-        if (pid) await this.handleExport(pid);
+        if (pid) await this.handleExport(pid, String(msg.version || '').slice(0, 20).replace(/[^w.-]/g, ''));
         return;
       }
       case 'getChatThread': {
@@ -1743,7 +1822,7 @@ export class Room extends Server {
       // ---- In-game player actions ----
       case 'advanceTurn': {
         const pid = this.connToPlayer.get(connection.id);
-        if (pid) await this.advanceTurn(pid);
+        if (pid && (!msg.turnId || msg.turnId === this.turn?.id)) await this.advanceTurn(pid);
         return;
       }
       case 'compScore': {
@@ -1794,6 +1873,11 @@ export class Room extends Server {
       case 'startGroup': {
         const pid = this.connToPlayer.get(connection.id);
         if (pid) await this.handleStartGroup(pid, msg.memberIds || [], !!msg.isHouseMeeting);
+        return;
+      }
+      case 'leaveGroup': {
+        const pid = this.connToPlayer.get(connection.id);
+        if (pid) await this.handleLeaveGroup(pid, String(msg.groupId || ''));
         return;
       }
       case 'groupMsg': {
@@ -1878,7 +1962,7 @@ export class Room extends Server {
       case 'forceResolve': {
         // Host override: AI-cover any players we're waiting on and move ahead.
         const pid = this.connToPlayer.get(connection.id);
-        if (pid === this.state.hostPlayerId && this.turn) await this.hostMoveOn();
+        if (pid === this.state.hostPlayerId && this.turn && (!msg.turnId || msg.turnId === this.turn.id)) await this.hostMoveOn();
         return;
       }
 
@@ -1965,7 +2049,7 @@ export class Room extends Server {
     this.broadcastState();
     // AI-cover their pending action so the game doesn't stall.
     const engineId = this.engineForPlayer(pid);
-    if (engineId && this.turn) await this.coverDisconnected(engineId);
+    if (engineId && this.turn) await this.runSerial(() => this.turn && this.coverDisconnected(engineId));
     else this.broadcastGame();
   }
 }

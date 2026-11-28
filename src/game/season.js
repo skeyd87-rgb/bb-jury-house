@@ -59,7 +59,7 @@ export function phaseLabel(phase) {
 export function npcCompScore(g, id, rand = Math.random) {
   const p = personality(g, id);
   // skill base + wide noise; a weak comp player can still upset
-  return p.compSkill * 0.6 + rand() * 55;
+  return Math.min(100, p.compSkill * 0.6 + rand() * 55); // scores are 0-100 (Rae once scored 108)
 }
 
 // Resolve a comp given the player's normalized performance (0-100).

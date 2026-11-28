@@ -570,7 +570,64 @@ async function testTalkStopsWhenTheHouseMovesOn() {
   if (reply.text) throw new Error('a houseguest answered outside a social window');
 }
 
+// A double tap on an advance button moves the game on once. In BB-XDWN a
+// second tap while the AI juror was thinking recorded Nash's vote twice and
+// skipped Bev's.
+async function testADoubleTappedAdvanceMovesOnce() {
+  const { host, rae } = await setupStartedRoom('BB-D');
+  send(host, { type: 'advanceTurn' });
+  await waitTurn(host, 'comp');
+  send(host, { type: 'compScore', score: 10 });
+  send(rae, { type: 'compScore', score: 10 });
+  const result = await waitTurn(host, 'comp_result');
+  send(host, { type: 'advanceTurn', turnId: result.id });
+  send(host, { type: 'advanceTurn', turnId: result.id });
+  await waitTurn(host, 'social');
+  await delay(800);
+  const now = latest(host, 'game')?.game?.turn?.kind;
+  closeAll(host, rae);
+  if (!result.id) throw new Error('turns carry no id');
+  if (now !== 'social') throw new Error(`a double tap skipped the social window (now ${now})`);
+}
+
+// People start the season outside the backstory alliances: they never agreed
+// to one. Rae held a grudge over "The Day Ones" against a player who had
+// never heard of it.
+async function testPeopleStartOutsideBackstoryAlliances() {
+  const { host, rae } = await setupStartedRoom('BB-A');
+  await delay(300);
+  const hostAl = latest(host, 'game')?.game?.myAlliances || [];
+  const raeAl = latest(rae, 'game')?.game?.myAlliances || [];
+  closeAll(host, rae);
+  if (hostAl.length || raeAl.length) throw new Error(`seated in alliances they never made: ${[...hostAl, ...raeAl].map((a) => a.name).join(', ')}`);
+}
+
+// A house meeting is on every screen: everyone in it is listed for all to
+// gather, and when the one who called it steps out it ends for everyone.
+async function testAHouseMeetingGathersEveryoneAndEndsForAll() {
+  const { host, rae } = await setupSocialRoom('BB-H');
+  const all = latest(host, 'game').game.houseguests.map((h) => h.id).filter((id) => id !== 'you');
+  send(host, { type: 'startGroup', memberIds: all, isHouseMeeting: true });
+  const start = await waitFor(rae, (m) => m.type === 'groupStart' && m.isHouseMeeting);
+  const seen = await waitFor(rae, (m) => m.type === 'game' && m.game?.meeting?.id === start.groupId);
+  const members = seen.game.meeting.members;
+  send(host, { type: 'huddleRequest' });
+  await delay(300);
+  const huddleDuring = latest(host, 'game')?.game?.huddle;
+  send(host, { type: 'leaveGroup', groupId: start.groupId });
+  await waitFor(rae, (m) => m.type === 'groupEnd' && m.groupId === start.groupId);
+  await delay(300);
+  const after = latest(rae, 'game')?.game?.meeting;
+  closeAll(host, rae);
+  if (!members.includes('rae') || !members.includes('zoe') || members.length < 3) throw new Error('meeting does not list people and AI houseguests');
+  if (huddleDuring) throw new Error('a huddle started during the house meeting');
+  if (after) throw new Error('meeting still showing after its caller left');
+}
+
 const tests = [
+  testADoubleTappedAdvanceMovesOnce,
+  testPeopleStartOutsideBackstoryAlliances,
+  testAHouseMeetingGathersEveryoneAndEndsForAll,
   testSocialWindowRunsTheChosenLength,
   testEndingACompNeverPlaysForAConnectedPerson,
   testTalkStopsWhenTheHouseMovesOn,

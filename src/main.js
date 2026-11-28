@@ -412,11 +412,17 @@ function wireOnlineSocialHandlers() {
       subtitle: payload.isHouseMeeting ? 'Everyone. Everything on the record.' : 'All hear everything · /whisper <name> ... for a private aside',
       color: payload.isHouseMeeting ? 0xf5c542 : 0x7c5cff,
       onSend: (text) => room.sendGroupMsg(activeGroupId, text),
-      onClose: () => { activeGroupId = null; groupPanel = null; },
+      // Closing the panel is stepping out; if you called it, it ends for all.
+      onClose: () => { if (activeGroupId) room.leaveGroup(activeGroupId); activeGroupId = null; groupPanel = null; },
     });
     if (payload.founder !== myEngineId()) {
       groupPanel.addSystemMsg(payload.isHouseMeeting ? `${payload.founderName} calls a house meeting.` : `${payload.founderName} pulls you and ${others.length > 1 ? 'others' : 'someone else'} aside.`);
     }
+  };
+  room.onGroupEnd = (groupId) => {
+    if (groupId !== activeGroupId) return;
+    activeGroupId = null; // over on the server: closing the panel is not a leave
+    setTimeout(() => { if (!activeGroupId) closeChatPanel(); }, 1800); // long enough to read why
   };
   room.onGroupMsg = (groupId, id, name, text) => {
     if (groupId !== activeGroupId || !groupPanel) return;
@@ -948,7 +954,7 @@ function onlineSocialStrap(game) {
   bar.append(el('span', '', iAmEvicted() ? `<b>${t.label}</b> — you're on the jury, watching.` : `<b>${t.label}</b> — tap a houseguest to talk.`));
   if (iAmHost()) {
     const adv = el('button', 'bb gold sm', t.next === 'nominations' ? '▶ Nominations' : t.next === 'veto_comp' ? '▶ Veto Comp' : '▶ Live Eviction');
-    adv.onclick = () => room.send('advanceTurn');
+    adv.onclick = () => room.send('advanceTurn', { turnId: t?.id });
     bar.append(adv);
   } else {
     bar.append(el('span', 'online-social-wait', 'Host advances when ready'));
@@ -977,9 +983,30 @@ function handleOnlineTurn(game) {
   const sig = [t.kind, game.week, game.phase, t.comp || '', (t.nominees || []).join(','), t.actor || '', t.winner || ''].join('|');
   const meActing = amIActing(game, t);
   const fullSig = sig + '|' + meActing;
-  if (fullSig === lastTurnSig) return;
-  lastTurnSig = fullSig;
-  renderOnlineTurn(game, t);
+  if (fullSig !== lastTurnSig) {
+    lastTurnSig = fullSig;
+    renderOnlineTurn(game, t);
+  }
+  syncOnlineMeeting(game);
+}
+
+// A house meeting gathers everyone in it, people and AI alike, in the living
+// room on every screen, the way a ceremony does, and holds them there until it
+// ends. Online meetings used to be only a chat panel: nobody moved.
+let stagedMeeting = null; // member list currently gathered, as a key
+function syncOnlineMeeting(game) {
+  const m = game.turn?.kind === 'social' ? game.meeting : null;
+  const ids = m ? m.members.filter((id) => !game.evicted.includes(id)) : [];
+  const key = ids.join(',') || null;
+  if (key === stagedMeeting) return;
+  if (key) {
+    world.releaseAllFollowers();
+    world.beginStage(ids);
+    if (!stagedMeeting) sting('reveal');
+  } else if (game.turn?.kind === 'social') {
+    world.endStage(); // a ceremony turn manages its own stage
+  }
+  stagedMeeting = key;
 }
 
 function amIActing(game, t) {
@@ -1027,13 +1054,13 @@ function renderOnlineTurn(game, t) {
     const who = names.length ? `<p class="muted">Waiting on ${names.map(escHtml).join(', ')}.</p>` : '';
     onlineOverlay = cinematic({ kicker, title, bodyHtml: (body || '<p class="muted">Waiting on the house…</p>') + who });
     const acts = [];
-    if (host && isResultKind(t.kind)) acts.push({ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') });
+    if (host && isResultKind(t.kind)) acts.push({ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) });
     // The AI never plays for someone who is here. In a comp the host can close
     // it: anyone who has not played scores 0. Any other turn waits for them.
     const waiting = (t.waitingOnCount || 0) > 0 || (t.waitingOn && t.waitingOn.length);
     if (host && waiting && t.kind === 'comp') {
       acts.push({ label: '⏹ End comp now', style: 'primary', onClick: () => {
-        if (confirm(`End the comp now? ${names.length ? names.join(', ') + (names.length === 1 ? ' has' : ' have') : 'Anyone who has'} not played and will score 0.`)) room.send('forceResolve');
+        if (confirm(`End the comp now? ${names.length ? names.join(', ') + (names.length === 1 ? ' has' : ' have') : 'Anyone who has'} not played and will score 0.`)) room.send('forceResolve', { turnId: t?.id });
       } });
     }
     onlineOverlay.setActions(acts);
@@ -1059,14 +1086,14 @@ function renderOnlineTurn(game, t) {
         bodyHtml: `<p class="muted">${t.week === 1 ? "Confirm everyone's connected before the HoH comp locks the field in." : 'Everyone ready for the new week?'}</p>${roomRosterHtml(game)}`,
       });
       onlineOverlay.setActions(host
-        ? [{ label: '▶ Start the Week', style: 'gold', onClick: () => room.send('advanceTurn') }]
+        ? [{ label: '▶ Start the Week', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }]
         : [...spectatorTakeOverAction(), { label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
     case 'intro':
       onlineOverlay = cinematic({ kicker: `Week ${t.week}`, title: t.week === 1 ? 'Welcome to the Jury Phase' : 'A New Week', bodyHtml: `<p>${t.message}</p>` });
       onlineOverlay.setActions(host
-        ? [{ label: 'Play HoH Comp ▶', style: 'gold', onClick: () => room.send('advanceTurn') }]
+        ? [{ label: 'Play HoH Comp ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }]
         : [...spectatorTakeOverAction(), { label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
@@ -1098,7 +1125,7 @@ function renderOnlineTurn(game, t) {
     case 'comp_result':
       onlineOverlay = cinematic({ kicker: 'Results', title: `${t.winnerName} wins ${t.comp === 'veto' ? 'the Veto' : t.comp === 'final_hoh' ? 'the Final HoH' : 'HoH'}!`,
         bodyHtml: `<p>${t.board.map((b) => `${b.id === t.winner ? '👑 ' : ''}${b.name} — ${Math.round(b.score)}`).join('<br>')}</p>` });
-      onlineOverlay.setActions(host ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      onlineOverlay.setActions(host ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
     case 'nominate':
@@ -1114,7 +1141,7 @@ function renderOnlineTurn(game, t) {
 
     case 'noms_result':
       onlineOverlay = cinematic({ kicker: 'Nomination Ceremony', title: `${nm(game, t.hoh)} nominated ${t.names.join(' and ')}`, bodyHtml: `<p class="muted">${t.nominees.includes(myEngine) ? "You're on the block. Win the veto." : 'The veto could change everything.'}</p>` });
-      onlineOverlay.setActions(host ? [{ label: 'Play Veto Comp ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      onlineOverlay.setActions(host ? [{ label: 'Play Veto Comp ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
     case 'veto_decision':
@@ -1143,7 +1170,7 @@ function renderOnlineTurn(game, t) {
 
     case 'veto_result':
       onlineOverlay = cinematic({ kicker: 'Veto Ceremony', title: t.used ? `Veto used on ${t.savedName}` : 'Veto NOT used', bodyHtml: t.used ? `<p><b>${t.replacementName}</b> is the replacement.</p>` : '<p class="muted">Nominations stay the same.</p>' });
-      onlineOverlay.setActions(host ? [{ label: 'Go to Eviction ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      onlineOverlay.setActions(host ? [{ label: 'Go to Eviction ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
     case 'vote': {
@@ -1179,7 +1206,7 @@ function renderOnlineTurn(game, t) {
           ov.card.querySelector('h2').textContent = `${t.evictedName} has been evicted.`;
           list.insertAdjacentHTML('afterend', `<p class="muted">${tied ? 'A tie — the Head of Household broke it. ' : ''}${escHtml(t.evictedName)} joins the jury.</p>`);
           sting('reveal');
-          ov.setActions(host ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+          ov.setActions(host ? [{ label: 'Continue ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
           return;
         }
         const [voter, target] = ballots[i++];
@@ -1200,7 +1227,7 @@ function renderOnlineTurn(game, t) {
 
     case 'final3_intro':
       onlineOverlay = cinematic({ kicker: 'Final 3', title: 'Three remain', bodyHtml: `<p>${t.three.join(' · ')}</p><p class="muted">One final HoH decides the Final 2.</p>` });
-      onlineOverlay.setActions(host ? [{ label: 'Play Final HoH ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      onlineOverlay.setActions(host ? [{ label: 'Play Final HoH ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
     case 'final_cut':
@@ -1216,7 +1243,7 @@ function renderOnlineTurn(game, t) {
 
     case 'final_cut_result':
       onlineOverlay = cinematic({ kicker: 'Final Eviction', title: `${t.finalHohName} evicts ${t.cutName}`, bodyHtml: `<p class="muted">${t.cutName} casts the final jury vote.</p>` });
-      onlineOverlay.setActions(host ? [{ label: 'To the Jury Vote ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      onlineOverlay.setActions(host ? [{ label: 'To the Jury Vote ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
     case 'jury_question':
@@ -1253,7 +1280,7 @@ function renderOnlineTurn(game, t) {
       const body = `<p><b>${nm(game, f1)}</b> was asked: "${t.questions[f1]}"<br>→ "${t.answers[f1]}"</p>
         <p><b>${nm(game, f2)}</b> was asked: "${t.questions[f2]}"<br>→ "${t.answers[f2]}"</p>`;
       onlineOverlay = cinematic({ kicker: `Juror: ${t.jurorName}`, title: 'Both finalists answered', bodyHtml: body });
-      onlineOverlay.setActions(host ? [{ label: 'To the Vote ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      onlineOverlay.setActions(host ? [{ label: 'To the Vote ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
     }
 
@@ -1276,7 +1303,7 @@ function renderOnlineTurn(game, t) {
 
     case 'jury_vote_result':
       onlineOverlay = cinematic({ kicker: 'Vote Cast', title: `${t.jurorName} votes for ${t.voteName}`, bodyHtml: `<p class="quote">"${t.reasoning}"</p>` });
-      onlineOverlay.setActions(host ? [{ label: 'Next ▶', style: 'gold', onClick: () => room.send('advanceTurn') }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
+      onlineOverlay.setActions(host ? [{ label: 'Next ▶', style: 'gold', onClick: () => room.send('advanceTurn', { turnId: t?.id }) }] : [{ label: '⏳ Waiting for host…', style: '', onClick: () => {} }]);
       break;
 
     case 'social': {
@@ -1644,7 +1671,15 @@ function chatPrompts(id, v = soloPromptView()) {
   if (blockSet && !meNominated && nominated && v.hoh !== v.me) out.push({ label: 'Promise your vote', text: 'You have my vote to stay this week.' });
   if (blockSet && !nominated && v.hoh !== id) out.push({ label: 'Count their vote', text: 'Who are you voting to evict this week?' });
   if (!v.allied(id)) out.push({ label: 'Pitch an alliance', text: 'I think you and I should be working together. Are you in?' });
-  out.push({ label: 'Ask their target', text: 'If you win HoH next, who are you going after?' });
+  // Asked of the sitting HoH, "if you win HoH next" got "I already won HoH
+  // this week, remember?" (Flynn, BB-XDWN week 5). Ask about this week instead.
+  if (v.hoh === id) {
+    out.push(blockSet
+      ? { label: 'Ask the backup plan', text: 'If the veto gets used, who are you putting up instead?' }
+      : { label: 'Ask their target', text: 'Who are you thinking of putting up this week?' });
+  } else {
+    out.push({ label: 'Ask their target', text: 'If you win HoH next, who are you going after?' });
+  }
   out.push({ label: 'Check in', text: 'How are you holding up in here?' });
   return out.slice(0, 4);
 }

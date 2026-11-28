@@ -209,6 +209,8 @@ export class Room {
         this.onGroupStart && this.onGroupStart(msg);
       } else if (msg.type === 'groupMsg') {
         this.onGroupMsg && this.onGroupMsg(msg.groupId, msg.id, msg.name, msg.text);
+      } else if (msg.type === 'groupEnd') {
+        this.onGroupEnd && this.onGroupEnd(msg.groupId);
       } else if (msg.type === 'groupSystem') {
         this.onGroupSystem && this.onGroupSystem(msg.groupId, msg.text);
       } else if (msg.type === 'groupWhisper') {
@@ -276,7 +278,8 @@ export class Room {
   requestExport() {
     return new Promise((resolve) => {
       this._exportWaiter = resolve;
-      this.send('exportRecord');
+      // The build the player is running, so the record says which one it was.
+      this.send('exportRecord', { version: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '' });
       setTimeout(() => {
         if (this._exportWaiter === resolve) { this._exportWaiter = null; resolve(null); }
       }, 8000);
@@ -309,6 +312,7 @@ export class Room {
 
   startGroup(memberIds, isHouseMeeting) { this.send('startGroup', { memberIds, isHouseMeeting }); }
   sendGroupMsg(groupId, text) { this.send('groupMsg', { groupId, text }); }
+  leaveGroup(groupId) { this.send('leaveGroup', { groupId }); }
   formAlliance(memberIds, name) { this.send('formAlliance', { memberIds, name }); }
   respondAllianceInvite(inviteId, accept) { this.send('allianceInviteResponse', { inviteId, accept }); }
   leaveAllianceOnline(allianceId) { this.send('leaveAlliance', { allianceId }); }
