@@ -137,13 +137,20 @@ export class Room {
     this.code = code;
     this._name = name;
     this._authenticated = false;
-    const identity = identityFor(code);
-    this.playerId = identity.pid;
+    this.playerId = identityFor(code).pid;
     this.socket = new PartySocket({ host: PARTY_HOST, party: 'room', room: code });
 
     this.socket.addEventListener('open', () => {
       this._wasConnected = true;
-      this.send('hello', { playerId: this.playerId, token: identity.token, name });
+      // PartySocket reconnects on its own and fires 'open' again. Read the
+      // identity fresh each time: the token the room issues on the first
+      // hello is saved after this handler was made, and resending the empty
+      // one from connect() time got the player refused as bad_token, so a
+      // phone that slept for a moment came back as a stranger (seat and
+      // host role lost).
+      const now = identityFor(code);
+      this.playerId = now.pid;
+      this.send('hello', { playerId: now.pid, token: now.token, name });
       this.onOpen && this.onOpen();
     });
     this.socket.addEventListener('message', (e) => {
