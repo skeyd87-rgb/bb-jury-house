@@ -1,6 +1,6 @@
 // Independent factual review before generated dialogue or effects enter the engine.
 // One bounded check; failures return to authored, evidence-based dialogue. No retry loop.
-import { knowledgeFor, currentSituation, evidenceFor } from '../game/knowledge.js';
+import { knowledgeFor, currentSituation, evidenceFor, voteCount } from '../game/knowledge.js';
 
 const AUDIT_RULE = `You verify Big Brother dialogue against an authoritative engine record. Return ONLY {"valid":true|false,"evidence":"<the record id (e.g. event:3, promise:p2) or currentSituation field the candidate contradicts; or absent if the candidate states as fact a specific past event, promise, deal or vote that no record supports; or none>","reason":"short explanation"}.
 DEFAULT TO valid=true. Reject ONLY when you can name, in "evidence", the specific record or currentSituation field that a factual claim in the candidate contradicts; or when the candidate states as fact a specific past event, promise, deal or vote that appears nowhere in the records (evidence: absent); or when an effect (promiseMade, npcPromise, suspicionOfLie) has no basis in the utterance or reply. If you cannot name one, the candidate is valid. These are NEVER grounds for rejection: tone, opinion, feelings, hedging, vagueness, predictions, banter, strategy talk, or a first-person aside by the speaker ("caught me off guard", "I was surprised") — in a reply, I/me/my ALWAYS mean the speaker, never the listener. Agreeing with something TRUE in the listener's message is valid. Read the whole reply before judging: "nothing until now, but you've got it this week" is consistent with a record of a win this week.
@@ -10,7 +10,7 @@ Reject any unsupported or contradictory factual premise in replies, jury questio
 Public event records override all past dialogue. Private rumors may be discussed only with attribution and uncertainty; belief does not prove them. Emotional interpretations and proposals about the future are allowed, but must not invent past events, secret votes, shared plans, or NPC commitments. A quoted player claim is not proof it happened. A promise effect must match an explicit commitment in the current utterance, not an earlier exchange. A truthful correction of an NPC's earlier error must not be marked suspicionOfLie or punished for alleged dishonesty.
 For a jury vote: reject (evidence: vote) a reasoning that argues for the finalist the juror did NOT vote for, or that praises one finalist and gives no reason at all for choosing the other. A juror may criticise the person they voted against, or note what they respected in the loser and still choose the winner.
 Jurors know only their eviction records plus the supplied questions/answers as claims. They cannot use later house events or current social state as knowledge. A finalist may correct an inaccurate question. Reject reasoning that treats an unsupported accusation as established guilt. A lack of records permits open questions, not invented history.
-Eviction votes: an eviction_vote record's "ballots" maps each voter's name to the nominee they voted to evict; it is public. A reply naming who voted which way is valid when every ballot it states matches that table, the speaker's own included. Check each stated ballot against the table one by one; if all match, the reply is valid, and if your own reasoning finds no mismatch, return valid=true.
+Eviction votes are secret: an eviction_vote record gives only the count, and who could not vote (HoH, nominees). A speaker knows their own ballot (myBallots) and nobody else's. Stating as fact how someone else voted is unsupported (evidence: absent) unless the vote was unanimous; a suspicion, a guess or a question is fine. What a speaker says about their own ballot, true or not, is their game, not a factual error. Saying ballots are secret is true.
 Time: currentSituation.week is the present week. Reject a reply that places a recorded event in the wrong week relative to it — for example calling something "last week" when its record is in the current week, or the reverse — even if the listener's own message made that mistake first.
 Return valid=false only with the contradicted record named in "evidence"; otherwise valid=true. The requested ceremony action, if present, is authorized by the engine but does not authorize inventing earlier events.`;
 
@@ -98,13 +98,6 @@ function finding(reason, evidence) {
 }
 const hohsIn = (g, week) => new Set((g.compHistory || []).filter((c) => (c.type === 'hoh' || c.type === 'final_hoh') && c.week === week).map((c) => c.winner));
 const nomineesIn = (g, week) => (g.events || []).find((e) => e.type === 'nominations' && e.week === week)?.actors?.slice(1) || [];
-function evictionBallots(g, id) {
-  const ev = (g.events || []).find((e) => e.type === 'eviction' && e.actors?.[0] === id);
-  if (!ev) return null;
-  const v = (g.voteHistory || []).find((x) => x.evicted === id) || (g.voteHistory || []).find((x) => x.week === ev.week);
-  return { week: ev.week, votes: Object.fromEntries(Object.entries(v?.votes || {}).filter(([k]) => !k.endsWith('_tiebreak'))) };
-}
-const ballotLine = (g, b) => Object.entries(b.votes).map(([v, t]) => `${hgName(g, v)} voted to evict ${hgName(g, t)}`).join('; ') || 'no ballots recorded';
 
 // "my nominations", "I was HoH", "you nominated me" in a week the person was
 // not HoH. Rae, a juror, asked about "my nominations" in week 5; Flynn was HoH.
@@ -122,18 +115,38 @@ export function assertHohClaims(g, speakerId, addresseeId, text, nowWeek = null)
   }
 }
 
-// Eviction ballots are read out by name. "Votes were never public", or "I
-// voted you out" from someone who did not vote, is contradicted by the record.
+// Eviction ballots are secret, as on the show; only the count is announced.
+// Two claims are refused: voting in a week you could not (on the block, or HoH
+// without a tie), and stating as fact how someone else voted, unless the vote
+// was unanimous (then everyone knows) or it is plainly a guess ("I bet Bev
+// voted me out"). Lying about your own ballot is your game, not an error.
+const GUESS = /\b(?:think|thought|bet|guess|probably|suspect|pretty sure|must have|seems?|assume|figure|feel like|my money|i'?d say|maybe|likely|heard|rumou?r)\b/i;
+function voteFor(g, week, nomineeId) {
+  const vs = (g.voteHistory || []).filter((v) => (week ? v.week === week : true) && voteCount(v, g)[nomineeId] != null);
+  return vs[vs.length - 1] || null;
+}
 export function assertBallotClaims(g, speakerId, addresseeId, text) {
-  const SECRET = /\b(?:votes?|ballots?)\b[^.?!]{0,40}\b(?:secret|never (?:made )?public|not public|anonymous|never revealed|never announced|never confirmed)\b|\bsecret (?:votes?|ballots?)\b/i;
-  const VOTED_YOU = /\bI\s+(?:\w+\s+)?voted\s+(?:to\s+evict\s+you|you\s+out|against\s+you|to\s+send\s+you\s+home)\b/i;
-  const mine = addresseeId && evictionBallots(g, addresseeId);
+  const evictedWeek = (id) => (g.events || []).find((e) => e.type === 'eviction' && e.actors?.[0] === id)?.week;
   for (const s of sentencesOf(text)) {
-    if (SECRET.test(s) && !/\bjury\s+votes?\b[^.?!]{0,20}\b(?:for|to)\s+(?:the\s+)?win/i.test(s) && !/\bfinal(?:e| vote)\b/i.test(s)) {
-      throw finding(`Eviction ballots are read out by name to the house${mine ? `. When ${hgName(g, addresseeId)} was evicted in week ${mine.week}: ${ballotLine(g, mine)}` : ''}.`, mine ? `vote week ${mine.week}` : 'vote');
-    }
-    if (mine && VOTED_YOU.test(s) && !hedged(s, VOTED_YOU) && mine.votes[speakerId] !== addresseeId) {
-      throw finding(`${hgName(g, speakerId)} did not vote to evict ${hgName(g, addresseeId)} in week ${mine.week}: ${ballotLine(g, mine)}.`, `vote week ${mine.week}`);
+    for (const m of s.matchAll(BALLOT)) {
+      if (ASKING.test(s) || HYPOTHETICAL.test(s.slice(0, m.index)) || DENIAL.test(s.slice(0, m.index)) || GUESS.test(s.slice(0, m.index + m[0].length))) continue;
+      const target = /^you$/i.test(m[2]) ? addresseeId : /^me$/i.test(m[2]) ? speakerId : idByName(g, m[2]);
+      if (!target) continue;
+      const v = voteFor(g, claimedWeek(s, null) || evictedWeek(target), target);
+      if (!v) continue;
+      const count = voteCount(v, g);
+      const cast = Object.entries(v.votes || {}).filter(([k]) => !k.endsWith('_tiebreak'));
+      const unanimous = cast.length > 0 && cast.every(([, t]) => t === cast[0][1]);
+      const tally = Object.entries(count).map(([n, c]) => `${hgName(g, n)} ${c}`).join(', ');
+      for (const who of m[1].split(/\s*,\s*(?:and\s+)?|\s+and\s+/)) {
+        const voter = /^(I|me)$/i.test(who) ? speakerId : /^you$/i.test(who) ? addresseeId : idByName(g, who);
+        if (!voter) continue;
+        if (count[voter] != null || ((g.compHistory || []).find((c) => c.type === 'hoh' && c.week === v.week)?.winner === voter && !Object.keys(v.votes || {}).some((k) => k.endsWith('_tiebreak')))) {
+          throw finding(`${hgName(g, voter)} did not vote in week ${v.week}: ${count[voter] != null ? 'they were on the block' : 'they were HoH, and there was no tie'}.`, `vote week ${v.week}`);
+        }
+        if (voter === speakerId || unanimous) continue; // your own ballot is yours to tell (or lie about); a unanimous count shows everyone's
+        throw finding(`Ballots are secret: ${hgName(g, speakerId)} cannot know how ${hgName(g, voter)} voted in week ${v.week}. Only the count was announced (${tally}). Say it as a suspicion, or ask.`, `vote week ${v.week}`);
+      }
     }
   }
 }
@@ -151,7 +164,10 @@ export function assertHeardClaims(g, speakerId, addresseeId, text) {
     const x = idByName(g, s.match(re)?.[1]);
     if (!x || x === speakerId || x === addresseeId) continue;
     const a = hgName(g, addresseeId), b = hgName(g, x);
-    const supported = evidence.some((e) => (e.actorId === addresseeId && e.targetIds?.includes(x)) || (e.actorId === x && e.targetIds?.includes(addresseeId)) || (e.text.includes(a) && e.text.includes(b) && e.kind !== 'eviction_vote'));
+    // Only something said counts: a public event naming both (a nomination) is
+    // not a conversation between them.
+    const talk = (e) => ['statement', 'rumor', 'promise'].includes(e.kind);
+    const supported = evidence.some((e) => (talk(e) && e.actorId === addresseeId && e.targetIds?.includes(x)) || (talk(e) && e.actorId === x && e.targetIds?.includes(addresseeId)) || (['statement', 'rumor', 'promise'].includes(e.kind) && e.text.includes(a) && e.text.includes(b)));
     if (supported) continue;
     const own = (knowledgeFor(g, speakerId).statements || []).filter((st) => st.withId === addresseeId).pop();
     throw finding(`No record that ${a} said that to ${b}.${own ? ` What you have is ${a}'s own words to you in week ${own.week}: ${String(own.summary).slice(0, 160)}` : ''}`, 'absent');
@@ -184,33 +200,10 @@ export function assertToldMe(g, speakerId, listenerId, text, nowWeek, options = 
   }
 }
 
-// The ballots a line states, as [voterId, targetId] pairs: "I voted to evict
-// Nash", "Rae, Bev and Marcus voted Flynn out", "Bev voted for Flynn".
-const NAME = String.raw`(?:I|me|[A-Z][a-z]+)`;
-const BALLOT = new RegExp(String.raw`(${NAME}(?:\s*,\s*(?:and\s+)?${NAME}|\s+and\s+${NAME})*)\s+(?:all\s+|both\s+)?voted\s+(?:to\s+evict\s+|for\s+|against\s+|out\s+)?([A-Z][a-z]+)`, 'g');
-function statedBallots(g, speakerId, text) {
-  const pairs = [];
-  for (const m of String(text || '').matchAll(BALLOT)) {
-    const target = idByName(g, m[2]);
-    if (!target) continue;
-    for (const who of m[1].split(/\s*,\s*(?:and\s+)?|\s+and\s+/)) {
-      const voter = /^(I|me)$/i.test(who) ? speakerId : idByName(g, who);
-      if (voter) pairs.push([voter, target]);
-    }
-  }
-  return pairs;
-}
-// A rejection that cites an eviction vote is overruled when every ballot the
-// line states matches that vote exactly. Live, the reviewer said "Gus is
-// listed as voting to evict Flynn" of a record where Gus voted Nash.
-function ballotsMatch(g, speakerIds, candidate, evidence) {
-  const index = Number(String(evidence).match(/^votes?:(\d+)/i)?.[1]);
-  const v = Number.isInteger(index) ? (g.voteHistory || [])[index] : null;
-  if (!v) return false;
-  const lines = candidate.replies ? candidate.replies.map((r) => [r.id, r.reply]) : [[speakerIds[0], candidate.reply || candidate.reasoning || '']];
-  const pairs = lines.flatMap(([id, t]) => statedBallots(g, id, t));
-  return pairs.length > 0 && pairs.every(([voter, target]) => v.votes?.[voter] === target);
-}
+// A stated ballot: "I voted to evict Nash", "Rae, Bev and Marcus voted Flynn
+// out", "you voted me out", "Bev voted against you".
+const NAME = String.raw`(?:I|me|you|[A-Z][a-z]+)`;
+const BALLOT = new RegExp(String.raw`(${NAME}(?:\s*,\s*(?:and\s+)?${NAME}|\s+and\s+${NAME})*)\s+(?:all\s+|both\s+)?voted\s+(?:to\s+evict\s+|for\s+|against\s+|out\s+)?(you|me|[A-Z][a-z]+)`, 'g');
 
 function checkSpoken(g, speakerId, listenerId, text, options) {
   const nowWeek = g.evicted?.includes(speakerId) ? null : g.week;
@@ -294,7 +287,6 @@ export async function validateNarrative(g, speakerIds, listenerId, candidate, as
   // still counts; only an explicit "none" is treated as no finding.)
   const evidence = audit.evidence === undefined ? 'unspecified' : String(audit.evidence || '').trim();
   if (!evidence || /^(none|n\/a|null)$/i.test(evidence)) return candidate;
-  if (ballotsMatch(g, ids, candidate, evidence)) return candidate;
   const err = rejected('Dialogue does not match the session record');
   err.reason = String(audit.reason || '').slice(0, 300);
   err.evidence = evidence.slice(0, 60);

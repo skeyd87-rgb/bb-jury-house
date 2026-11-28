@@ -9,6 +9,7 @@
 
 import { PLAYER_ID } from './cast.js';
 import { nameOf } from './state.js';
+import { voteCount } from './knowledge.js';
 
 const pad = (n) => String(n).padStart(2, '0');
 const line = (ch = '-', n = 64) => ch.repeat(n);
@@ -49,6 +50,7 @@ export function buildSeasonRecord(g, meta = {}) {
   const online = !!meta.viewerId;
   const viewer = meta.viewerId || PLAYER_ID;
   const full = meta.scope !== 'viewer';
+  const seasonOver = !!g.finale?.winner;
   const me = online ? nameOf(g, viewer) : g.playerName || nameOf(g, PLAYER_ID);
   const who = (id) => (!online && (id === 'you' || id === PLAYER_ID) ? me : nameOf(g, id));
   const mine = (id) => (online ? id === viewer : id === 'you');
@@ -88,9 +90,18 @@ export function buildSeasonRecord(g, meta = {}) {
       L.push(`[${c.type === 'hoh' ? 'HoH comp' : c.type === 'final_hoh' ? 'Final HoH' : 'Veto comp'}] won by ${who(c.winner)} — ${scoreBoard(g, c.scores)}`);
     }
     for (const e of events.get(w) || []) L.push(`[${e.phase}] ${e.text}`);
-    for (const v of full ? votes.get(w) || [] : []) {
-      const ballots = Object.entries(v.votes || {}).map(([voter, target]) => `${who(voter)}→${who(target)}`).join(', ');
-      L.push(`[vote] ${ballots}${v.tally ? `  (tally: ${Object.entries(v.tally).map(([id, n]) => `${who(id)} ${n}`).join(', ')})` : ''}`);
+    // Ballots are secret until the season is over, as on the show: before
+    // that, the count and your own vote.
+    for (const v of votes.get(w) || []) {
+      const count = voteCount(v, g);
+      const tally = Object.entries(count).map(([id, n]) => `${who(id)} ${n}`).join(', ');
+      if (seasonOver) {
+        const ballots = Object.entries(v.votes || {}).map(([voter, target]) => `${who(voter)}→${who(target)}`).join(', ');
+        L.push(`[vote] ${ballots}  (count: ${tally})`);
+      } else {
+        const own = v.votes?.[viewer];
+        L.push(`[vote] count: ${tally}${own ? ` · your vote: evict ${who(own)}` : ''} · ballots are secret until the season ends`);
+      }
     }
     const said = talk.get(w) || [];
     if (said.length) {

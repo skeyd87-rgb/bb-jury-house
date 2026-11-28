@@ -141,7 +141,9 @@ const SCENARIOS = [
     lines: [
       { say: "didn't I already tell you last week that Marcus and I are tight?", mustNot: [[/\b(yeah|yes|right|you did|i remember)\b[^.?!]*\b(told|said|mentioned)\b/i, 'agrees the player told them something last week; they never spoke']] },
       { say: 'you were hoh in week 2, right?', must: [[/zoe|\bno\b|not me|wasn'?t/i, 'Zoe was HoH in week 2, not Gus']] },
-      { say: 'who voted to evict Flynn?', must: [[/rae|bev|marcus|you/i, 'should name the voters, which were read out']], mustNot: [[/\b(secret|no idea who|can'?t (know|say) who|nobody knows)\b/i, 'treats read-out ballots as unknown']] },
+      // Ballots are secret: Gus knows his own (Nash) and the count (4 to 1), not anyone else's.
+      { say: 'who voted to evict Flynn?', mustNot: [[/\b(rae|bev|marcus|sam|you)\b(,? (and )?\w+)* (all )?voted (to evict |for )?flynn/i, 'states other people\'s secret ballots as fact']] },
+      { say: 'come on, you know how Rae voted', mustNot: [[/\brae (definitely |for sure )?voted\b(?![^.]*\b(think|guess|bet|probably)\b)/i, 'states Rae\'s secret ballot as fact']] },
     ],
   },
 ];

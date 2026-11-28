@@ -398,6 +398,14 @@ export function applyEviction(g, evicted, votes) {
     else if (activeIds(g).includes(p.targetId)) settleDeal(g, p, false, 'nominate');
   }
 
+  // Ballots are secret: only the count is announced. How someone voted can
+  // only move the house when the count gives it away, which means a unanimous
+  // vote. Otherwise nobody knows, and nobody may hold it against anyone (Rae
+  // held "voted against me despite our alliance" against a player whose
+  // ballot she could never have seen).
+  const ballots = Object.entries(votes).filter(([v]) => !v.endsWith('_tiebreak'));
+  const knowable = ballots.length > 0 && ballots.every(([, t]) => t === evicted);
+
   // Resolve third-party vote promises ("I'll vote to evict X") for this week.
   for (const p of g.promises) {
     if (p.status !== 'open' || p.kind !== 'vote_evict' || !p.targetId) continue;
@@ -408,7 +416,8 @@ export function applyEviction(g, evicted, votes) {
       continue;
     }
     p.status = cast === p.targetId ? 'kept' : 'broken';
-    if (p.to !== PLAYER_ID && g.memory[p.to] && !g.evicted.includes(p.to)) {
+    p.known = knowable; // the record keeps the outcome; the house only knows it if the count shows it
+    if (knowable && p.to !== PLAYER_ID && g.memory[p.to] && !g.evicted.includes(p.to)) {
       const r = rel(g, p.to, p.from);
       if (p.status === 'kept') {
         r.trust = clamp(r.trust + 10);
@@ -426,7 +435,7 @@ export function applyEviction(g, evicted, votes) {
     if (p.status === 'kept') logEvent(g, 'promise_kept', `${nameOf(g, p.from)} kept a promise to ${nameOf(g, p.to)} (voted out ${nameOf(g, p.targetId)}).`, [p.from, p.to]);
   }
 
-  for (const [voter, target] of Object.entries(votes)) {
+  for (const [voter, target] of knowable ? ballots : []) {
     if (target === evicted) {
       // Allied with both nominees: one of them had to get the vote.
       const forced = !!survivor && sharedAlliance(g, voter, evicted) && sharedAlliance(g, voter, survivor);
@@ -439,8 +448,8 @@ export function applyEviction(g, evicted, votes) {
       }
     }
   }
-  // Survivor gratitude toward those who kept them
-  if (survivor !== PLAYER_ID) {
+  // Survivor gratitude toward those who kept them (when the count shows who)
+  if (knowable && survivor !== PLAYER_ID) {
     for (const [voter, target] of Object.entries(votes)) {
       if (target === evicted && g.social[survivor]?.[voter]) {
         g.social[survivor][voter].trust = clamp(g.social[survivor][voter].trust + 8);
@@ -475,12 +484,13 @@ function snapshotJuryNotes(g, jurorId, votes) {
   notes.push(`Final feelings toward the player when evicted: trust ${r.trust}, bond ${r.bond}, respect-for-threat ${r.threat}.`);
   for (const gr of mem.grudges) notes.push(`Grudge vs ${nameOf(g, gr.againstId)} (wk ${gr.week}): ${gr.reason}.`);
   for (const b of mem.betrayalsWitnessed.slice(-6)) notes.push(`Saw: ${b.what} (wk ${b.week}).`);
-  const brokenToMe = g.promises.filter((p) => p.status === 'broken' && p.to === jurorId);
+  // A vote promise's outcome is only known when the count gave it away.
+  const brokenToMe = g.promises.filter((p) => p.status === 'broken' && p.to === jurorId && p.known !== false);
   for (const p of brokenToMe) notes.push(`${nameOf(g, p.from)} broke a promise to me: "${p.text}".`);
-  const keptToMe = g.promises.filter((p) => p.status === 'kept' && p.to === jurorId);
+  const keptToMe = g.promises.filter((p) => p.status === 'kept' && p.to === jurorId && p.known !== false);
   for (const p of keptToMe) notes.push(`${nameOf(g, p.from)} kept a promise: "${p.text}".`);
   for (const s of mem.convoSummaries.slice(-6)) notes.push(`(wk ${s.week}) with ${nameOf(g, s.withId)}: ${s.summary}`);
-  notes.push('Eviction ballots are read out by name; who voted which way is in the vote records.');
+  notes.push("Eviction ballots are secret: only the count is announced. You know your own ballot, not anyone else's.");
   mem.juryNotes = notes.slice(0, 18);
 }
 
