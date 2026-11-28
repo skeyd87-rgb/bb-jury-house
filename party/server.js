@@ -681,12 +681,13 @@ export class Room extends Server {
     }
     // Ballots first: the juror's memory is frozen inside applyEviction, and it
     // has to include who voted them out.
-    g.voteHistory.push({ week: g.week, evicted, votes: { ...t.votes } });
+    g.voteHistory.push({ week: g.week, evicted, nominees: [n1, n2], votes: { ...t.votes } });
     applyEviction(g, evicted, { ...t.votes });
     await this.setTurn({
       kind: 'eviction_result', evicted, evictedName: nameOf(g, evicted),
       tally: { [nameOf(g, n1)]: tally[n1], [nameOf(g, n2)]: tally[n2] },
-      votes: Object.fromEntries(Object.entries(t.votes).map(([v, tg]) => [nameOf(g, v), nameOf(g, tg)])),
+      // Secret ballots: the house sees each vote come in, never whose it is.
+      ballots: Object.values(t.votes).map((tg) => nameOf(g, tg)).sort(() => Math.random() - 0.5),
     });
   }
 

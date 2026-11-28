@@ -1190,7 +1190,9 @@ function renderOnlineTurn(game, t) {
     case 'eviction_result': {
       // One ballot at a time, in the order the server recorded them, so
       // everyone in the room watches the same count build.
-      const ballots = Object.entries(t.votes);
+      // Secret ballots: each vote comes in without its voter. (An older server
+      // sent voter names; show those votes the same way.)
+      const ballots = (t.ballots || Object.values(t.votes || {})).map((target) => [null, target]);
       const sides = Object.keys(t.tally);
       const counts = Object.fromEntries(sides.map((n) => [n, 0]));
       const ov = onlineOverlay = cinematic({
@@ -1211,7 +1213,7 @@ function renderOnlineTurn(game, t) {
         }
         const [voter, target] = ballots[i++];
         counts[target] = (counts[target] || 0) + 1;
-        list.append(el('div', 'v ev-in', `<b>${escHtml(voter)}</b> votes to evict <b>${escHtml(target)}</b>`));
+        list.append(el('div', 'v ev-in', `One vote to evict <b>${escHtml(target)}</b>`));
         list.scrollTop = list.scrollHeight;
         sides.forEach((n, k) => {
           const cell = ov.card.querySelector(`[data-side="${k}"]`);
@@ -1863,7 +1865,8 @@ function revealEvictionVotes(votes, n1, n2) {
       }
       const [voter, target] = ballots[i++];
       counts[target]++;
-      const row = el('div', 'v ev-in', `<b>${nm(voter)}</b> votes to evict <b>${nm(target)}</b>`);
+      // Secret ballots, as on the show: the count builds, the voters stay unknown.
+      const row = el('div', 'v ev-in', `One vote to evict <b>${nm(target)}</b>`);
       list.append(row);
       list.scrollTop = list.scrollHeight;
       for (const n of [n1, n2]) {
