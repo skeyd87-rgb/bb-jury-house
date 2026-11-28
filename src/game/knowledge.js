@@ -37,6 +37,26 @@ export function publicFacts(g, endIndex = (g.events || []).length - 1) {
     if (facts.some(f => f.week === c.week && f.kind === kind)) continue;
     facts.push({ id: `comp:${index}`, week: c.week, kind, actorId: c.winner, targetIds: [], text: `${nameOf(g, c.winner)} won ${kind === 'hoh' ? 'Head of Household' : 'the Power of Veto'}.` });
   }
+  // Eviction ballots are read out by name to the whole house (both modes show
+  // "<voter> votes to evict <nominee>"), so they are public. They used to be
+  // described to the AI as secret, and a finalist told a juror "individual
+  // votes were never public" about an eviction she could not vote in.
+  const lastIsEviction = g.events?.[endIndex]?.type === 'eviction';
+  for (const [index, v] of (g.voteHistory || []).entries()) {
+    if (v.week > cutoffWeek || (endIndex < (g.events || []).length - 1 && v.week === cutoffWeek && !lastIsEviction)) continue;
+    const ballots = Object.entries(v.votes || {}).filter(([voter]) => !voter.endsWith('_tiebreak'));
+    if (!ballots.length) continue;
+    const evicted = v.evicted || (g.events || []).find(e => e.type === 'eviction' && e.week === v.week)?.actors?.[0];
+    const hoh = (g.compHistory || []).find(c => c.type === 'hoh' && c.week === v.week)?.winner;
+    const tie = Object.entries(v.votes || {}).find(([voter]) => voter.endsWith('_tiebreak'));
+    const text = `Week ${v.week} eviction vote, read out to the house${evicted ? ` (${nameOf(g, evicted)} evicted)` : ''}: ` +
+      ballots.map(([voter, target]) => `${nameOf(g, voter)} voted to evict ${nameOf(g, target)}`).join('; ') + '.' +
+      (tie ? ` ${nameOf(g, hoh)} broke the tie.` : '') +
+      ` Only these houseguests voted${hoh ? `; ${nameOf(g, hoh)} was HoH` : ''}, and nominees do not vote.`;
+    // `ballots` is the same vote as a name -> name table: read as prose, the
+    // fact-check talked itself into rejecting a reply that matched it exactly.
+    facts.push({ id: `votes:${index}`, week: v.week, kind: 'eviction_vote', actorId: evicted || ballots[0][0], targetIds: ballots.map(([voter]) => voter), ballots: Object.fromEntries(ballots.map(([voter, target]) => [nameOf(g, voter), nameOf(g, target)])), text });
+  }
   return facts;
 }
 
@@ -46,7 +66,7 @@ export function captureKnowledge(g, id) {
     version: 1, week: g.week, phase: g.phase,
     publicFacts: publicFacts(g),
     statements: (mem.convoSummaries || []).filter(s => s.source === 'quoted_statement'),
-    promises: (g.promises || []).filter(p => p.from === id || p.to === id || mem.promisesHeard?.includes(p.id)).map(p => ['vote', 'vote_evict'].includes(p.kind) && p.from !== id ? { ...p, status: 'outcome unverified; individual ballots are secret' } : p),
+    promises: (g.promises || []).filter(p => p.from === id || p.to === id || mem.promisesHeard?.includes(p.id)).map(p => ['vote', 'vote_evict'].includes(p.kind) && p.from !== id ? { ...p, status: 'see the eviction vote record for how they voted' } : p),
     rumors: (mem.gossipHeard || []).map((r, index) => ({ ...r, id: `rumor:${id}:${index}`, status: 'unverified', sourceName: nameOf(g, r.fromId) || 'unknown source' })),
     interpretations: (mem.grudges || []).map(r => ({ ...r, status: 'subjective reaction, not proof' })),
     feelings: g.social[id] || {},
@@ -83,7 +103,15 @@ export function evidenceFor(g, id) {
 }
 
 export function formatEvidence(g, id) {
-  return evidenceFor(g, id).map(f => `[${f.id}] Week ${f.week}: ${f.text}`).join('\n') || 'No recorded events. Ask an open question; do not invent a shared history.';
+  // A houseguest reading the ballot list finds their own vote named for them:
+  // in the live replay Gus counted himself among the Flynn voters when the
+  // record had him voting Nash.
+  const own = (f) => {
+    if (f.kind !== 'eviction_vote') return '';
+    const v = (g.voteHistory || []).find((x) => x.week === f.week)?.votes?.[id];
+    return v ? ` Your own ballot (${nameOf(g, id)}): to evict ${nameOf(g, v)}.` : ` You (${nameOf(g, id)}) did not vote.`;
+  };
+  return evidenceFor(g, id).map(f => `[${f.id}] Week ${f.week}: ${f.text}${own(f)}`).join('\n') || 'No recorded events. Ask an open question; do not invent a shared history.';
 }
 
 export function currentSituation(g) {

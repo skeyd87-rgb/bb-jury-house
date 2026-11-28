@@ -3,7 +3,8 @@ import { newGame, logEvent } from '../src/game/state.js';
 import { applyVeto, applyNominations, applyEviction } from '../src/game/season.js';
 import { publicFacts, knowledgeFor, formatEvidence, rememberExchange } from '../src/game/knowledge.js';
 import { buildChatSystemPrompt, buildGroupSystemPrompt, buildJurorQuestionPrompt, buildJurorVotePrompt, buildThreadMessages } from '../src/ai/prompts.js';
-import { validateNarrative, assertVetoOwnership, resolveFinalist } from '../src/ai/grounding.js';
+import { validateNarrative, assertVetoOwnership, resolveFinalist, assertHohClaims, assertBallotClaims, assertHeardClaims, assertToldMe, dropCorrectionPreface } from '../src/ai/grounding.js';
+import { evictionRole } from '../src/ai/prompts.js';
 import { fallbackChat, fallbackOpener, fallbackJurorQuestion, fallbackJurorVote } from '../src/ai/fallback.js';
 import { npcChat, groupChat, jurorQuestion, jurorVote, diaryChat, opponentJuryAnswer } from '../src/ai/dialogue.js';
 import { serverNpcChat, serverGroupChat, serverJurorQuestion, serverJurorVote, serverDiaryChat } from '../party/ai.js';
@@ -83,10 +84,14 @@ test('legacy promises do not gain later outcome knowledge', () => {
   assert.match(formatEvidence(g,'bev'),/outcome at eviction unknown/);
   assert.doesNotMatch(fallbackJurorQuestion(g,'bev',['you','rae']).questionForF1,/went back on|broke/);
 });
-test('juror cannot learn private ballots from a promise status', () => {
-  const g=vetoGame();g.promises.push({id:'v',from:'you',to:'bev',text:'keep you',kind:'vote',week:1,status:'broken'});applyEviction(g,'bev',{'you':'bev'});
-  assert.match(formatEvidence(g,'bev'),/individual ballots are secret/);
-  assert.doesNotMatch(formatEvidence(g,'bev'),/Recorded status: broken/);
+// Ballots are read out by name, so the juror knows them from the vote record;
+// the promise itself still carries no verdict.
+test('juror learns ballots from the vote record, not from a promise status', () => {
+  const g=vetoGame();g.promises.push({id:'v',from:'you',to:'bev',text:'keep you',kind:'vote',week:1,status:'broken'});
+  g.voteHistory.push({week:1,evicted:'bev',votes:{you:'bev',zoe:'tessa'}});applyEviction(g,'bev',{you:'bev',zoe:'tessa'});
+  assert.match(formatEvidence(g,'bev'),/Steven voted to evict Bev/);
+  assert.match(formatEvidence(g,'bev'),/see the eviction vote record/);
+  assert.doesNotMatch(formatEvidence(g,'bev'),/Recorded status: broken|ballots are secret/);
 });
 test('empty bitter juror history produces an open question, not a fabricated promise', () => {
   const g=newGame('Steven');const q=fallbackJurorQuestion(g,'bev',['you','marcus']);
@@ -247,6 +252,86 @@ test('an AI finalist whose answer fails still answers the question it was asked'
     const a=await opponentJuryAnswer(g,'marcus','bev','Why did you put me on the block?');
     assert.doesNotMatch(a,/played my heart out/);assert.match(a,/block/);assert.match(a,/Bev/);
   });
+});
+
+// ---- BB-XDWN (2026-11-28): lines the semantic audit let through ----------
+// Steven is 'you'. Week 5: Flynn HoH, nominated Rae and Steven. Week 6: Steven
+// HoH; Tessa and Marcus on the block; Flynn the only voter.
+function xdwn() {
+  const g = newGame('Steven');
+  const at = (w, type, text, actors) => { g.week = w; logEvent(g, type, text, actors); };
+  g.compHistory.push({ week: 1, type: 'hoh', winner: 'rae', scores: {} }, { week: 5, type: 'hoh', winner: 'flynn', scores: {} }, { week: 6, type: 'hoh', winner: 'you', scores: {} });
+  at(1, 'nominations', 'Rae nominated Gus and Nash.', ['rae', 'gus', 'nash']);
+  at(5, 'nominations', 'Flynn nominated Rae and Steven.', ['flynn', 'rae', 'you']);
+  at(6, 'nominations', 'Steven nominated Flynn and Tessa.', ['you', 'flynn', 'tessa']);
+  g.voteHistory.push({ week: 6, evicted: 'marcus', votes: { flynn: 'marcus' } });
+  at(6, 'eviction', 'Marcus was evicted and joins the jury.', ['marcus']);
+  g.week = 6;
+  return g;
+}
+test('XDWN: a juror cannot claim nominations from a week they were not HoH', () => {
+  const g = xdwn();
+  assert.throws(() => assertHohClaims(g, 'rae', 'you', 'Steven, back in week five when you won the veto and used it to save yourself off my nominations, what did you and Flynn talk about?'), /Rae was not Head of Household in week 5: Flynn was, and nominated Rae and Steven/);
+  assert.doesNotThrow(() => assertHohClaims(g, 'rae', 'you', 'Back in week one, when I was HoH, I nominated Gus and Nash.'));
+  assert.throws(() => assertHohClaims(g, 'zoe', 'tessa', 'Tessa, you nominated me in week five.'), /Tessa was not Head of Household in week 5/);
+});
+test('XDWN: eviction ballots are not "never public", and only voters voted', () => {
+  const g = xdwn();
+  assert.throws(() => assertBallotClaims(g, 'tessa', 'marcus', 'Marcus, honestly, individual jury votes were never public, so I never confirmed who voted which way.'), /Flynn voted to evict Marcus/);
+  assert.throws(() => assertBallotClaims(g, 'tessa', 'marcus', 'I voted you out because you were a threat.'), /Tessa did not vote to evict Marcus in week 6/);
+  assert.doesNotThrow(() => assertBallotClaims(g, 'flynn', 'marcus', 'I voted you out because you were a threat.'));
+  assert.doesNotThrow(() => assertBallotClaims(g, 'tessa', 'marcus', 'I was on the block that week, so I never had a vote.'));
+});
+test('XDWN: a finalist is told where they stood when the juror left', () => {
+  const g = xdwn();
+  assert.match(evictionRole(g, 'tessa', 'marcus'), /on the block and did not vote.*Flynn → Marcus/);
+  assert.match(evictionRole(g, 'you', 'marcus'), /Head of Household and did not vote/);
+  assert.match(formatEvidence(g, 'marcus'), /Week 6 eviction vote, read out to the house \(Marcus evicted\): Flynn voted to evict Marcus/);
+});
+test('XDWN: "I heard you ask Marcus" needs a record of them talking', () => {
+  const g = xdwn(); g.week = 4;
+  rememberExchange(g, 'zoe', 'you', 'If you win HoH next, who are you going after?');
+  assert.throws(() => assertHeardClaims(g, 'zoe', 'you', "Steven, back in week four I heard you ask Marcus who he'd go after if he won HoH. Walk me through it."), /No record that Steven said that to Marcus.*Steven's own words to you in week 4/);
+  g.memory.zoe.gossipHeard.push({ fromId: 'bev', aboutId: 'you', week: 4, text: 'Steven asked Marcus who he would target' });
+  assert.doesNotThrow(() => assertHeardClaims(g, 'zoe', 'you', 'I heard you ask Marcus who he would target.'));
+});
+test('XDWN: "what you told me last week" must match when they actually said it', () => {
+  const g = xdwn(); g.week = 2;
+  rememberExchange(g, 'flynn', 'gus', 'Steven and Marcus are married');
+  assert.throws(() => assertToldMe(g, 'flynn', 'gus', "Gus, that's exactly what you told me last week.", 2), /from week 2 \(this week\), not week 1/);
+  assert.doesNotThrow(() => assertToldMe(g, 'flynn', 'gus', "Gus, that's exactly what you told me this week.", 2));
+  assert.throws(() => assertToldMe(g, 'flynn', 'rae', 'Rae, you told me last week you were done with Tessa.', 2), /no record of Rae telling Flynn/);
+  // Live replay: the week was in the question and the reply agreed with it.
+  assert.throws(() => assertToldMe(g, 'gus', 'you', 'Yeah, you mentioned that. Where do I stand?', 2, { utterance: "didn't I already tell you last week that Marcus and I are tight?" }), /no record of Steven telling Gus/);
+  assert.doesNotThrow(() => assertToldMe(g, 'gus', 'you', 'You did great in that comp.', 2, { utterance: 'did I tell you last week how I did?' }));
+});
+test('a corrected line does not announce its own correction', () => {
+  assert.equal(dropCorrectionPreface({ reasoning: 'I misspoke - Gus did nominate me in week 6.' }).reasoning, 'Gus did nominate me in week 6.');
+  assert.equal(dropCorrectionPreface({ reply: 'Actually let me correct myself — I voted to evict Nash.' }).reply, 'I voted to evict Nash.');
+  assert.equal(dropCorrectionPreface({ reply: 'Actually, I think you should stay.' }).reply, 'Actually, I think you should stay.');
+});
+test('XDWN: a reviewer that misreads the ballots cannot overrule a line that matches them', async () => {
+  const g = xdwn(); g.voteHistory.unshift({ week: 2, evicted: 'flynn', votes: { rae: 'flynn', bev: 'flynn', gus: 'nash', marcus: 'flynn', you: 'flynn' } });
+  const wrong = async () => ({ valid: false, evidence: 'votes:0', reason: 'Gus is listed as voting to evict Flynn' });
+  const ok = await validateNarrative(g, 'gus', 'you', { reply: 'I voted to evict Nash that week. Rae, Bev, Marcus and Steven voted Flynn out.' }, wrong);
+  assert.match(ok.reply, /Nash/);
+  await assert.rejects(validateNarrative(g, 'gus', 'you', { reply: 'I voted to evict Flynn that week.' }, wrong), /does not match/);
+});
+test('XDWN: the juror whose question invents a HoH week gets one correction naming the real HoH', async () => {
+  const g = xdwn(); g.evicted.push('rae'); g.jury = ['rae'];
+  const original = globalThis.fetch, prev = globalThis.location; globalThis.location = { hostname: 'localhost' };
+  let asks = 0; const seen = [];
+  globalThis.fetch = async (_u, o) => { const body = JSON.parse(o.body); let value;
+    if (body.system.startsWith('You verify')) value = { valid: true };
+    else { asks++; seen.push(JSON.stringify(body.messages)); value = asks === 1
+      ? { questionForF1: 'Steven, back in week five you saved yourself off my nominations. Why?', questionForF2: 'Tessa, why you?', evidenceForF1: [], evidenceForF2: [] }
+      : { questionForF1: "Steven, back in week five you saved yourself off Flynn's nominations. Why?", questionForF2: 'Tessa, why you?', evidenceForF1: [], evidenceForF2: [] }; }
+    return { ok: true, status: 200, json: async () => ({ text: JSON.stringify(value), content: [{ type: 'text', text: JSON.stringify(value) }] }) }; };
+  try {
+    const q = await serverJurorQuestion(g, 'rae', ['you', 'tessa'], 'test-key');
+    assert.equal(q.usedAi, true); assert.equal(asks, 2); assert.match(q.questionForF1, /Flynn's nominations/);
+    assert.match(seen[1], /Flynn was, and nominated Rae and Steven/);
+  } finally { globalThis.fetch = original; globalThis.location = prev; }
 });
 
 let failed=0;

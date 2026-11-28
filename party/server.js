@@ -679,8 +679,10 @@ export class Room extends Server {
     } else {
       evicted = tally[n1] > tally[n2] ? n1 : n2;
     }
-    applyEviction(g, evicted, { ...t.votes });
+    // Ballots first: the juror's memory is frozen inside applyEviction, and it
+    // has to include who voted them out.
     g.voteHistory.push({ week: g.week, evicted, votes: { ...t.votes } });
+    applyEviction(g, evicted, { ...t.votes });
     await this.setTurn({
       kind: 'eviction_result', evicted, evictedName: nameOf(g, evicted),
       tally: { [nameOf(g, n1)]: tally[n1], [nameOf(g, n2)]: tally[n2] },
